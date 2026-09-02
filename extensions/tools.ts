@@ -20,23 +20,25 @@ interface ToolsState {
 
 // Short origin tag for non-built-in tools, e.g. "pi-web-access" or "sdk".
 // Returns undefined for built-in tools so the list stays clean.
+// pi marks built-ins "builtin" and SDK tools "sdk". Every loaded extension
+// file (npm, git, user, project) gets "local", so fall back to the file
+// path for a useful name.
 function originTag(tool: ToolInfo): string | undefined {
-	if (tool.sourceInfo.source === "extension") {
-		const path = tool.sourceInfo.path;
-		const pkg = path.match(/node_modules\/((?:@[^/]+\/)?[^/]+)\//);
-		if (pkg) return pkg[1];
-		const file = path.split("/").pop() ?? path;
-		return file.replace(/\.[cm]?[jt]s$/, "");
-	}
-	if (tool.sourceInfo.source === "sdk") return "sdk";
-	return undefined;
+	const source = tool.sourceInfo.source;
+	if (source === "sdk") return "sdk";
+	if (source === "builtin") return undefined;
+	const path = tool.sourceInfo.path;
+	const pkg = path.match(/node_modules\/((?:@[^/]+\/)?[^/]+)\//);
+	if (pkg) return pkg[1];
+	const file = path.split("/").pop() ?? path;
+	return file.replace(/\.[cm]?[jt]s$/, "");
 }
 
 function originDescription(tool: ToolInfo): string {
 	const info = tool.sourceInfo;
 	if (info.source === "builtin") return "Built-in pi tool";
 	if (info.source === "sdk") return "Custom tool registered via SDK";
-	return `Extension tool from ${originTag(tool)} (${info.scope} scope)`;
+	return `Extension tool from ${originTag(tool)}: ${info.path}`;
 }
 
 export default function toolsExtension(pi: ExtensionAPI) {
