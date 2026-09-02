@@ -18,6 +18,27 @@ interface ToolsState {
 	enabledTools: string[];
 }
 
+// Short origin tag for non-built-in tools, e.g. "pi-web-access" or "sdk".
+// Returns undefined for built-in tools so the list stays clean.
+function originTag(tool: ToolInfo): string | undefined {
+	if (tool.sourceInfo.source === "extension") {
+		const path = tool.sourceInfo.path;
+		const pkg = path.match(/node_modules\/((?:@[^/]+\/)?[^/]+)\//);
+		if (pkg) return pkg[1];
+		const file = path.split("/").pop() ?? path;
+		return file.replace(/\.[cm]?[jt]s$/, "");
+	}
+	if (tool.sourceInfo.source === "sdk") return "sdk";
+	return undefined;
+}
+
+function originDescription(tool: ToolInfo): string {
+	const info = tool.sourceInfo;
+	if (info.source === "builtin") return "Built-in pi tool";
+	if (info.source === "sdk") return "Custom tool registered via SDK";
+	return `Extension tool from ${originTag(tool)} (${info.scope} scope)`;
+}
+
 export default function toolsExtension(pi: ExtensionAPI) {
 	// Track enabled tools
 	let enabledTools: Set<string> = new Set();
@@ -77,18 +98,27 @@ export default function toolsExtension(pi: ExtensionAPI) {
 
 			await ctx.ui.custom((tui, theme, _kb, done) => {
 				// Build settings items for each tool
-				const items: SettingItem[] = allTools.map((tool) => ({
-					id: tool.name,
-					label: tool.name,
-					currentValue: enabledTools.has(tool.name) ? "enabled" : "disabled",
-					values: ["enabled", "disabled"],
-				}));
+				const items: SettingItem[] = allTools.map((tool) => {
+					const tag = originTag(tool);
+					const label = tag ? `${tool.name} ${theme.fg("muted", `(${tag})`)}` : tool.name;
+					return {
+						id: tool.name,
+						label,
+						description: originDescription(tool),
+						currentValue: enabledTools.has(tool.name) ? "enabled" : "disabled",
+						values: ["enabled", "disabled"],
+					};
+				});
 
 				const container = new Container();
 				container.addChild(
 					new (class {
 						render(_width: number) {
-							return [theme.fg("accent", theme.bold("Tool Configuration")), ""];
+							return [
+								theme.fg("accent", theme.bold("Tool Configuration")),
+								theme.fg("muted", "Tag = extension or SDK origin. No tag = built-in."),
+								"",
+							];
 						}
 						invalidate() {}
 					})(),
