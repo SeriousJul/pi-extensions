@@ -27,9 +27,13 @@ afterAll(() => {
 });
 
 describe("shim surface", () => {
-  it("exposes DatabaseSync, backup, and a known backend", () => {
+  it("exposes DatabaseSync, backupFile, and a known backend", () => {
     expect(typeof shim.DatabaseSync).toBe("function");
-    expect(typeof shim.backup).toBe("function");
+    expect(typeof shim.backupFile).toBe("function");
+    // backup is the node:sqlite online backup (Node 22.16+/23.8+, bun) or
+    // the bun serialize copy; it is undefined on Node 22.5-22.15, where
+    // backupFile is the seed copy path instead.
+    expect(["function", "undefined"]).toContain(typeof shim.backup);
     expect(["node:sqlite", "bun:sqlite"]).toContain(shim.backend);
   });
 
@@ -87,16 +91,38 @@ describe("shim surface", () => {
     db.close();
   });
 
-  it("copies a database with backup()", async () => {
+  it("copies a database with backup() when the backup API exists", async () => {
     const srcFile = path.join(dir, "src.db");
     const dstFile = path.join(dir, "dst.db");
     const src = new shim.DatabaseSync(srcFile);
     src.exec("CREATE TABLE t (v TEXT)");
     src.prepare("INSERT INTO t VALUES (@v)").run({ v: "copied" });
-    await shim.backup(src, dstFile);
+    if (shim.backup) {
+      await shim.backup(src, dstFile);
+      const dst = new shim.DatabaseSync(dstFile, { readOnly: true });
+      expect(dst.prepare("SELECT v FROM t").all()).toEqual([{ v: "copied" }]);
+      dst.close();
+    }
+    src.close();
+  });
+
+  it("copies a WAL database with backupFile() (checkpoint + file copy)", async () => {
+    // The Node 22.5-22.15 seed path: the row must land in the WAL (no
+    // checkpoint between the insert and the copy), so a bare file copy of
+    // the main database would be stale. Only the checkpoint + copy path
+    // yields the row in the destination.
+    const srcFile = path.join(dir, "cf-src.db");
+    const dstFile = path.join(dir, "cf-dst.db");
+    const src = new shim.DatabaseSync(srcFile);
+    src.exec("PRAGMA journal_mode = WAL");
+    src.exec("CREATE TABLE t (v TEXT)");
+    src.prepare("INSERT INTO t VALUES (@v)").run({ v: "checkpointed" });
+    await shim.backupFile(srcFile, dstFile);
     src.close();
     const dst = new shim.DatabaseSync(dstFile, { readOnly: true });
-    expect(dst.prepare("SELECT v FROM t").all()).toEqual([{ v: "copied" }]);
+    expect(dst.prepare("SELECT v FROM t").all()).toEqual([
+      { v: "checkpointed" },
+    ]);
     dst.close();
   });
 

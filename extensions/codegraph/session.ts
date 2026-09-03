@@ -27,6 +27,7 @@ import path from "node:path";
 import { gitCommonDir, isGitWorktree, listWorktrees } from "./git";
 import { CodegraphUnavailable, resolveRoot, unsafeRootReason } from "./root";
 import { findSeedSource, seedDb } from "./seed";
+import shim from "./sqlite-shim.cjs";
 
 /** Exported for tests that simulate another process's live build. */
 export const MARKER_NAME = "pi-codegraph-build.json";
@@ -70,12 +71,19 @@ export interface ReadyInfo {
   justBuilt?: boolean;
 }
 
+/** The counts /codegraph status shows for an index (open or on disk only). */
+export interface IndexCounts {
+  fileCount: number;
+  nodeCount: number;
+  edgeCount: number;
+}
+
 export interface RootStatus {
   root: string;
   needsCreate: boolean;
   mainCheckout?: string;
   isMainCheckout: boolean;
-  stats?: GraphStats;
+  stats?: IndexCounts;
   indexState?: string | null;
   watcher: WatcherState;
   watcherReason?: string;
@@ -292,9 +300,6 @@ export class CodegraphSession {
     }
     if (reopened) {
       await this.syncForQuery(entry, "replaced index file", true);
-    } else if (!fs.existsSync(db)) {
-      this.drop(info.root);
-      return this.ensureReady(startDir, file);
     }
     return info;
   }
@@ -405,13 +410,18 @@ export class CodegraphSession {
     const resolved = resolveRoot(dir);
     const entry = this.instances.get(resolved.root);
     const meta = isInitialized(resolved.root) ? readMeta(resolved.root) : {};
+    // An index that exists on disk but is not open in this session still
+    // reports its counts: they are read straight from the index database,
+    // so the bare /codegraph status shows the file/node/edge counts without
+    // opening the index.
+    const disk = entry ? undefined : diskStats(resolved.root);
     return {
       root: resolved.root,
       needsCreate: resolved.needsCreate,
       mainCheckout: resolved.mainCheckout,
       isMainCheckout: resolved.isMainCheckout,
-      stats: entry ? entry.cg.getStats() : undefined,
-      indexState: entry ? entry.cg.getIndexState() : undefined,
+      stats: entry ? entry.cg.getStats() : disk,
+      indexState: entry ? entry.cg.getIndexState() : disk?.indexState ?? null,
       watcher: entry?.watcher ?? "off",
       watcherReason: entry?.watcherReason,
       seedSource: meta.seedSource,
@@ -491,6 +501,13 @@ export class CodegraphSession {
   ): Promise<ReadyInfo> {
     const resolved = resolveRoot(dir);
     const { root } = resolved;
+    // The same guard the auto path applies: a manual seed must not create
+    // an index at a refused root (the home directory, the filesystem root).
+    const unsafe = unsafeRootReason(root);
+    if (unsafe) {
+      this.notifyOnce(`unsafe-root:${root}`, "warning", `codegraph: ${unsafe}`);
+      throw new CodegraphUnavailable(unsafe, true);
+    }
     let source: string;
     if (sourceDir) {
       const abs = path.resolve(dir, sourceDir);
@@ -924,6 +941,61 @@ export class CodegraphSession {
         `codegraph: file watcher unavailable (${entry.watcherReason}); the index is reconciled before every query`,
       );
     }
+  }
+}
+
+/** The index state values codegraph writes to project_metadata. */
+const INDEX_STATES = ["indexing", "complete", "partial", "failed"] as const;
+
+/**
+ * Read the index counts and state straight from the index database, without
+ * opening a CodeGraph instance. Used by /codegraph status when the index
+ * exists on disk but the session has not opened it yet. The counts mirror
+ * CodeGraph.getStats() (the same table counts). Returns undefined when the
+ * database cannot be read.
+ */
+function diskStats(
+  root: string,
+): {
+  fileCount: number;
+  nodeCount: number;
+  edgeCount: number;
+  indexState: string | null;
+} | undefined {
+  if (!isInitialized(root)) return undefined;
+  const db = new shim.DatabaseSync(getDatabasePath(root), { readOnly: true });
+  try {
+    const row = db
+      .prepare(
+        "SELECT (SELECT COUNT(*) FROM files) AS file_count, " +
+          "(SELECT COUNT(*) FROM nodes) AS node_count, " +
+          "(SELECT COUNT(*) FROM edges) AS edge_count, " +
+          "(SELECT value FROM project_metadata WHERE key = 'index_state') AS index_state",
+      )
+      .get() as
+      | {
+          file_count: number;
+          node_count: number;
+          edge_count: number;
+          index_state: string | null | undefined;
+        }
+      | undefined;
+    if (!row) return undefined;
+    const state = row.index_state;
+    return {
+      fileCount: Number(row.file_count),
+      nodeCount: Number(row.node_count),
+      edgeCount: Number(row.edge_count),
+      indexState:
+        typeof state === "string" &&
+        (INDEX_STATES as readonly string[]).includes(state)
+          ? state
+          : null,
+    };
+  } catch {
+    return undefined;
+  } finally {
+    db.close();
   }
 }
 

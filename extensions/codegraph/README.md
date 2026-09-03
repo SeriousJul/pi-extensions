@@ -37,6 +37,10 @@ absolute paths, so the repo may not be moved after install; re-run
 unpatched codegraph still fails with codegraph's own clear error, which
 the extension reports as its standard unavailable line.
 
+The Node floor is 22.5 (the first version with `node:sqlite`). On Node
+22.5-22.15 the seed copy uses a WAL checkpoint + file copy instead of
+the online backup API, which only exists on Node 22.16+ / 23.8+.
+
 All pi install flows work: local path, git clone, and npm package
 (tarball). A tarball install hoists the codegraph dependency out of the
 package, so the postinstall also looks for it in ancestor
@@ -70,6 +74,8 @@ package, so the postinstall also looks for it in ancestor
 
 There is no `projectPath` parameter on any tool. The index is always the one
 for the worktree the call was made from, resolved automatically.
+`codegraph_search.kind` accepts the upstream single-kind string or an array
+of kinds.
 
 ## Per-worktree indexes
 
@@ -81,10 +87,11 @@ Every git worktree gets its own index under `<worktree>/.codegraph/`:
 - **Seeding.** When a worktree has no index but a sibling worktree of the
   same repository (shared common git dir, discovered via
   `git worktree list`) does, the sibling's index database is copied into
-  the new worktree (SQLite online backup) and reconciled. The reconcile is
-  a full walk that converges the copy to the worktree's own tree, so a
-  symbol that exists only in the sibling is removed and one that exists
-  only in this worktree is added.
+  the new worktree (SQLite online backup; a WAL checkpoint + file copy on
+  Node 22.5-22.15, which lack the backup API) and reconciled. The
+  reconcile is a full walk that converges the copy to the worktree's own
+  tree, so a symbol that exists only in the sibling is removed and one
+  that exists only in this worktree is added.
 - **First use is blocking.** The first `codegraph_*` call in a worktree
   waits for the build or seed to finish. Progress is shown in the
   `codegraph` status slot.

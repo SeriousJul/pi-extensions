@@ -31,24 +31,33 @@ export const PROMPT_NOTE = [
   "Do not try to build or reindex the codegraph index yourself.",
 ].join(" ");
 
+const NodeKindUnion = Type.Union([
+  Type.Literal("function"),
+  Type.Literal("method"),
+  Type.Literal("class"),
+  Type.Literal("interface"),
+  Type.Literal("type"),
+  Type.Literal("variable"),
+  Type.Literal("route"),
+  Type.Literal("component"),
+]);
+
+// Upstream takes a single kind string; this also accepts an array of kinds
+// (a superset, normalized in the handler).
 const NodeKinds = Type.Optional(
-  Type.Array(
-    Type.Union([
-      Type.Literal("function"),
-      Type.Literal("method"),
-      Type.Literal("class"),
-      Type.Literal("interface"),
-      Type.Literal("type"),
-      Type.Literal("variable"),
-      Type.Literal("route"),
-      Type.Literal("component"),
-    ]),
-    {
-      description:
-        "Filter by node kind(s) (upstream takes a single kind; this accepts any subset)",
-    },
-  ),
+  Type.Union([NodeKindUnion, Type.Array(NodeKindUnion)], {
+    description:
+      "Filter by node kind - a single kind (the upstream shape) or an array of kinds",
+  }),
 );
+
+/** The upstream `kind` is one kind string; an array form is also accepted. */
+function normalizeKinds(kind: unknown): NodeKind[] | undefined {
+  if (kind === undefined) return undefined;
+  if (typeof kind === "string") return [kind as NodeKind];
+  if (Array.isArray(kind)) return kind as NodeKind[];
+  return undefined;
+}
 
 const FileParam = Type.Optional(
   Type.String({
@@ -172,7 +181,7 @@ export function registerTools(pi: ExtensionAPI, session: CodegraphSession): void
       renderSearch(
         info.cg,
         String(params.query),
-        params.kind as NodeKind[] | undefined,
+        normalizeKinds(params.kind),
         typeof params.limit === "number" ? params.limit : 10,
         typeof params.offset === "number" ? params.offset : 0,
       ),
@@ -421,7 +430,7 @@ function statusLines(session: CodegraphSession, ctx: ExtensionContext): string[]
       lines.push("  index: none yet (built automatically on first use)");
       return lines;
     }
-    if (s.instanceOpen && s.stats) {
+    if (s.stats) {
       lines.push(
         `  index: ${s.stats.fileCount} files, ${s.stats.nodeCount} nodes, ${s.stats.edgeCount} edges`,
       );
@@ -429,7 +438,7 @@ function statusLines(session: CodegraphSession, ctx: ExtensionContext): string[]
         lines.push(`  index state: ${s.indexState}`);
       }
     } else {
-      lines.push("  index: on disk (open on first use)");
+      lines.push("  index: on disk (counts unavailable)");
     }
     lines.push(`  last reconcile: ${fmtTime(s.lastReconcileAt)}`);
     if (s.seedSource) {

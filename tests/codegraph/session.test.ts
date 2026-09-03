@@ -319,3 +319,66 @@ describe("git helpers", () => {
     expect(worktrees[0].branch).toBe(`refs/heads/${branch}`);
   });
 });
+
+describe("watcher disabled (CODEGRAPH_NO_WATCH=1)", () => {
+  it("reconciles before every query and warns once", async () => {
+    process.env.CODEGRAPH_NO_WATCH = "1";
+    const notices: string[] = [];
+    try {
+      const s = newSession();
+      s.setUi({ notify: (_level, message) => notices.push(message) });
+
+      await s.ensureReady(fixture.main);
+      expect(notices).toContain(
+        "codegraph: file watcher disabled on this filesystem (CODEGRAPH_NO_WATCH=1); the index is reconciled before every query",
+      );
+
+      // Without a watcher, the pre-query reconcile must pick up new files
+      // before serving every query, not just the first one.
+      fs.writeFileSync(
+        path.join(fixture.main, "src", "late1.ts"),
+        "export function lateSymbolOne(): number { return 1; }\n",
+      );
+      const second = await s.queryReady(fixture.main);
+      expect(second.cg.getNodesByName("lateSymbolOne").length).toBe(1);
+
+      fs.writeFileSync(
+        path.join(fixture.main, "src", "late2.ts"),
+        "export function lateSymbolTwo(): number { return 2; }\n",
+      );
+      const third = await s.queryReady(fixture.main);
+      expect(third.cg.getNodesByName("lateSymbolTwo").length).toBe(1);
+
+      // The notice is one-time across the whole session.
+      expect(
+        notices.filter((m) => m.includes("file watcher disabled")),
+      ).toHaveLength(1);
+    } finally {
+      delete process.env.CODEGRAPH_NO_WATCH;
+    }
+  });
+});
+
+describe("manual seed guard", () => {
+  // The end-to-end refusal needs the home directory pointed at a fixture
+  // worktree: os.homedir() honors $HOME on Node but not on bun, so this
+  // runs on Node only. The unsafe-root detection itself is covered by the
+  // root-resolution test ("rejects the home directory and filesystem
+  // root") on every runtime, and the reseed guard calls the same
+  // unsafeRootReason the auto path uses.
+  it.skipIf(Boolean(process.versions.bun))("refuses to seed at an unsafe root (the home directory)", async () => {
+    const savedHome = process.env.HOME;
+    process.env.HOME = fixture.main;
+    try {
+      const s = newSession();
+      await expect(s.reseed(fixture.main)).rejects.toSatisfy(
+        (err: unknown) =>
+          err instanceof CodegraphUnavailable &&
+          err.reason.includes("refusing to index the home directory"),
+      );
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+    }
+  });
+});

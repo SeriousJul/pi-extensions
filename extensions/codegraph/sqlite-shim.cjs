@@ -8,7 +8,10 @@
  *
  * This module exports the same surface on both runtimes:
  *   - `DatabaseSync` - the database handle class
- *   - `backup(source, destination)` - async DB copy
+ *   - `backup(source, destination)` - async DB copy (undefined on Node
+ *     22.5-22.15, which lack the node:sqlite backup API; use `backupFile`)
+ *   - `backupFile(sourcePath, destinationPath)` - consistent DB copy via
+ *     WAL checkpoint + file copy (the backup-API-free fallback)
  *   - `backend` - "node:sqlite" or "bun:sqlite" (which one is active)
  *   - `findNamedParams(sql)` / `mapNamedParams(sql, params)` - for tests
  *
@@ -245,13 +248,54 @@ async function bunBackup(source, destination) {
   return 0;
 }
 
+/** Synchronous sleep (checkpoint retries). */
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Consistent database copy WITHOUT the backup API (Node 22.5-22.15 have
+ * node:sqlite but no `backup`). Checkpoint the source's WAL into its main
+ * file, then copy the main file: after a successful TRUNCATE checkpoint the
+ * main file is a self-contained, consistent snapshot. A checkpoint that
+ * stays busy (another connection holds a long read transaction) is retried,
+ * then fails loudly - copying a non-checkpointed WAL database would lose
+ * the WAL's contents.
+ */
+async function backupFile(sourcePath, destinationPath, DatabaseCtor) {
+  const src = new DatabaseCtor(sourcePath);
+  try {
+    const stmt = src.prepare("PRAGMA wal_checkpoint(TRUNCATE)");
+    for (let attempt = 0; ; attempt++) {
+      const row = stmt.get();
+      if (!row || Number(row.busy) === 0) break;
+      if (attempt >= 5) {
+        throw new Error(
+          "codegraph sqlite shim: could not checkpoint " +
+            sourcePath +
+            " for the seed copy (database is busy)",
+        );
+      }
+      sleepSync(250 * (attempt + 1));
+    }
+  } finally {
+    src.close();
+  }
+  fs.copyFileSync(sourcePath, destinationPath);
+}
+
 const nodeSqlite = loadNodeSqlite();
 
 if (nodeSqlite && typeof nodeSqlite.DatabaseSync === "function") {
-  // Real node:sqlite (Node >= 22.5): use it verbatim.
+  // Real node:sqlite (Node >= 22.5): use it verbatim. The module-level
+  // backup API only exists on Node >= 22.16 / 23.8; on 22.5-22.15 the
+  // checkpoint + file copy fallback is exposed as backupFile instead.
   module.exports = {
     DatabaseSync: nodeSqlite.DatabaseSync,
-    backup: nodeSqlite.backup,
+    backup:
+      typeof nodeSqlite.backup === "function" ? nodeSqlite.backup : undefined,
+    backupFile: (sourcePath, destinationPath) =>
+      backupFile(sourcePath, destinationPath, nodeSqlite.DatabaseSync),
     findNamedParams,
     mapNamedParams,
     backend: "node:sqlite",
@@ -261,6 +305,8 @@ if (nodeSqlite && typeof nodeSqlite.DatabaseSync === "function") {
   module.exports = {
     DatabaseSync: BunDatabaseSync,
     backup: bunBackup,
+    backupFile: (sourcePath, destinationPath) =>
+      backupFile(sourcePath, destinationPath, BunDatabaseSync),
     findNamedParams,
     mapNamedParams,
     backend: "bun:sqlite",

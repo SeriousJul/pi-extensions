@@ -164,6 +164,29 @@ describe("tool outputs", () => {
     expect(text).not.toContain("return x + ANSWER");
   });
 
+  it("search accepts the upstream single-string kind and an array of kinds", async () => {
+    // Upstream shape: one kind string. `helper` is a function.
+    const byString = await h.call("codegraph_search", {
+      query: "helper",
+      kind: "function",
+    });
+    expect(byString).toContain("helper");
+
+    // The filter is applied, not ignored: a non-matching kind excludes it.
+    const none = await h.call("codegraph_search", {
+      query: "helper",
+      kind: "class",
+    });
+    expect(none).toContain('No symbols found matching "helper"');
+
+    // The array superset still works.
+    const byArray = await h.call("codegraph_search", {
+      query: "helper",
+      kind: ["function"],
+    });
+    expect(byArray).toContain("helper");
+  });
+
   it("node file mode returns line-numbered source with a dependents header", async () => {
     const text = await h.call("codegraph_node", { file: "src/shared.ts" });
     expect(text).toContain("File: src/shared.ts");
@@ -313,6 +336,31 @@ describe("/codegraph command", () => {
   it("status reports file/node/edge counts and index state once ready", async () => {
     const h = makeHarness(newSession(), fixture.main);
     await h.session.ensureReady(fixture.main);
+    const ui = freshUi();
+    await h.commands.get("codegraph")!.handler("", makeCtx(fixture.main, ui));
+    const joined = ui.notifications.map(([, m]) => m).join("\n");
+    expect(joined).toMatch(/index: \d+ files, \d+ nodes, \d+ edges/);
+    expect(joined).toContain("index state:");
+  });
+
+  it("status reports the counts when the index is on disk but not open", async () => {
+    const builder = newSession();
+    await builder.ensureReady(fixture.main);
+    const open = builder.statusFor(fixture.main);
+    expect(open.instanceOpen).toBe(true);
+    expect(open.stats).toBeDefined();
+    builder.closeAll();
+
+    // A fresh session has not opened the index: the counts must still be
+    // reported, read from the index database.
+    const h = makeHarness(newSession(), fixture.main);
+    const closed = h.session.statusFor(fixture.main);
+    expect(closed.instanceOpen).toBe(false);
+    expect(closed.stats?.fileCount).toBe(open.stats?.fileCount);
+    expect(closed.stats?.nodeCount).toBe(open.stats?.nodeCount);
+    expect(closed.stats?.edgeCount).toBe(open.stats?.edgeCount);
+    expect(closed.indexState).toBe(open.indexState);
+
     const ui = freshUi();
     await h.commands.get("codegraph")!.handler("", makeCtx(fixture.main, ui));
     const joined = ui.notifications.map(([, m]) => m).join("\n");

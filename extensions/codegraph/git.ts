@@ -16,7 +16,6 @@ export interface Worktree {
   gitDir: string;
   detached: boolean;
   prunable: boolean;
-  locked: boolean;
 }
 
 function git(cwd: string, args: string[]): string | undefined {
@@ -78,7 +77,6 @@ export function listWorktrees(root: string): Worktree[] {
         gitDir: "",
         detached: false,
         prunable: false,
-        locked: false,
       };
     } else if (!current) {
       continue;
@@ -92,8 +90,6 @@ export function listWorktrees(root: string): Worktree[] {
       current.detached = true;
     } else if (line === "prunable") {
       current.prunable = true;
-    } else if (line === "locked") {
-      current.locked = true;
     }
   }
   push();

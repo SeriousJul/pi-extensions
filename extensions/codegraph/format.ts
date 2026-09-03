@@ -19,11 +19,6 @@ const MAX_EXPLORE_LINES_PER_FILE = 200;
 const MAX_CALL_PATHS = 40;
 const DEFAULT_VIEW_LIMIT = 2000;
 
-export interface CtxLike {
-  /** Absolute working directory the call was made from. */
-  cwd: string;
-}
-
 export function unavailableText(reason: string): string {
   return `codegraph is unavailable (${reason}). Use the built-in read and grep tools instead.`;
 }
