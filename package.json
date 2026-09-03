@@ -8,7 +8,8 @@
     "pi-package"
   ],
   "files": [
-    "extensions"
+    "extensions",
+    "scripts"
   ],
   "pi": {
     "extensions": [

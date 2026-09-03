@@ -68,4 +68,30 @@ describe("codegraph over the bun:sqlite shim", () => {
     cg.close();
     cg = undefined;
   }, 120_000);
+
+  it("backup() copies the indexed database through the serialize path", async () => {
+    // The exact seeding copy path pi (bun) uses: open the source db
+    // read-only, back it up to a fresh root with the shim's backup (the
+    // bun:sqlite serialize + write branch), and prove the copy is a
+    // complete, queryable snapshot.
+    const copyDir = path.join(dir, "copy");
+    fs.mkdirSync(path.join(copyDir, ".codegraph"), { recursive: true });
+    const srcPath = path.join(dir, ".codegraph", "codegraph.db");
+    const dstPath = path.join(copyDir, ".codegraph", "codegraph.db");
+    const src = new shim.DatabaseSync(srcPath, { readOnly: true });
+    try {
+      await shim.backup(src, dstPath);
+    } finally {
+      src.close();
+    }
+    const copy = await CodeGraph.open(copyDir, { sync: false });
+    try {
+      expect(copy.getStats().fileCount).toBeGreaterThanOrEqual(1);
+      const results = copy.searchNodes("bunOnlyFn");
+      expect(results.length).toBeGreaterThanOrEqual(1);
+      expect(results[0].node.name).toBe("bunOnlyFn");
+    } finally {
+      copy.close();
+    }
+  }, 120_000);
 });

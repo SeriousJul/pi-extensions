@@ -5,7 +5,8 @@
  *   src/shared.ts  - helper(), ANSWER
  *   src/main.ts    - mainEntry() calls helper()
  *
- * feature worktree (branch `feature`):
+ * feature worktree (branch `feature`), placed under a nested foreign
+ * directory (`<base>/elsewhere/feature`) to prove placement irrelevance:
  *   src/feature.ts - featureOnlySymbol(), helper()  (exists only on the
  *                   branch; helper is overloaded with src/shared.ts's helper,
  *                   which exercises file/line disambiguation)
@@ -61,7 +62,9 @@ export interface Fixture {
 export function buildFixture(): Fixture {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "codegraph-pi-"));
   const main = path.join(base, "main");
-  const feature = path.join(base, "feature");
+  // Nested under a foreign directory, not a sibling of main: the extension
+  // must find this worktree and seed it no matter where it lives.
+  const feature = path.join(base, "elsewhere", "feature");
   fs.mkdirSync(path.join(main, "src"), { recursive: true });
 
   const write = (file: string, content: string): void => {

@@ -37,6 +37,11 @@ absolute paths, so the repo may not be moved after install; re-run
 unpatched codegraph still fails with codegraph's own clear error, which
 the extension reports as its standard unavailable line.
 
+All pi install flows work: local path, git clone, and npm package
+(tarball). A tarball install hoists the codegraph dependency out of the
+package, so the postinstall also looks for it in ancestor
+`node_modules` directories and patches it there.
+
 ### Tests
 
 - `npm test` - vitest suite; runs on Node or bun

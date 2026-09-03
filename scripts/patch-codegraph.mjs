@@ -176,14 +176,24 @@ function walkJs(dir, out, depth = 0) {
 
 function collectDirs() {
   const dirs = [];
-  // 1) The npm-installed platform bundles next to this repo.
-  const scope = path.join(root, "node_modules", "@colbymchenry");
-  if (fs.existsSync(scope)) {
-    for (const entry of fs.readdirSync(scope, { withFileTypes: true })) {
-      if (entry.isDirectory() && entry.name.startsWith("codegraph")) {
-        dirs.push(path.join(scope, entry.name));
+  // 1) The npm-installed platform bundles. In a repo checkout they sit in
+  //    this repo's node_modules; a tarball install (npm pack / npm install
+  //    <tgz>) hoists them into the destination project's node_modules, so
+  //    walk up the tree from the package root until a scope is found.
+  let dir = root;
+  for (;;) {
+    const scope = path.join(dir, "node_modules", "@colbymchenry");
+    if (fs.existsSync(scope)) {
+      for (const entry of fs.readdirSync(scope, { withFileTypes: true })) {
+        if (entry.isDirectory() && entry.name.startsWith("codegraph")) {
+          dirs.push(path.join(scope, entry.name));
+        }
       }
+      break;
     }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
   }
   // 2) Bundles the codegraph CLI self-healed into ~/.codegraph/bundles.
   const cache = path.join(os.homedir(), ".codegraph", "bundles");

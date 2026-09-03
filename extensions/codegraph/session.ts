@@ -28,7 +28,8 @@ import { gitCommonDir, isGitWorktree, listWorktrees } from "./git";
 import { CodegraphUnavailable, resolveRoot, unsafeRootReason } from "./root";
 import { findSeedSource, seedDb } from "./seed";
 
-const MARKER_NAME = "pi-codegraph-build.json";
+/** Exported for tests that simulate another process's live build. */
+export const MARKER_NAME = "pi-codegraph-build.json";
 const META_NAME = "pi-codegraph-meta.json";
 const LOCK_RETRY_MS = 500;
 const LOCK_TIMEOUT_MS = 10 * 60 * 1000;
@@ -377,11 +378,23 @@ export class CodegraphSession {
     return promise;
   }
 
-  /** True when an index for `dir`'s root exists (on disk or in this session). */
+  /**
+   * True when the index for `dir`'s root is ready to serve queries: it
+   * exists (on disk or in this session) and no build or seed is running -
+   * not in this process (its own marker) and not in another live process
+   * (a peer's live marker). While a build runs the database file exists,
+   * but the index is not ready, and the prompt note must not steer toward
+   * a tool that would block on the build.
+   */
   isReadyFor(dir: string): boolean {
     try {
       const { root, needsCreate } = resolveRoot(dir);
-      return !needsCreate || this.instances.has(root);
+      if (needsCreate) return this.instances.has(root);
+      const marker = readMarker(root);
+      if (marker && (marker.pid === process.pid || isPidAlive(marker.pid))) {
+        return false;
+      }
+      return true;
     } catch {
       return false;
     }
@@ -865,35 +878,46 @@ export class CodegraphSession {
       );
       return;
     }
-    const ok = entry.cg.watch({
-      debounceMs: 1000,
-      onDegraded: (reason: string) => {
-        entry.watcher = "degraded";
-        entry.watcherReason = reason;
-        this.notifyOnce(
-          `watcher-degraded:${entry.root}`,
-          "warning",
-          `codegraph: file watcher degraded (${reason}); the index is reconciled before every query`,
-        );
-      },
-      onSyncComplete: (r: { filesChanged: number; durationMs: number }) => {
-        entry.lastReconcileAt = Date.now();
-        entry.lastReconcileChanged = r.filesChanged;
-        const meta = readMeta(entry.root);
-        meta.lastReconcileAt = entry.lastReconcileAt;
-        meta.lastReconcileChanged = r.filesChanged;
-        writeMeta(entry.root, meta);
-      },
-      onSyncError: () => {
-        // transient sync errors are retried by the watcher
-      },
-    });
+    // A thrown watch() (not just a false return) degrades the watcher;
+    // it must not fail a tool call that has already synced.
+    let ok: boolean;
+    let startError: string | undefined;
+    try {
+      ok = entry.cg.watch({
+        debounceMs: 1000,
+        onDegraded: (reason: string) => {
+          entry.watcher = "degraded";
+          entry.watcherReason = reason;
+          this.notifyOnce(
+            `watcher-degraded:${entry.root}`,
+            "warning",
+            `codegraph: file watcher degraded (${reason}); the index is reconciled before every query`,
+          );
+        },
+        onSyncComplete: (r: { filesChanged: number; durationMs: number }) => {
+          entry.lastReconcileAt = Date.now();
+          entry.lastReconcileChanged = r.filesChanged;
+          const meta = readMeta(entry.root);
+          meta.lastReconcileAt = entry.lastReconcileAt;
+          meta.lastReconcileChanged = r.filesChanged;
+          writeMeta(entry.root, meta);
+        },
+        onSyncError: () => {
+          // transient sync errors are retried by the watcher
+        },
+      });
+    } catch (err) {
+      ok = false;
+      startError = err instanceof Error ? err.message : String(err);
+    }
     if (ok) {
       entry.watcher = "active";
     } else {
       entry.watcher = "degraded";
       entry.watcherReason =
-        entry.cg.getWatcherDegradedReason() ?? "watcher failed to start";
+        startError ??
+        entry.cg.getWatcherDegradedReason() ??
+        "watcher failed to start";
       this.notifyOnce(
         `watcher-degraded:${entry.root}`,
         "warning",

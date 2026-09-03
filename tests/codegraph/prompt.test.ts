@@ -8,8 +8,13 @@ import {
 import path from "node:path";
 import { buildFixture, type Fixture } from "./fixture";
 import codegraphExtension from "../../extensions/codegraph/index";
-import { CodegraphSession } from "../../extensions/codegraph/session";
+import {
+  CodegraphSession,
+  MARKER_NAME,
+} from "../../extensions/codegraph/session";
+import { CodeGraph, getCodeGraphDir } from "../../extensions/codegraph/codegraph";
 import { PROMPT_NOTE } from "../../extensions/codegraph/handlers";
+import fs from "node:fs";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -113,6 +118,45 @@ describe("system prompt note", () => {
       makeCtx(path.join(fixture.feature, "src")),
     ) as { systemPrompt?: string } | undefined;
     expect(result?.systemPrompt).toContain(PROMPT_NOTE);
+  });
+
+  it("is not added while another process is building the index", async () => {
+    const { handlers } = makeExtension();
+    const h = handlers.get("before_agent_start")!;
+
+    // A concurrent session mid-build: the database file exists (created by
+    // CodeGraph.init before the build) and a live build marker from another
+    // process is present. The note must not steer toward a tool that would
+    // block on the build.
+    const created = await CodeGraph.init(fixture.feature);
+    created.close();
+    const { spawn } = await import("node:child_process");
+    const peer = spawn("sleep", ["30"], { stdio: "ignore" });
+    const markerFile = path.join(
+      getCodeGraphDir(fixture.feature),
+      MARKER_NAME,
+    );
+    try {
+      fs.writeFileSync(
+        markerFile,
+        JSON.stringify({ pid: peer.pid, startedAt: Date.now(), mode: "build" }),
+      );
+      expect(h(event(), makeCtx(fixture.feature))).toBeUndefined();
+
+      // A dead marker is a crashed build, not a live one: the on-disk index
+      // is ready again and the note returns.
+      peer.kill();
+      await new Promise<void>((resolve) => {
+        peer.once("exit", () => resolve());
+      });
+      const result = h(event(), makeCtx(fixture.feature)) as {
+        systemPrompt?: string;
+      } | undefined;
+      expect(result?.systemPrompt).toContain(PROMPT_NOTE);
+    } finally {
+      if (!peer.killed) peer.kill();
+      fs.rmSync(markerFile, { force: true });
+    }
   });
 
   it("is not added for an unindexed worktree of an indexed repository", async () => {

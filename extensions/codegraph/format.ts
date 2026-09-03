@@ -183,18 +183,26 @@ function narrow(matches: Node[], file?: string, line?: number): Node[] {
   return out;
 }
 
+export interface SymbolResolution {
+  /** The matched nodes, capped so renderers stay bounded. */
+  nodes: Node[];
+  /** The number of matches before the cap (for honest headers). */
+  total: number;
+}
+
 /**
  * Resolve a symbol name to indexed nodes: exact name match first (all
  * definitions), then qualified-name filtering, then a fuzzy search fallback.
+ * The returned nodes are capped; `total` reports the true match count.
  */
 export function findSymbols(
   cg: CodeGraph,
   symbol: string,
   file?: string,
   line?: number,
-): Node[] {
+): SymbolResolution {
   const trimmed = symbol.trim();
-  if (!trimmed) return [];
+  if (!trimmed) return { nodes: [], total: 0 };
   const qualified = /[.\/:]/.test(trimmed);
   let matches: Node[];
   if (qualified) {
@@ -216,18 +224,16 @@ export function findSymbols(
     }
   }
   matches = narrow(matches, file, line);
+  const total = matches.length;
   if (matches.length > 8) {
-    matches = matches.slice(
-      0,
-      8,
-    );
+    matches = matches.slice(0, 8);
   }
-  return matches;
+  return { nodes: matches, total };
 }
 
-function renderAmbiguity(matches: Node[]): string[] {
+function renderAmbiguity(matches: Node[], total: number): string[] {
   const out = [
-    `Multiple definitions of "${matches[0].name}" (${matches.length} found). Re-call with a file or line to pick one:`,
+    `Multiple definitions of "${matches[0].name}" (${total} found). Re-call with a file or line to pick one:`,
   ];
   for (const n of matches.slice(0, 10)) {
     out.push(`  - ${n.name} @ ${nodeLoc(n)}`);
@@ -247,13 +253,13 @@ export function renderSymbol(
   file?: string,
   line?: number,
 ): string {
-  const matches = findSymbols(cg, symbol, file, line);
+  const { nodes: matches, total } = findSymbols(cg, symbol, file, line);
   if (matches.length === 0) {
     return `Symbol "${symbol}" not found`;
   }
   const lines: string[] = [];
   if (matches.length > 1) {
-    lines.push(...renderAmbiguity(matches));
+    lines.push(...renderAmbiguity(matches, total));
     lines.push("");
   }
   for (const node of matches) {
@@ -364,7 +370,7 @@ export function renderFileView(
   try {
     text = fs.readFileSync(resolved.abs, "utf-8");
   } catch {
-    return `File ${resolved.filePath} is in the index but missing on disk (it may have been deleted). Re-run a build to refresh the index.`;
+    return `File ${resolved.filePath} is in the index but missing on disk (it may have been deleted).`;
   }
   const lines = text.split("\n");
   const header = [
@@ -404,11 +410,11 @@ export function renderRefs(
   line?: number,
   limit?: number,
 ): string {
-  const matches = findSymbols(cg, symbol, file, line);
+  const { nodes: matches, total } = findSymbols(cg, symbol, file, line);
   if (matches.length === 0) return `Symbol "${symbol}" not found`;
   const label = direction === "callers" ? "callers" : "callees";
   if (matches.length > 1) {
-    const out: string[] = [...renderAmbiguity(matches), ""];
+    const out: string[] = [...renderAmbiguity(matches, total), ""];
     for (const node of matches.slice(0, 3)) {
       const refs = direction === "callers"
         ? cg.getCallers(node.id)
@@ -439,13 +445,10 @@ export function renderImpact(
   file?: string,
   line?: number,
 ): string {
-  const matches = findSymbols(cg, symbol, file, line);
+  const { nodes: matches, total } = findSymbols(cg, symbol, file, line);
   if (matches.length === 0) return `Symbol "${symbol}" not found`;
   if (matches.length > 1) {
-    return [
-      `Multiple definitions of "${matches[0].name}" (${matches.length} found). Re-call with a file or line to pick one:`,
-      ...matches.slice(0, 10).map((n) => `  - ${n.name} @ ${nodeLoc(n)}`),
-    ].join("\n");
+    return renderAmbiguity(matches, total).join("\n");
   }
   const node = matches[0];
   const subgraph = cg.getImpactRadius(node.id, depth);

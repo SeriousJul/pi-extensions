@@ -282,8 +282,8 @@ export function registerTools(pi: ExtensionAPI, session: CodegraphSession): void
       "file's current on-disk source with line numbers, exactly the shape read " +
       "gives you (`<n>\\t<line>`, safe to edit from), narrowable with " +
       "`offset`/`limit` just like read - PLUS a one-line note of which files " +
-      "depend on it. Same bytes as read, faster (served from the index), with " +
-      "the blast radius attached. Use it whenever you would read a source " +
+      "depend on it. Same bytes as read (always the current on-disk source, " +
+      "never stale), with the blast radius attached. Use it whenever you would read a source " +
       "file. (2) ONE SYMBOL you can name - its location, signature, verbatim " +
       "source (includeCode=true) and caller/callee trail in one call, so before " +
       "changing it you see what calls it and what your edit would break. For an " +
