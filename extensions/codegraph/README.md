@@ -14,12 +14,15 @@ Bun-compiled binary, and two things in codegraph break under it:
 1. **`node:sqlite` does not exist in the embedded Bun.** The patch
    rewrites codegraph's `require('node:sqlite')` calls to this repo's
    shim (`sqlite-shim.cjs`). The shim uses the real `node:sqlite` on
-   Node and emulates the same surface over `bun:sqlite` on bun, so one
-   installed tree works in both runtimes. On bun, the shim also sets
-   `CODEGRAPH_NO_FAST_INIT=1` automatically (unless the user set it),
-   because codegraph's fast-init path sets `journal_mode = MEMORY` from a
-   second connection, which `bun:sqlite` rejects with "database is
-   locked". Node keeps fast-init.
+   Node and on bun >= 1.4 (bun provides it), and emulates the same
+   surface over `bun:sqlite` on older bun, so one installed tree works
+   in every runtime. The env defaults (`env.ts`, imported before the
+   library loads) set `CODEGRAPH_NO_FAST_INIT=1` automatically on the
+   bun RUNTIME (unless the user set it), because codegraph's fast-init
+   path sets `journal_mode = MEMORY` from a second connection, which
+   bun's SQLite engine rejects with "database is locked" - whether it is
+   reached through `bun:sqlite` or through bun's `node:sqlite` shim.
+   Node keeps fast-init.
 2. **Worker threads in a Bun-compiled binary cannot resolve bare
    specifiers from on-disk `node_modules`** (the main thread can; plain
    bun can). codegraph's parse pool runs in worker threads and requires
@@ -38,6 +41,12 @@ the extension reports as its standard unavailable line.
 
 - `npm test` - vitest suite; runs on Node or bun
   (`bun node_modules/vitest/vitest.mjs run`).
+- `npm run smoke:node` - plain-Node smoke test: loads the extension
+  through jiti exactly like pi does (npm install mode), builds a real
+  index on a fixture repository, and runs real tool handlers. Guards
+  against Node ESM breakage that the in-process vitest suite masks
+  (codegraph's npm entry is a CJS re-export whose named exports Node
+  ESM cannot detect).
 - `bun test tests/codegraph/shim-bun.test.cts` - bun-only test that runs
   a real codegraph index build and query over the `bun:sqlite` shim
   path.
@@ -113,7 +122,7 @@ filesystem root are never indexed.
 | `CODEGRAPH_PI_SEEDING` | `0`/`false`/`off` disables seeding from sibling worktrees (first build is from scratch). |
 | `CODEGRAPH_NO_WATCH` | `1` disables the file watcher (reconcile before every query). |
 | `CODEGRAPH_PI_SQLITE_SHIM` | Set to `bun` to force the shim's `bun:sqlite` path (used by the bun-only test). |
-| `CODEGRAPH_NO_FAST_INIT` | Set to `1` automatically on the `bun:sqlite` shim path unless the user set it (see Runtime and installation). |
+| `CODEGRAPH_NO_FAST_INIT` | Set to `1` automatically on the bun runtime (any bun version) unless the user set it, because bun's SQLite engine rejects the fast-init journal-mode change (see Runtime and installation). |
 | `CODEGRAPH_TELEMETRY` | Set to `0` by this extension unless already set. |
 | `CODEGRAPH_NO_UPDATE_CHECK` | Set to `1` by this extension unless already set. |
 
@@ -132,8 +141,11 @@ codegraph is unavailable (<reason>). Use the built-in read and grep tools instea
 - `index.ts` - pi entrypoint: registers tools and the command, adds the
   system prompt note when the index is ready, closes instances on session
   shutdown.
-- `env.ts` - telemetry/update-check environment defaults, imported before
-  the codegraph library loads.
+- `codegraph.ts` - the single import point for the codegraph library:
+  loads it through CJS require (Node ESM cannot see the named exports of
+  the package's CJS re-export) and re-exports its values and types.
+- `env.ts` - telemetry/update-check/fast-init environment defaults,
+  imported before the codegraph library loads.
 - `sqlite-shim.cjs` - the `node:sqlite` compatibility shim used by the
   patched codegraph tree (pure CJS so every loader parses it).
 - `root.ts` - project root resolution and the unsafe-root guard.

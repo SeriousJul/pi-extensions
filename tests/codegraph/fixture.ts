@@ -6,7 +6,9 @@
  *   src/main.ts    - mainEntry() calls helper()
  *
  * feature worktree (branch `feature`):
- *   src/feature.ts - featureOnlySymbol()   (exists only on the branch)
+ *   src/feature.ts - featureOnlySymbol(), helper()  (exists only on the
+ *                   branch; helper is overloaded with src/shared.ts's helper,
+ *                   which exercises file/line disambiguation)
  *   src/main.ts    - mainEntry() also calls featureOnlySymbol()
  */
 import { execFileSync } from "node:child_process";
@@ -38,6 +40,10 @@ export function helper(x: number): number {
 
 export const FEATURE_ONLY = `export function featureOnlySymbol(): string {
   return "feature";
+}
+
+export function helper(x: number): number {
+  return x * 2;
 }
 `;
 

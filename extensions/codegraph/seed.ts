@@ -7,7 +7,7 @@
  * sibling's index open.
  */
 import "./env";
-import { getDatabasePath, isInitialized } from "@colbymchenry/codegraph";
+import { getDatabasePath, isInitialized } from "./codegraph";
 import fs from "node:fs";
 import shim from "./sqlite-shim.cjs";
 import { listWorktrees } from "./git";

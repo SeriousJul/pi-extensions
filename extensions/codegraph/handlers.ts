@@ -5,7 +5,7 @@
  */
 import path from "node:path";
 import { Type } from "typebox";
-import type { NodeKind } from "@colbymchenry/codegraph";
+import type { NodeKind } from "./codegraph";
 import {
   unavailableText,
   reasonOf,
@@ -43,13 +43,28 @@ const NodeKinds = Type.Optional(
       Type.Literal("route"),
       Type.Literal("component"),
     ]),
+    {
+      description:
+        "Filter by node kind(s) (upstream takes a single kind; this accepts any subset)",
+    },
   ),
 );
 
 const FileParam = Type.Optional(
   Type.String({
     description:
-      "A file path, or the /sub/dir part of an indexed path, to disambiguate a symbol name.",
+      "Narrow to the definition in this file (path or suffix) when several same-named symbols exist",
+  }),
+);
+
+const NodeFileParam = Type.Optional(
+  Type.String({
+    description:
+      'A file path or basename (e.g. "harness.rs", "src/auth/session.ts"). ' +
+      "Pass it ALONE (no symbol) to READ the file like the built-in read " +
+      "tool - its full source with line numbers + which files depend on it. " +
+      "Or pass it WITH a symbol to disambiguate an overloaded name to the " +
+      "definition in this file.",
   }),
 );
 
@@ -141,7 +156,10 @@ export function registerTools(pi: ExtensionAPI, session: CodegraphSession): void
     promptSnippet:
       "codegraph_search: find symbols by name (locations only).",
     parameters: Type.Object({
-      query: Type.String({ description: "Symbol name or partial name to search for." }),
+      query: Type.String({
+        description:
+          'Symbol name or partial name (e.g., "auth", "signIn", "UserService")',
+      }),
       kind: NodeKinds,
       limit: Type.Optional(
         Type.Integer({ description: "Maximum results (default 10).", default: 10 }),
@@ -167,9 +185,18 @@ export function registerTools(pi: ExtensionAPI, session: CodegraphSession): void
     description: "List functions that call <symbol>. For the full flow, use codegraph_explore.",
     promptSnippet: "codegraph_callers: list what calls a symbol.",
     parameters: Type.Object({
-      symbol: Type.String({ description: "Name of the function or method." }),
+      symbol: Type.String({
+        description:
+          "Name of the function, method, or class to find callers for",
+      }),
       file: FileParam,
       line: LineParam,
+      limit: Type.Optional(
+        Type.Integer({
+          description: "Maximum number of callers to return (default: 20)",
+          default: 20,
+        }),
+      ),
     }),
     execute: makeExecute(
       session,
@@ -180,6 +207,7 @@ export function registerTools(pi: ExtensionAPI, session: CodegraphSession): void
           "callers",
           params.file !== undefined ? String(params.file) : undefined,
           typeof params.line === "number" ? params.line : undefined,
+          typeof params.limit === "number" ? params.limit : undefined,
         ),
     ),
   });
@@ -187,12 +215,21 @@ export function registerTools(pi: ExtensionAPI, session: CodegraphSession): void
   pi.registerTool({
     name: "codegraph_callees",
     label: "codegraph callees",
-    description: "List functions called by <symbol>. For the full flow, use codegraph_explore.",
+    description: "List functions that <symbol> calls. For the full flow, use codegraph_explore.",
     promptSnippet: "codegraph_callees: list what a symbol calls.",
     parameters: Type.Object({
-      symbol: Type.String({ description: "Name of the function or method." }),
+      symbol: Type.String({
+        description:
+          "Name of the function, method, or class to find callees for",
+      }),
       file: FileParam,
       line: LineParam,
+      limit: Type.Optional(
+        Type.Integer({
+          description: "Maximum number of callees to return (default: 20)",
+          default: 20,
+        }),
+      ),
     }),
     execute: makeExecute(
       session,
@@ -203,6 +240,7 @@ export function registerTools(pi: ExtensionAPI, session: CodegraphSession): void
           "callees",
           params.file !== undefined ? String(params.file) : undefined,
           typeof params.line === "number" ? params.line : undefined,
+          typeof params.limit === "number" ? params.limit : undefined,
         ),
     ),
   });
@@ -210,12 +248,14 @@ export function registerTools(pi: ExtensionAPI, session: CodegraphSession): void
   pi.registerTool({
     name: "codegraph_impact",
     label: "codegraph impact",
-    description: "Show what could break if <symbol> changes. Lists dependent code by depth.",
+    description: "List symbols affected by changing <symbol>. Use before a refactor.",
     promptSnippet: "codegraph_impact: show what breaks when a symbol changes.",
     parameters: Type.Object({
-      symbol: Type.String({ description: "Name of the symbol to analyze." }),
+      symbol: Type.String({
+        description: "Name of the symbol to analyze impact for",
+      }),
       depth: Type.Optional(
-        Type.Integer({ description: "How many hops of dependency traversal to traverse (default 2).", default: 2, minimum: 1 }),
+        Type.Integer({ description: "How many levels of dependencies to traverse (default: 2)", default: 2, minimum: 1 }),
       ),
       file: FileParam,
       line: LineParam,
@@ -237,31 +277,73 @@ export function registerTools(pi: ExtensionAPI, session: CodegraphSession): void
     name: "codegraph_node",
     label: "codegraph node",
     description:
-      "Read a single file or symbol. With `file`: reads the file like the Read tool (line numbers, offset/limit) plus a dependents header. With `symbol`: location, signature, body (includeCode), and top callers/callees.",
+      "Two modes. (1) READ A FILE - use INSTEAD of the built-in read tool: " +
+      "pass `file` (a path or basename) with no `symbol` and it returns that " +
+      "file's current on-disk source with line numbers, exactly the shape read " +
+      "gives you (`<n>\\t<line>`, safe to edit from), narrowable with " +
+      "`offset`/`limit` just like read - PLUS a one-line note of which files " +
+      "depend on it. Same bytes as read, faster (served from the index), with " +
+      "the blast radius attached. Use it whenever you would read a source " +
+      "file. (2) ONE SYMBOL you can name - its location, signature, verbatim " +
+      "source (includeCode=true) and caller/callee trail in one call, so before " +
+      "changing it you see what calls it and what your edit would break. For an " +
+      "AMBIGUOUS name it returns EVERY matching definition's body in one call " +
+      "(so you never read a file to find the right overload); pass " +
+      "`file`/`line` to pin one. Use codegraph_explore for several related " +
+      "symbols or the full flow.",
     promptSnippet: "codegraph_node: read one file or symbol with graph context.",
     parameters: Type.Object({
-      file: FileParam,
+      file: NodeFileParam,
       symbol: Type.Optional(
-        Type.String({ description: "Name of the symbol to read." }),
+        Type.String({
+          description:
+            "Name of the symbol to read (symbol mode). Omit it and pass " +
+            "`file` alone to read a whole file like the built-in read tool.",
+        }),
       ),
       includeCode: Type.Optional(
         Type.Boolean({
-          description: "Include the full source code (default: true).",
+          description:
+            "Symbol mode: include the symbol's full body (default: true, " +
+            "differs from upstream's default: false; the spec mandates it). " +
+            "Ignored in file mode, which always returns source unless " +
+            "`symbolsOnly` is set.",
         }),
       ),
       offset: Type.Optional(
-        Type.Integer({ description: "Starting line number (file mode, default 1).", default: 1, minimum: 1 }),
+        Type.Integer({ description: "File mode: 1-based line to start reading from, exactly like the read tool's offset. Defaults to the start of the file.", default: 1, minimum: 1 }),
       ),
       limit: Type.Optional(
-        Type.Integer({ description: "Maximum lines to return (file mode, default 2000).", default: 2000, minimum: 1 }),
+        Type.Integer({ description: "File mode: maximum number of lines to return, exactly like the read tool's limit. Defaults to the whole file (capped at 2000 lines, like read).", default: 2000, minimum: 1 }),
       ),
       symbolsOnly: Type.Optional(
         Type.Boolean({
-          description: "Return only the structural map: signatures with line ranges, no bodies (file mode).",
+          description:
+            "File mode: return just the file's symbol map + dependents (a cheap structural overview) instead of its source.",
+        }),
+      ),
+      line: Type.Optional(
+        Type.Integer({
+          minimum: 1,
+          description:
+            "Symbol mode only: disambiguate to the definition at/around this line (use with the file:line a trail showed you).",
         }),
       ),
     }),
     execute: makeExecute(session, (info, params) => {
+      // Symbol mode wins when both are given: `file` then narrows the symbol
+      // to the definition in that file (the spec's file+symbol priority).
+      // File mode only when `symbol` is absent.
+      if (params.symbol !== undefined) {
+        return renderSymbol(
+          info.cg,
+          info.root,
+          String(params.symbol),
+          params.includeCode !== false,
+          params.file !== undefined ? String(params.file) : undefined,
+          typeof params.line === "number" ? params.line : undefined,
+        );
+      }
       if (params.file !== undefined) {
         return renderFileView(
           info.cg,
@@ -272,16 +354,6 @@ export function registerTools(pi: ExtensionAPI, session: CodegraphSession): void
           params.symbolsOnly === true,
         );
       }
-      if (params.symbol !== undefined) {
-        return renderSymbol(
-          info.cg,
-          info.root,
-          String(params.symbol),
-          params.includeCode !== false,
-          undefined,
-          undefined,
-        );
-      }
       return "Either `file` or `symbol` must be provided.";
     }, true),
   });
@@ -290,14 +362,28 @@ export function registerTools(pi: ExtensionAPI, session: CodegraphSession): void
     name: "codegraph_explore",
     label: "codegraph explore",
     description:
-      "Understand specific code areas or tasks. Inspect relevant symbols' source, call paths, and relationships in one call. Prefer this over multiple codegraph_node calls when exploring how several symbols work together.",
+      "PRIMARY TOOL - call FIRST for almost any question OR before an edit: " +
+      "how does X work, architecture, a bug, where/what is X, surveying an " +
+      "area, or the symbols you are about to change. Returns the verbatim " +
+      "source of the relevant symbols grouped by file in ONE capped call " +
+      "(read-equivalent - treat the shown source as already read; do NOT " +
+      "re-open those files), plus the call path among them. Query can be a " +
+      "natural-language question OR a bag of symbol/file names. Usually the " +
+      "ONLY call you need - more accurate context, in far fewer tokens and " +
+      "round-trips than a search/read/grep loop.",
     promptSnippet: "codegraph_explore: get source and call paths for an area in one call.",
     parameters: Type.Object({
       query: Type.String({
-        description: "Symbol names, file names, or short natural language.",
+        description:
+          "Symbol names, file names, or short code terms to explore (e.g., " +
+          "\"AuthService loginUser session-manager\", \"GraphTraverser BFS " +
+          "impact traversal.ts\"). For a flow question, name the symbols " +
+          "spanning the flow (e.g. \"mutateElement renderScene\"). A " +
+          "natural-language question works too - no prior codegraph_search " +
+          "needed.",
       }),
       maxFiles: Type.Optional(
-        Type.Integer({ description: "Maximum number of files to include source for (default 12).", default: 12, minimum: 1 }),
+        Type.Integer({ description: "Maximum number of files to include source code from (default: 12)", default: 12, minimum: 1 }),
       ),
     }),
     execute: makeExecute(session, (info, params) =>
@@ -337,8 +423,11 @@ function statusLines(session: CodegraphSession, ctx: ExtensionContext): string[]
     }
     if (s.instanceOpen && s.stats) {
       lines.push(
-        `  index: ${s.stats.fileCount} files, ${s.stats.nodeCount} symbols`,
+        `  index: ${s.stats.fileCount} files, ${s.stats.nodeCount} nodes, ${s.stats.edgeCount} edges`,
       );
+      if (s.indexState) {
+        lines.push(`  index state: ${s.indexState}`);
+      }
     } else {
       lines.push("  index: on disk (open on first use)");
     }

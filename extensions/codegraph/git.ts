@@ -99,10 +99,3 @@ export function listWorktrees(root: string): Worktree[] {
   push();
   return worktrees;
 }
-
-/** True when `candidate` is a worktree of the same repository as `root`. */
-export function isSiblingWorktree(root: string, candidate: string): boolean {
-  const worktrees = listWorktrees(root);
-  if (worktrees.length === 0) return false;
-  return worktrees.some((w) => w.path === candidate);
-}

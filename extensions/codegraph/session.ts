@@ -20,12 +20,8 @@ import {
   getDatabasePath,
   getCodeGraphDir,
   isInitialized,
-} from "@colbymchenry/codegraph";
-import type {
-  GraphStats,
-  IndexProgress,
-  SyncResult,
-} from "@colbymchenry/codegraph";
+} from "./codegraph";
+import type { GraphStats, IndexProgress, SyncResult } from "./codegraph";
 import fs from "node:fs";
 import path from "node:path";
 import { gitCommonDir, isGitWorktree, listWorktrees } from "./git";

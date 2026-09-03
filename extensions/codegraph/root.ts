@@ -8,7 +8,7 @@
  * treated as absent and a local index is created (seeded from a sibling).
  */
 import "./env";
-import { findNearestCodeGraphRoot, isInitialized } from "@colbymchenry/codegraph";
+import { findNearestCodeGraphRoot } from "./codegraph";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";

@@ -9,7 +9,7 @@ import type {
   NodeKind,
   SearchResult,
   Subgraph,
-} from "@colbymchenry/codegraph";
+} from "./codegraph";
 import fs from "node:fs";
 import path from "node:path";
 import { CodegraphUnavailable } from "./root";
@@ -83,7 +83,14 @@ export interface EdgeRef {
   edge: Edge;
 }
 
-function renderEdges(label: string, refs: EdgeRef[]): string[] {
+const MAX_EDGE_REFS = 30;
+
+function renderEdges(
+  label: string,
+  refs: EdgeRef[],
+  limit = 20,
+): string[] {
+  const max = Math.min(limit, MAX_EDGE_REFS);
   const out = [`${label} (${refs.length}):`];
   if (refs.length === 0) {
     out.push(`  (none found)`);
@@ -97,13 +104,13 @@ function renderEdges(label: string, refs: EdgeRef[]): string[] {
     (a, b) =>
       (bySource.get(b.node.id) ?? 0) - (bySource.get(a.node.id) ?? 0),
   );
-  for (const { node, edge } of ordered.slice(0, 30)) {
+  for (const { node, edge } of ordered.slice(0, max)) {
     const line = edge.line ? nodeLoc(node) : node.filePath;
     const via = edge.kind === "calls" ? "" : ` [${edge.kind}]`;
     out.push(`  ${node.name} @ ${line}${via}`);
   }
-  if (refs.length > 30) {
-    out.push(`  ... ${refs.length - 30} more`);
+  if (refs.length > max) {
+    out.push(`  ... ${refs.length - max} more`);
   }
   return out;
 }
@@ -395,6 +402,7 @@ export function renderRefs(
   direction: "callers" | "callees",
   file?: string,
   line?: number,
+  limit?: number,
 ): string {
   const matches = findSymbols(cg, symbol, file, line);
   if (matches.length === 0) return `Symbol "${symbol}" not found`;
@@ -406,7 +414,7 @@ export function renderRefs(
         ? cg.getCallers(node.id)
         : cg.getCallees(node.id);
       out.push(`--- ${node.name} @ ${nodeLoc(node)} ---`);
-      out.push(...renderEdges(label, refs));
+      out.push(...renderEdges(label, refs, limit));
       out.push("");
     }
     return out.join("\n");
@@ -416,7 +424,7 @@ export function renderRefs(
   const out: string[] = [
     `${node.name} (${node.kind}) @ ${nodeLoc(node)}:`,
   ];
-  out.push(...renderEdges(label, refs));
+  out.push(...renderEdges(label, refs, limit));
   return out.join("\n");
 }
 
@@ -495,8 +503,9 @@ export async function renderExplore(
     byFile.set(node.filePath, list);
   }
   const files = [...byFile.entries()].sort((a, b) => b[1].length - a[1].length);
+  const shown = files.slice(0, maxFiles);
 
-  for (const [filePath, nodes] of files) {
+  for (const [filePath, nodes] of shown) {
     out.push(`## ${filePath}`);
     for (const n of nodes.sort((a, b) => a.startLine - b.startLine)) {
       const sig = n.signature ? ` ${n.signature}` : "";
@@ -531,6 +540,13 @@ export async function renderExplore(
     } catch {
       out.push(`  (source file missing on disk: ${filePath})`);
     }
+    out.push("");
+  }
+
+  if (files.length > shown.length) {
+    out.push(
+      `... ${files.length - shown.length} more file(s) omitted (maxFiles: ${maxFiles})`,
+    );
     out.push("");
   }
 

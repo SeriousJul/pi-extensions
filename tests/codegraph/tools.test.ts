@@ -208,6 +208,56 @@ describe("tool outputs", () => {
     expect(text).toContain("mainEntry");
   });
 
+  it("explore honors maxFiles: caps the file sections and reports the omission", async () => {
+    const full = await h.call("codegraph_explore", { query: "helper mainEntry" });
+    const fullFiles = full
+      .split("\n")
+      .filter((l) => l.startsWith("## ")).length;
+    expect(fullFiles).toBeGreaterThanOrEqual(2);
+    expect(full).not.toContain("omitted");
+
+    const capped = await h.call("codegraph_explore", {
+      query: "helper mainEntry",
+      maxFiles: 1,
+    });
+    const cappedFiles = capped
+      .split("\n")
+      .filter((l) => l.startsWith("## ")).length;
+    expect(cappedFiles).toBe(1);
+    expect(capped).toContain("more file(s) omitted (maxFiles: 1)");
+  });
+
+  it("node with symbol+file runs symbol mode narrowed to the file, not file mode", async () => {
+    // In the feature worktree, `helper` has two definitions (src/shared.ts
+    // and src/feature.ts). With the old file-first precedence this call
+    // returned the whole-file view of feature.ts; symbol mode must win and
+    // narrow to the definition in that file.
+    const text = await h.call(
+      "codegraph_node",
+      { symbol: "helper", file: "src/feature.ts" },
+      fixture.feature,
+    );
+    expect(text).toContain("helper (function)");
+    expect(text).toContain("src/feature.ts");
+    expect(text).toContain("return x * 2");
+    expect(text).toContain("Top callers");
+    expect(text).not.toContain("File: src/feature.ts");
+  });
+
+  it("node with symbol+line narrows to the definition at that line", async () => {
+    // In the feature worktree, `helper` is overloaded. Line 3 is inside
+    // src/shared.ts's helper (lines 3-5) but not feature.ts's (lines 5-7).
+    const text = await h.call(
+      "codegraph_node",
+      { symbol: "helper", line: 3 },
+      fixture.feature,
+    );
+    expect(text).not.toContain("Multiple definitions");
+    expect(text).toContain("src/shared.ts");
+    expect(text).toContain("return x + ANSWER");
+    expect(text).not.toContain("return x * 2");
+  });
+
   it("serves each worktree from its own index", async () => {
     await h.call("codegraph_search", { query: "helper" }, fixture.main);
     const text = await h.call(
@@ -258,6 +308,16 @@ describe("/codegraph command", () => {
     expect(joined).toContain("codegraph: " + fixture.main);
     expect(joined).toContain("index: none yet");
     expect(ui.widgets.some(([key]) => key === "codegraph")).toBe(true);
+  });
+
+  it("status reports file/node/edge counts and index state once ready", async () => {
+    const h = makeHarness(newSession(), fixture.main);
+    await h.session.ensureReady(fixture.main);
+    const ui = freshUi();
+    await h.commands.get("codegraph")!.handler("", makeCtx(fixture.main, ui));
+    const joined = ui.notifications.map(([, m]) => m).join("\n");
+    expect(joined).toMatch(/index: \d+ files, \d+ nodes, \d+ edges/);
+    expect(joined).toContain("index state:");
   });
 
   it("uninit confirms before deleting anything", async () => {
