@@ -12,6 +12,11 @@
  * marker waits; a process that finds a dead marker adopts the on-disk state
  * and converges it with a sync. Two concurrent ensureReady calls in the same
  * process share one in-flight promise, so a build always runs once.
+ *
+ * The internal protocols live in their own modules: the build marker
+ * (marker.ts), the watcher policy (watcher.ts), and the per-index meta
+ * record (index-meta.ts). This class keeps the state machine and the
+ * public interface.
  */
 import "./env";
 import {
@@ -25,31 +30,26 @@ import type { GraphStats, IndexProgress, SyncResult } from "./codegraph";
 import fs from "node:fs";
 import path from "node:path";
 import { gitCommonDir, isGitWorktree, listWorktrees } from "./git";
+import { clearSeedRecord, readMeta, recordReconcile, recordSeed } from "./index-meta";
+import {
+  BuildWaitTimeout,
+  clearMarker,
+  isBuildInFlight,
+  isLivePeer,
+  readMarker,
+  waitForBuild as markerWaitForBuild,
+  writeMarker,
+} from "./marker";
 import { CodegraphUnavailable, resolveRoot, unsafeRootReason } from "./root";
 import { findSeedSource, seedDb } from "./seed";
 import shim from "./sqlite-shim.cjs";
+import { startWatcher as startCodegraphWatcher, type WatcherState } from "./watcher";
 
-/** Exported for tests that simulate another process's live build. */
-export const MARKER_NAME = "pi-codegraph-build.json";
-const META_NAME = "pi-codegraph-meta.json";
+export type { WatcherState };
+
 const LOCK_RETRY_MS = 500;
 const LOCK_TIMEOUT_MS = 10 * 60 * 1000;
 const BUILD_WAIT_TIMEOUT_MS = 30 * 60 * 1000;
-
-interface BuildMarker {
-  pid: number;
-  startedAt: number;
-  mode: "build" | "seed";
-}
-
-interface Meta {
-  seedSource?: string;
-  seededAt?: number;
-  lastReconcileAt?: number;
-  lastReconcileChanged?: number;
-}
-
-export type WatcherState = "active" | "degraded" | "disabled" | "off";
 
 interface InstanceEntry {
   cg: CodeGraph;
@@ -101,96 +101,6 @@ export interface SessionUi {
 
 const sleep = (ms: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-function readJson<T>(file: string): T | undefined {
-  try {
-    return JSON.parse(fs.readFileSync(file, "utf-8")) as T;
-  } catch {
-    return undefined;
-  }
-}
-
-function writeJson(file: string, value: unknown): void {
-  try {
-    fs.writeFileSync(file, JSON.stringify(value));
-  } catch {
-    // metadata is advisory - never fail a query over it
-  }
-}
-
-function markerPath(root: string): string {
-  return path.join(getCodeGraphDir(root), MARKER_NAME);
-}
-
-function readMarker(root: string): BuildMarker | undefined {
-  const marker = readJson<BuildMarker>(markerPath(root));
-  return marker && typeof marker.pid === "number" ? marker : undefined;
-}
-
-function writeMarker(root: string, mode: "build" | "seed"): void {
-  fs.writeFileSync(
-    markerPath(root),
-    JSON.stringify({ pid: process.pid, startedAt: Date.now(), mode }),
-  );
-}
-
-function clearMarker(root: string): void {
-  fs.rmSync(markerPath(root), { force: true });
-}
-
-function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-
-function metaPath(root: string): string {
-  return path.join(getCodeGraphDir(root), META_NAME);
-}
-
-function readMeta(root: string): Meta {
-  return readJson<Meta>(metaPath(root)) ?? {};
-}
-
-function writeMeta(root: string, meta: Meta): void {
-  writeJson(metaPath(root), meta);
-}
-
-let wslCache: boolean | undefined;
-function isWsl(): boolean {
-  if (wslCache === undefined) {
-    wslCache = Boolean(
-      process.env.WSL_DISTRO_NAME || process.env.WSL_INTERACTIVE,
-    );
-    if (!wslCache) {
-      try {
-        wslCache = /microsoft|wsl/i.test(
-          fs.readFileSync("/proc/version", "utf-8"),
-        );
-      } catch {
-        // not WSL
-      }
-    }
-  }
-  return wslCache;
-}
-
-/**
- * Mirrors codegraph's own watch policy: recursive fs.watch is pathologically
- * slow on WSL2 /mnt drives, and CODEGRAPH_NO_WATCH=1 opts out explicitly.
- */
-export function watchDisabledReason(root: string): string | null {
-  if (process.env.CODEGRAPH_NO_WATCH === "1") {
-    return "CODEGRAPH_NO_WATCH=1";
-  }
-  if (isWsl() && root.startsWith("/mnt/")) {
-    return "WSL2 /mnt drive";
-  }
-  return null;
-}
 
 function envSwitch(name: string, fallback: boolean): boolean {
   const value = process.env[name];
@@ -402,7 +312,7 @@ export class CodegraphSession {
       const { root, needsCreate } = resolveRoot(dir);
       if (needsCreate) return this.instances.has(root);
       const marker = readMarker(root);
-      if (marker && (marker.pid === process.pid || isPidAlive(marker.pid))) {
+      if (marker && isBuildInFlight(marker)) {
         return false;
       }
       return true;
@@ -476,10 +386,7 @@ export class CodegraphSession {
         );
         throw new CodegraphUnavailable(`index rebuild failed: ${detail}`, true);
       }
-      const meta = readMeta(root);
-      delete meta.seedSource;
-      delete meta.seededAt;
-      writeMeta(root, meta);
+      clearSeedRecord(root);
       const entry = this.register(cg, root);
       entry.firstSyncDone = true;
       this.startWatcher(entry);
@@ -547,27 +454,12 @@ export class CodegraphSession {
       await seedDb(root, source);
       cg = await CodeGraph.open(root, { sync: false });
       const entry = this.register(cg, root);
-      this.status(`codegraph: reconciling seeded index at ${root}`);
-      const res = await this.runSync(entry);
-      const changed = res.filesAdded + res.filesModified + res.filesRemoved;
-      const meta = readMeta(root);
-      meta.seedSource = source;
-      meta.seededAt = Date.now();
-      writeMeta(root, meta);
-      this.notifyOnce(
-        `seeded:${root}`,
-        "info",
-        `codegraph: seeded index for ${root} from ${source}; reconcile changed ${changed} file${changed === 1 ? "" : "s"}`,
+      return await this.finishSeed(
+        entry,
+        source,
+        resolved.mainCheckout,
+        resolved.isMainCheckout,
       );
-      entry.firstSyncDone = true;
-      this.startWatcher(entry);
-      return {
-        cg,
-        root,
-        mainCheckout: resolved.mainCheckout,
-        isMainCheckout: resolved.isMainCheckout,
-        justSeeded: { source, changedFiles: changed },
-      };
     } finally {
       clearMarker(root);
       this.status(undefined);
@@ -693,11 +585,7 @@ export class CodegraphSession {
       try {
         if (isInitialized(root)) {
           const marker = readMarker(root);
-          if (
-            marker &&
-            marker.pid !== process.pid &&
-            isPidAlive(marker.pid)
-          ) {
+          if (marker && isLivePeer(marker)) {
             return { mode: "wait" };
           }
           clearMarker(root);
@@ -728,30 +616,23 @@ export class CodegraphSession {
    * removed and the on-disk state is adopted instead.
    */
   private async waitForBuild(root: string): Promise<void> {
-    const deadline = Date.now() + BUILD_WAIT_TIMEOUT_MS;
-    for (;;) {
-      const marker = readMarker(root);
-      if (!marker) return;
-      if (marker.pid !== process.pid && !isPidAlive(marker.pid)) {
-        clearMarker(root);
-        return;
-      }
-      this.status(
-        `codegraph: waiting for the index build at ${root} (pid ${marker.pid})`,
+    try {
+      await markerWaitForBuild(root, {
+        timeoutMs: BUILD_WAIT_TIMEOUT_MS,
+        onStatus: (text) => this.status(text),
+      });
+    } catch (err) {
+      if (!(err instanceof BuildWaitTimeout)) throw err;
+      this.status(undefined);
+      this.notifyOnce(
+        `build-wait-timeout:${root}`,
+        "warning",
+        `codegraph: timed out waiting for the index build at ${root}`,
       );
-      if (Date.now() > deadline) {
-        this.status(undefined);
-        this.notifyOnce(
-          `build-wait-timeout:${root}`,
-          "warning",
-          `codegraph: timed out waiting for the index build at ${root}`,
-        );
-        throw new CodegraphUnavailable(
-          "timed out waiting for another codegraph process to finish the index",
-          true,
-        );
-      }
-      await sleep(300);
+      throw new CodegraphUnavailable(
+        "timed out waiting for another codegraph process to finish the index",
+        true,
+      );
     }
   }
 
@@ -762,9 +643,41 @@ export class CodegraphSession {
    */
   private async awaitBuildMarker(root: string): Promise<void> {
     const marker = readMarker(root);
-    if (marker && marker.pid !== process.pid && isPidAlive(marker.pid)) {
+    if (marker && isLivePeer(marker)) {
       await this.waitForBuild(root);
     }
+  }
+
+  /**
+   * The shared post-seed completion, used by the manual reseed path and the
+   * auto create-or-seed path: reconcile the seeded index, record the seed,
+   * notify, mark the first sync done, start the watcher, and return the
+   * ReadyInfo.
+   */
+  private async finishSeed(
+    entry: InstanceEntry,
+    seedSource: string,
+    mainCheckout?: string,
+    isMainCheckout = false,
+  ): Promise<ReadyInfo> {
+    this.status(`codegraph: reconciling seeded index at ${entry.root}`);
+    const res = await this.runSync(entry);
+    const changed = res.filesAdded + res.filesModified + res.filesRemoved;
+    recordSeed(entry.root, seedSource);
+    this.notifyOnce(
+      `seeded:${entry.root}`,
+      "info",
+      `codegraph: seeded index for ${entry.root} from ${seedSource}; reconcile changed ${changed} file${changed === 1 ? "" : "s"}`,
+    );
+    entry.firstSyncDone = true;
+    this.startWatcher(entry);
+    return {
+      cg: entry.cg,
+      root: entry.root,
+      mainCheckout,
+      isMainCheckout,
+      justSeeded: { source: seedSource, changedFiles: changed },
+    };
   }
 
   /** Run the full build or the post-seed reconcile for a prepared index. */
@@ -791,27 +704,7 @@ export class CodegraphSession {
     const entry = this.register(cg, root);
     try {
       if (seedSource) {
-        this.status(`codegraph: reconciling seeded index at ${root}`);
-        const res = await this.runSync(entry);
-        const changed = res.filesAdded + res.filesModified + res.filesRemoved;
-        const meta = readMeta(root);
-        meta.seedSource = seedSource;
-        meta.seededAt = Date.now();
-        writeMeta(root, meta);
-        this.notifyOnce(
-          `seeded:${root}`,
-          "info",
-          `codegraph: seeded index for ${root} from ${seedSource}; reconcile changed ${changed} file${changed === 1 ? "" : "s"}`,
-        );
-        entry.firstSyncDone = true;
-        this.startWatcher(entry);
-        return {
-          cg,
-          root,
-          mainCheckout,
-          isMainCheckout,
-          justSeeded: { source: seedSource, changedFiles: changed },
-        };
+        return this.finishSeed(entry, seedSource, mainCheckout, isMainCheckout);
       }
       this.status(`codegraph: building index at ${root}`);
       const res = await cg.indexAll({
@@ -880,71 +773,40 @@ export class CodegraphSession {
       );
     }
     const changed = res.filesAdded + res.filesModified + res.filesRemoved;
-    entry.lastReconcileAt = Date.now();
+    entry.lastReconcileAt = recordReconcile(entry.root, changed);
     entry.lastReconcileChanged = changed;
-    const meta = readMeta(entry.root);
-    meta.lastReconcileAt = entry.lastReconcileAt;
-    meta.lastReconcileChanged = changed;
-    writeMeta(entry.root, meta);
     return res;
   }
 
   private startWatcher(entry: InstanceEntry): void {
-    const disabled = watchDisabledReason(entry.root);
-    if (disabled) {
-      entry.watcher = "disabled";
-      entry.watcherReason = disabled;
+    const { state, reason } = startCodegraphWatcher(entry.cg, entry.root, {
+      onDegraded: (r: string) => {
+        entry.watcher = "degraded";
+        entry.watcherReason = r;
+        this.notifyOnce(
+          `watcher-degraded:${entry.root}`,
+          "warning",
+          `codegraph: file watcher degraded (${r}); the index is reconciled before every query`,
+        );
+      },
+      onSyncComplete: (filesChanged: number, reconciledAt: number) => {
+        entry.lastReconcileChanged = filesChanged;
+        entry.lastReconcileAt = reconciledAt;
+      },
+    });
+    entry.watcher = state;
+    entry.watcherReason = reason;
+    if (state === "disabled") {
       this.notifyOnce(
         `watcher-disabled:${entry.root}`,
         "warning",
-        `codegraph: file watcher disabled on this filesystem (${disabled}); the index is reconciled before every query`,
+        `codegraph: file watcher disabled on this filesystem (${reason}); the index is reconciled before every query`,
       );
-      return;
-    }
-    // A thrown watch() (not just a false return) degrades the watcher;
-    // it must not fail a tool call that has already synced.
-    let ok: boolean;
-    let startError: string | undefined;
-    try {
-      ok = entry.cg.watch({
-        debounceMs: 1000,
-        onDegraded: (reason: string) => {
-          entry.watcher = "degraded";
-          entry.watcherReason = reason;
-          this.notifyOnce(
-            `watcher-degraded:${entry.root}`,
-            "warning",
-            `codegraph: file watcher degraded (${reason}); the index is reconciled before every query`,
-          );
-        },
-        onSyncComplete: (r: { filesChanged: number; durationMs: number }) => {
-          entry.lastReconcileAt = Date.now();
-          entry.lastReconcileChanged = r.filesChanged;
-          const meta = readMeta(entry.root);
-          meta.lastReconcileAt = entry.lastReconcileAt;
-          meta.lastReconcileChanged = r.filesChanged;
-          writeMeta(entry.root, meta);
-        },
-        onSyncError: () => {
-          // transient sync errors are retried by the watcher
-        },
-      });
-    } catch (err) {
-      ok = false;
-      startError = err instanceof Error ? err.message : String(err);
-    }
-    if (ok) {
-      entry.watcher = "active";
-    } else {
-      entry.watcher = "degraded";
-      entry.watcherReason =
-        startError ??
-        entry.cg.getWatcherDegradedReason() ??
-        "watcher failed to start";
+    } else if (state === "degraded") {
       this.notifyOnce(
         `watcher-degraded:${entry.root}`,
         "warning",
-        `codegraph: file watcher unavailable (${entry.watcherReason}); the index is reconciled before every query`,
+        `codegraph: file watcher unavailable (${reason}); the index is reconciled before every query`,
       );
     }
   }

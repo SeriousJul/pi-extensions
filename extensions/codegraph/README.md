@@ -174,8 +174,15 @@ codegraph is unavailable (<reason>). Use the built-in read and grep tools instea
 - `root.ts` - project root resolution and the unsafe-root guard.
 - `git.ts` - git worktree helpers (sibling discovery).
 - `seed.ts` - seed source discovery and the database copy.
+- `marker.ts` - the cross-process build marker: file format, read/write/
+  clear, pid liveness, and the wait-for-peer-build loop.
+- `index-meta.ts` - the per-index advisory meta record (seed source, last
+  reconcile) in `pi-codegraph-meta.json`.
+- `watcher.ts` - the watcher policy: disabled reasons (`CODEGRAPH_NO_WATCH`,
+  WSL2 `/mnt`), start, and degradation handling.
 - `session.ts` - `CodegraphSession`: the per-session index manager and the
   single boundary every tool call goes through (`ensureReady`/`queryReady`).
+  The marker, watcher, and meta protocols live in the modules above.
 - `staleness.ts` - the point-of-emission staleness gate (size + mtime +
   content hash against the indexed record) that keeps the renderers from
   slicing a file that drifted after its last index sync.

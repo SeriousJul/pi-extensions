@@ -8,13 +8,10 @@ import {
 import path from "node:path";
 import { buildFixture, type Fixture } from "./fixture";
 import codegraphExtension from "../../extensions/codegraph/index";
-import {
-  CodegraphSession,
-  MARKER_NAME,
-} from "../../extensions/codegraph/session";
-import { CodeGraph, getCodeGraphDir } from "../../extensions/codegraph/codegraph";
+import { CodegraphSession } from "../../extensions/codegraph/session";
+import { clearMarker, writeMarker } from "../../extensions/codegraph/marker";
+import { CodeGraph } from "../../extensions/codegraph/codegraph";
 import { PROMPT_NOTE } from "../../extensions/codegraph/handlers";
-import fs from "node:fs";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -132,15 +129,8 @@ describe("system prompt note", () => {
     created.close();
     const { spawn } = await import("node:child_process");
     const peer = spawn("sleep", ["30"], { stdio: "ignore" });
-    const markerFile = path.join(
-      getCodeGraphDir(fixture.feature),
-      MARKER_NAME,
-    );
     try {
-      fs.writeFileSync(
-        markerFile,
-        JSON.stringify({ pid: peer.pid, startedAt: Date.now(), mode: "build" }),
-      );
+      writeMarker(fixture.feature, "build", peer.pid!);
       expect(h(event(), makeCtx(fixture.feature))).toBeUndefined();
 
       // A dead marker is a crashed build, not a live one: the on-disk index
@@ -155,7 +145,7 @@ describe("system prompt note", () => {
       expect(result?.systemPrompt).toContain(PROMPT_NOTE);
     } finally {
       if (!peer.killed) peer.kill();
-      fs.rmSync(markerFile, { force: true });
+      clearMarker(fixture.feature);
     }
   });
 
