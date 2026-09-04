@@ -21,11 +21,17 @@
  *    shape, so `import { CodeGraph } from "@colbymchenry/codegraph"`
  *    fails under plain Node and under tsx ("Named export 'CodeGraph' not
  *    found"). This repo's vitest suite masks the breakage on Node -
- *    which is why the plain-node smoke test exists. CJS require
- *    resolves the same way on every loader pi can run an extension
- *    through (jiti on Node, bun, tsx, vitest), so this module is the
- *    single import point for the library. The load is fail-fast: a
- *    broken or missing package fails the extension import.
+ *    which is why the plain-node smoke test exists. The load is a bare
+ *    CJS require with a fallback: Bun-compiled binaries (pi's default
+ *    runtime) cannot resolve a bare specifier from a createRequire
+ *    rooted at an on-disk file, so a resolution failure retries the
+ *    package by absolute entry path (found by walking up the
+ *    node_modules chain and reading the package manifest). The absolute
+ *    path resolves identically on every loader pi can run an extension
+ *    through (jiti on Node, bun, bun-compiled binary, tsx, vitest), so
+ *    this module is the single import point for the library. The load
+ *    is fail-fast: a broken or missing package fails the extension
+ *    import.
  * 3. Shim export - the `node:sqlite` compatibility surface
  *    (sqlite-shim.cjs: real `node:sqlite` on Node, an emulation over
  *    `bun:sqlite` on pi's bun runtime), re-exported here so seed.ts, the
@@ -50,6 +56,7 @@
  * the pi-extensions repo, then restart pi).
  */
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -104,7 +111,110 @@ applyEnvDefaults();
 type CodegraphModule = typeof import("@colbymchenry/codegraph");
 
 const requireModule = createRequire(import.meta.url);
-const cg = requireModule("@colbymchenry/codegraph") as CodegraphModule;
+/** The runtime package (one constant for the load and the fallback). */
+const CODEGRAPH_PACKAGE = "@colbymchenry/codegraph";
+
+/**
+ * True for the failure shapes of a failed bare-specifier resolution:
+ * Node's MODULE_NOT_FOUND (carries that code) and Bun's ResolveMessage
+ * (carries no code; the message says "Cannot find module" or
+ * "Cannot find package"). A loaded entry that throws its own error
+ * must not match: it is not a resolution failure and must pass
+ * through unchanged.
+ *
+ * Test seam: exercised directly by the suite.
+ */
+export function isResolutionFailure(err: unknown): boolean {
+  if (err === null || typeof err !== "object") return false;
+  if ((err as { code?: unknown }).code === "MODULE_NOT_FOUND") return true;
+  const msg = err instanceof Error ? err.message : String(err);
+  return /Cannot find (module|package)/.test(msg);
+}
+
+/**
+ * Find the installed package's CJS entry file by absolute path, walking
+ * up from `startDir` through the node_modules chain (the same search
+ * Node performs, done in fs so it also works in runtimes whose resolver
+ * does not: Bun-compiled binaries). The entry is read from the package
+ * manifest (exports["."].require, exports["."].default, main, index.js)
+ * so a re-laid-out package is not pointed at the wrong file.
+ *
+ * Test seam: exercised directly by the suite; the load below uses it
+ * only as the fallback for a failed bare require.
+ */
+export function resolveCodegraphEntryFile(startDir: string): string {
+  let dir = path.resolve(startDir);
+  for (;;) {
+    const entry = readPackageEntryFile(
+      path.join(dir, "node_modules", CODEGRAPH_PACKAGE),
+    );
+    if (entry) return entry;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  throw new Error(
+    `codegraph: ${CODEGRAPH_PACKAGE} is not installed in any node_modules ` +
+      `above ${startDir}. Run \`npm install\` in the pi-extensions repo, ` +
+      `then restart pi.`,
+  );
+}
+
+/** The CJS entry file of an installed package directory, or undefined. */
+function readPackageEntryFile(pkgDir: string): string | undefined {
+  const manifestFile = path.join(pkgDir, "package.json");
+  if (!fs.existsSync(manifestFile)) return undefined;
+  let manifest: {
+    exports?: string | Record<string, string | Record<string, string>>;
+    main?: string;
+  };
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestFile, "utf8"));
+  } catch {
+    return undefined;
+  }
+  const candidates: string[] = [];
+  const exp = manifest.exports;
+  if (typeof exp === "string") candidates.push(exp);
+  else if (exp) {
+    const dot = exp["."];
+    if (typeof dot === "string") candidates.push(dot);
+    else if (dot) {
+      if (typeof dot.require === "string") candidates.push(dot.require);
+      if (typeof dot.default === "string") candidates.push(dot.default);
+    }
+  }
+  if (typeof manifest.main === "string") candidates.push(manifest.main);
+  candidates.push("index.js");
+  for (const rel of candidates) {
+    const full = path.join(pkgDir, rel);
+    if (fs.existsSync(full) && fs.statSync(full).isFile()) return full;
+  }
+  return undefined;
+}
+
+/**
+ * Load the codegraph library. Tries the standard bare require first;
+ * on a resolution failure retries the package by absolute entry path.
+ * The retry exists because Bun-compiled binaries (pi's default runtime)
+ * cannot resolve a bare specifier from a createRequire rooted at an
+ * on-disk file (plain bun and Node can; the resolver only fails in the
+ * compiled form), while the require by absolute path resolves
+ * identically everywhere. Non-resolution errors from the first attempt
+ * pass through unchanged.
+ */
+function loadCodegraphLibrary(): CodegraphModule {
+  try {
+    return requireModule(CODEGRAPH_PACKAGE) as CodegraphModule;
+  } catch (err) {
+    if (!isResolutionFailure(err)) throw err;
+    return requireModule(
+      resolveCodegraphEntryFile(path.dirname(fileURLToPath(import.meta.url))),
+    ) as CodegraphModule;
+  }
+}
+
+const cg = loadCodegraphLibrary();
 
 /** The CodeGraph instance type (usable in type positions). */
 export type CodeGraph = import("@colbymchenry/codegraph").CodeGraph;

@@ -45,3 +45,17 @@ another branch. The state this extension must never serve silently.
 Term adopted from upstream codegraph.
 _Avoid_: stale index (stale means old content in the same worktree; that is a
 different failure)
+
+**Prewarm**:
+Background creation of a worktree's index, started on the first agent turn of
+a session when the worktree has no index yet. Makes the first tool call and
+the first prompt note both find a nearly-ready index.
+_Avoid_: prebuild (implies the index is finished before the session starts),
+warmup (too generic)
+
+**Usage log**:
+The `.codegraph/usage.jsonl` file: one line per codegraph tool call, with
+time, tool, outcome, duration, and result size. Lives and dies with the
+index. Never leaves the machine.
+_Avoid_: telemetry (implies data leaves the machine), metrics (metrics are
+aggregates; this is an event log)

@@ -4,13 +4,19 @@
  * Fast unit tests: no index build. The preflight's temporary database
  * round trip is the only I/O here.
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import shim from "../../extensions/codegraph/sqlite-shim.cjs";
 import {
   applyEnvDefaults,
   backend,
+  isResolutionFailure,
   preflight,
   preflightRoundTripCount,
+  resolveCodegraphEntryFile,
   runtimeGapReason,
   RUNTIME_SQLITE_NOTICE,
   RUNTIME_SQLITE_REASON,
@@ -87,6 +93,143 @@ describe("backend", () => {
     expect(["node:sqlite", "bun:sqlite"]).toContain(backend);
     // The re-export is the shim's own report (one place).
     expect(backend).toBe(shim.backend);
+  });
+});
+
+describe("resolution failure classification", () => {
+  it("matches Node's MODULE_NOT_FOUND by code", () => {
+    const err = new Error("Cannot find module 'whatever'");
+    (err as NodeJS.ErrnoException).code = "MODULE_NOT_FOUND";
+    expect(isResolutionFailure(err)).toBe(true);
+  });
+
+  it("matches Bun's ResolveMessage by message (it carries no code)", () => {
+    expect(
+      isResolutionFailure(new Error("Cannot find module '@x/y'")),
+    ).toBe(true);
+    expect(
+      isResolutionFailure(
+        new Error("Cannot find package 'htmlparser2' from '/a/b'"),
+      ),
+    ).toBe(true);
+  });
+
+  it("leaves loaded-entry errors to pass through", () => {
+    // The package's own actionable error when the platform bundle is
+    // missing is not a resolution failure.
+    expect(
+      isResolutionFailure(
+        new Error(
+          "codegraph: the programmatic API is unavailable because the " +
+            "platform bundle (x) is not installed.",
+        ),
+      ),
+    ).toBe(false);
+    expect(isResolutionFailure(new Error("boom"))).toBe(false);
+    expect(isResolutionFailure("boom")).toBe(false);
+    expect(isResolutionFailure(42)).toBe(false);
+    expect(isResolutionFailure(null)).toBe(false);
+    expect(isResolutionFailure(undefined)).toBe(false);
+  });
+});
+
+/** The repo root, relative to this test file. */
+const REPO_ROOT = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "..",
+);
+
+describe("package entry walk (compiled-bun fallback)", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "codegraph-resolve-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  /** Plant a fake @colbymchenry/codegraph under root and return its dir. */
+  function plantPackage(manifest: Record<string, unknown>, files: string[]): string {
+    const pkgDir = path.join(root, "node_modules", "@colbymchenry", "codegraph");
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pkgDir, "package.json"),
+      JSON.stringify(manifest),
+    );
+    for (const file of files) {
+      fs.writeFileSync(path.join(pkgDir, file), "module.exports = {};\n");
+    }
+    return pkgDir;
+  }
+
+  it("finds the installed package from the extension directory", () => {
+    const entry = resolveCodegraphEntryFile(
+      path.join(REPO_ROOT, "extensions", "codegraph"),
+    );
+    expect(entry).toBe(
+      path.join(
+        REPO_ROOT,
+        "node_modules",
+        "@colbymchenry",
+        "codegraph",
+        "npm-sdk.js",
+      ),
+    );
+    expect(fs.statSync(entry).isFile()).toBe(true);
+  });
+
+  it("walks up through nested directories", () => {
+    const deep = path.join(root, "a", "b", "c");
+    fs.mkdirSync(deep, { recursive: true });
+    const pkgDir = plantPackage({ exports: { ".": "./sdk.js" } }, ["sdk.js"]);
+    expect(resolveCodegraphEntryFile(deep)).toBe(path.join(pkgDir, "sdk.js"));
+  });
+
+  it("reads the entry from the manifest, preferring require over default", () => {
+    const pkgDir = plantPackage(
+      {
+        exports: { ".": { require: "./rq.js", default: "./df.js" } },
+        main: "./mn.js",
+      },
+      ["rq.js", "df.js", "mn.js", "index.js"],
+    );
+    expect(resolveCodegraphEntryFile(root)).toBe(path.join(pkgDir, "rq.js"));
+  });
+
+  it("falls back to default, then main, then index.js", () => {
+    const pkgDir = plantPackage(
+      { exports: { ".": { default: "./df.js" } }, main: "./mn.js" },
+      ["df.js", "mn.js", "index.js"],
+    );
+    expect(resolveCodegraphEntryFile(root)).toBe(path.join(pkgDir, "df.js"));
+
+    fs.writeFileSync(
+      path.join(pkgDir, "package.json"),
+      JSON.stringify({ main: "./mn.js" }),
+    );
+    expect(resolveCodegraphEntryFile(root)).toBe(path.join(pkgDir, "mn.js"));
+
+    fs.writeFileSync(
+      path.join(pkgDir, "package.json"),
+      JSON.stringify({ name: "@colbymchenry/codegraph" }),
+    );
+    expect(resolveCodegraphEntryFile(root)).toBe(path.join(pkgDir, "index.js"));
+  });
+
+  it("throws an actionable error when the package is absent", () => {
+    expect(() => resolveCodegraphEntryFile(root)).toThrowError(
+      /not installed in any node_modules/,
+    );
+  });
+
+  it("keeps walking when a planted package has no entry file", () => {
+    plantPackage({ exports: { ".": "./missing.js" } }, []);
+    expect(() => resolveCodegraphEntryFile(root)).toThrowError(
+      /not installed in any node_modules/,
+    );
   });
 });
 
