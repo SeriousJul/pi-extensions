@@ -27,7 +27,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import type { CodeGraph } from "./runtime";
+import type { IndexAdapter } from "./indexAdapter";
 
 const DRIFT_TTL_MS = 2000;
 const driftCache = new Map<string, { at: number; stale: boolean }>();
@@ -42,7 +42,7 @@ export const STALE_WHOLE_FILE_MAX_CHARS = 12000;
  * bytes at those ranges must not be emitted.
  */
 export function isFileStaleOnDisk(
-  cg: CodeGraph,
+  cg: IndexAdapter,
   root: string,
   relPath: string,
 ): boolean {

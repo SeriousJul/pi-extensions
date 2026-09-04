@@ -1,19 +1,12 @@
 /**
- * Seed sources and index seeding.
+ * Seed sources.
  *
- * A seed copies a sibling worktree's index DB into the new worktree's index
- * directory before the first reconcile. The copy uses SQLite's online backup
- * API (checkpoint + file copy on Node 22.5-22.15, which lack the backup
- * API), so it is a consistent snapshot even while another process has the
- * sibling's index open.
+ * A seed copies a sibling worktree's index DB into the new worktree's
+ * index directory before the first reconcile. Finding the sibling is
+ * git-native and lives here; the copy itself is an Index adapter operation
+ * (spec 0003): it opens the library's database through the runtime stack,
+ * which this module never touches.
  */
-import {
-  backup,
-  backupFile,
-  DatabaseSync,
-  getDatabasePath,
-  isInitialized,
-} from "./runtime";
 import fs from "node:fs";
 import { listWorktrees } from "./git";
 
@@ -31,8 +24,14 @@ export interface SeedSource {
  * skipped. An incomplete (interrupted-build) sibling index is still
  * accepted: the post-seed reconcile converges it. Preference: the main
  * checkout when indexed, else any indexed sibling.
+ *
+ * The initialization check is injected: it is the Index adapter's (spec
+ * 0003), and this module stays library-free.
  */
-export function findSeedSource(root: string): SeedSource | undefined {
+export function findSeedSource(
+  root: string,
+  isInitialized: (path: string) => boolean,
+): SeedSource | undefined {
   const worktrees = listWorktrees(root);
   if (worktrees.length === 0) return undefined;
   const mainPath = worktrees[0].path;
@@ -46,31 +45,4 @@ export function findSeedSource(root: string): SeedSource | undefined {
   if (candidates.length === 0) return undefined;
   const preferred = candidates.find((w) => w.path === mainPath) ?? candidates[0];
   return { path: preferred.path, main: preferred.path === mainPath };
-}
-
-/**
- * Copy `sourceRoot`'s index DB over `targetRoot`'s index DB as a
- * consistent snapshot (online backup where the node:sqlite backup API
- * exists, serialize+write on bun, checkpoint+file copy on Node 22.5-22.15 -
- * see sqlite-shim.cjs). The target's existing db file and WAL sidecars are
- * removed first, so the destination ends as exactly the source's snapshot.
- */
-export async function seedDb(targetRoot: string, sourceRoot: string): Promise<void> {
-  const srcPath = getDatabasePath(sourceRoot);
-  const dstPath = getDatabasePath(targetRoot);
-  for (const suffix of ["", "-wal", "-shm", "-journal"]) {
-    fs.rmSync(dstPath + suffix, { force: true });
-  }
-  const src = new DatabaseSync(srcPath, { readOnly: true });
-  try {
-    if (backup) {
-      await backup(src, dstPath);
-    } else {
-      // Node 22.5-22.15: no node:sqlite backup API. The checkpoint + file
-      // copy fallback yields a consistent snapshot at the checkpoint moment.
-      await backupFile(srcPath, dstPath);
-    }
-  } finally {
-    src.close();
-  }
 }

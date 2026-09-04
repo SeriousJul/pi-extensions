@@ -5,7 +5,9 @@
  */
 import path from "node:path";
 import { Type } from "typebox";
-import type { NodeKind } from "./runtime";
+import type { NodeKind } from "./indexAdapter";
+import { realIndexFactory } from "./indexAdapter";
+import { setDefaultIndexFactory } from "./factory-registry";
 import {
   unavailableText,
   reasonOf,
@@ -16,8 +18,13 @@ import {
   renderImpact,
   renderExplore,
 } from "./format";
-import { resolveRoot } from "./root";
 import type { CodegraphSession, ReadyInfo } from "./session";
+
+// This module is loaded when the tools are registered (production entry
+// point and integration test), so it is the right place to register the
+// real Index factory as the default: a factory-less session's sync entry
+// points resolve it without a lazy load (spec 0003).
+setDefaultIndexFactory(realIndexFactory);
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type {
   AgentToolResult,
@@ -528,7 +535,7 @@ export function registerCommand(pi: ExtensionAPI, session: CodegraphSession): vo
           // Confirm first; nothing is deleted until the user agrees.
           let root: string;
           try {
-            root = resolveRoot(ctx.cwd).root;
+            root = session.resolveRootFor(ctx.cwd).root;
           } catch (err) {
             ui.notify("warning", reasonOf(err));
             return;

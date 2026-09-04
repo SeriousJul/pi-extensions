@@ -1,8 +1,9 @@
 /**
  * Index-meta module: the per-index advisory meta record.
  *
- * Fast unit tests: no index build. A plain temporary directory stands in
- * for a project root.
+ * Fast unit tests: no index build, no library. A plain temporary directory
+ * stands in for the index directory (the module takes the directory, not
+ * the root - the layout belongs to the Index adapter, spec 0003).
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
@@ -16,29 +17,24 @@ import {
   recordSeed,
   writeMeta,
 } from "../../extensions/codegraph/index-meta";
-import { getCodeGraphDir } from "../../extensions/codegraph/runtime";
 
-let root: string;
+let dir: string;
 
 beforeEach(() => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), "codegraph-meta-"));
-  // The meta record only exists once the index directory does; create it
-  // like the codegraph init would.
-  fs.mkdirSync(getCodeGraphDir(root), { recursive: true });
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), "codegraph-meta-"));
 });
 
 afterEach(() => {
-  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 it("a missing file reads as an empty record", () => {
-  expect(readMeta(root)).toEqual({});
+  expect(readMeta(dir)).toEqual({});
 });
 
 it("a malformed file reads as an empty record", () => {
-  fs.mkdirSync(getCodeGraphDir(root), { recursive: true });
-  fs.writeFileSync(path.join(getCodeGraphDir(root), META_NAME), "not json");
-  expect(readMeta(root)).toEqual({});
+  fs.writeFileSync(path.join(dir, META_NAME), "not json");
+  expect(readMeta(dir)).toEqual({});
 });
 
 it("round-trips a record under the documented name", () => {
@@ -48,17 +44,15 @@ it("round-trips a record under the documented name", () => {
     lastReconcileAt: 222,
     lastReconcileChanged: 3,
   };
-  writeMeta(root, record);
-  expect(readMeta(root)).toEqual(record);
-  expect(fs.existsSync(path.join(getCodeGraphDir(root), META_NAME))).toBe(
-    true,
-  );
+  writeMeta(dir, record);
+  expect(readMeta(dir)).toEqual(record);
+  expect(fs.existsSync(path.join(dir, META_NAME))).toBe(true);
 });
 
 it("an advisory write failure does not throw", () => {
   // A file where the index directory must be: the write must fail, and
   // the failure must be swallowed.
-  const blocker = path.join(root, "blocker");
+  const blocker = path.join(dir, "blocker");
   fs.writeFileSync(blocker, "not a directory");
   const blocked = path.join(blocker, "proj");
   expect(() => writeMeta(blocked, { seedSource: "/s" })).not.toThrow();
@@ -66,18 +60,18 @@ it("an advisory write failure does not throw", () => {
 });
 
 it("records a seed and removes the seed record", () => {
-  recordSeed(root, "/sibling");
-  const meta = readMeta(root);
+  recordSeed(dir, "/sibling");
+  const meta = readMeta(dir);
   expect(meta.seedSource).toBe("/sibling");
   expect(typeof meta.seededAt).toBe("number");
-  clearSeedRecord(root);
-  expect(readMeta(root)).toEqual({});
+  clearSeedRecord(dir);
+  expect(readMeta(dir)).toEqual({});
 });
 
 it("records a reconcile and returns the stored timestamp", () => {
-  recordSeed(root, "/sibling");
-  const at = recordReconcile(root, 5);
-  const meta = readMeta(root);
+  recordSeed(dir, "/sibling");
+  const at = recordReconcile(dir, 5);
+  const meta = readMeta(dir);
   expect(meta.lastReconcileAt).toBe(at);
   expect(meta.lastReconcileChanged).toBe(5);
   // the seed record survives a reconcile

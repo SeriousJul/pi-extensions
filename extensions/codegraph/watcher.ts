@@ -10,7 +10,7 @@
  * per-instance state and the one-time notifications.
  */
 import fs from "node:fs";
-import type { CodeGraph } from "./runtime";
+import type { IndexAdapter } from "./indexAdapter";
 import { recordReconcile } from "./index-meta";
 
 export type WatcherState = "active" | "degraded" | "disabled" | "off";
@@ -73,7 +73,7 @@ export interface WatcherHooks {
  * and, for `disabled` and `degraded`, the reason.
  */
 export function startWatcher(
-  cg: CodeGraph,
+  cg: IndexAdapter,
   root: string,
   hooks: WatcherHooks,
 ): { state: WatcherState; reason?: string } {
@@ -90,7 +90,7 @@ export function startWatcher(
       debounceMs: WATCH_DEBOUNCE_MS,
       onDegraded: (reason: string) => hooks.onDegraded(reason),
       onSyncComplete: (r: { filesChanged: number; durationMs: number }) => {
-        const at = recordReconcile(root, r.filesChanged);
+        const at = recordReconcile(cg.codeGraphDir(), r.filesChanged);
         hooks.onSyncComplete(r.filesChanged, at);
       },
       onSyncError: () => {

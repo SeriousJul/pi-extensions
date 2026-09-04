@@ -2,13 +2,13 @@
  * Rendering of query results into the text tool outputs.
  */
 import type {
-  CodeGraph,
   Edge,
+  IndexAdapter,
   Node,
   NodeKind,
   SearchResult,
   Subgraph,
-} from "./runtime";
+} from "./indexAdapter";
 import fs from "node:fs";
 import path from "node:path";
 import { CodegraphUnavailable } from "./root";
@@ -145,7 +145,7 @@ function renderEdges(
 // ------------------------------------------------------------------
 
 export function renderSearch(
-  cg: CodeGraph,
+  cg: IndexAdapter,
   query: string,
   kinds?: NodeKind[],
   limit = 10,
@@ -221,7 +221,7 @@ export interface SymbolResolution {
  * The returned nodes are capped; `total` reports the true match count.
  */
 export function findSymbols(
-  cg: CodeGraph,
+  cg: IndexAdapter,
   symbol: string,
   file?: string,
   line?: number,
@@ -271,7 +271,7 @@ function renderAmbiguity(matches: Node[], total: number): string[] {
 // ------------------------------------------------------------------
 
 export function renderSymbol(
-  cg: CodeGraph,
+  cg: IndexAdapter,
   root: string,
   symbol: string,
   includeCode: boolean,
@@ -341,7 +341,7 @@ export type FileResolveStatus =
   | { status: "notfound"; tried: string };
 
 export function resolveIndexedFile(
-  cg: CodeGraph,
+  cg: IndexAdapter,
   root: string,
   file: string,
 ): FileResolveStatus {
@@ -380,7 +380,7 @@ export function resolveIndexedFile(
 }
 
 export function renderFileView(
-  cg: CodeGraph,
+  cg: IndexAdapter,
   root: string,
   file: string,
   offset?: number,
@@ -436,7 +436,7 @@ export function renderFileView(
 // ------------------------------------------------------------------
 
 export function renderRefs(
-  cg: CodeGraph,
+  cg: IndexAdapter,
   symbol: string,
   direction: "callers" | "callees",
   file?: string,
@@ -472,7 +472,7 @@ export function renderRefs(
 // ------------------------------------------------------------------
 
 export function renderImpact(
-  cg: CodeGraph,
+  cg: IndexAdapter,
   symbol: string,
   depth: number,
   file?: string,
@@ -516,7 +516,7 @@ export function renderImpact(
 const EXPLORE_DEFAULT_MAX_FILES = 12;
 
 export async function renderExplore(
-  cg: CodeGraph,
+  cg: IndexAdapter,
   root: string,
   query: string,
   maxFiles = EXPLORE_DEFAULT_MAX_FILES,

@@ -11,6 +11,13 @@ The `.codegraph/` directory and its `codegraph.db` for one project root.
 Disposable and rebuildable. Never a source of truth for file content.
 _Avoid_: graph database, cache (too generic)
 
+**Index adapter**:
+The one module that names the codegraph library's instance API, types,
+or schema. The session and the renderers call its operations and never see
+the library's shape. A second in-memory adapter sits at the same seam, so
+the state machine tests in milliseconds without the native library.
+_Avoid_: wrapper (too generic), client (implies a remote service)
+
 **Project root**:
 The directory that holds an index. For a git worktree, this is the worktree
 itself, not the main checkout.

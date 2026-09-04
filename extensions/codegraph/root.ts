@@ -7,7 +7,6 @@
  * the worktree itself, so an index that belongs to another worktree is
  * treated as absent and a local index is created (seeded from a sibling).
  */
-import { findNearestCodeGraphRoot } from "./runtime";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -126,9 +125,17 @@ export function nearestManifestDir(dir: string): string | undefined {
  *   directory inherits its parent project's index), else the nearest
  *   ancestor that looks like a project.
  *
+ * The nearest-initialized-ancestor lookup is injected (the Index
+ * adapter's factory, spec 0003); when omitted, the lookup reports no
+ * index, so a root without an index resolves to its manifest directory.
+ *
  * @throws CodegraphUnavailable when no project can be resolved.
  */
-export function resolveRoot(startDir: string, fileArg?: string): ResolvedRoot {
+export function resolveRoot(
+  startDir: string,
+  fileArg?: string,
+  findNearest?: (startPath: string) => string | null | undefined,
+): ResolvedRoot {
   const anchor = fileArg ? path.resolve(startDir, fileArg) : path.resolve(startDir);
   let base: string;
   try {
@@ -140,7 +147,7 @@ export function resolveRoot(startDir: string, fileArg?: string): ResolvedRoot {
   const worktree = gitWorktreeRoot(base);
   if (worktree) {
     const mainCheckout = listWorktrees(worktree)[0]?.path;
-    const nearest = findNearestCodeGraphRoot(base);
+    const nearest = findNearest?.(base) ?? null;
     const insideOwnWorktree =
       typeof nearest === "string" &&
       (nearest === worktree || nearest.startsWith(worktree + path.sep));
@@ -160,7 +167,7 @@ export function resolveRoot(startDir: string, fileArg?: string): ResolvedRoot {
     };
   }
 
-  const nearest = findNearestCodeGraphRoot(base);
+  const nearest = findNearest?.(base) ?? null;
   if (nearest) {
     return { root: nearest, needsCreate: false, isMainCheckout: false };
   }

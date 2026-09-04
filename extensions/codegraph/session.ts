@@ -3,39 +3,37 @@
  *
  * Every tool call and the /codegraph command go through `queryReady`/
  * `ensureReady`, which resolve the project root for the call, then create,
- * seed, build, or open the index for that worktree, reconcile it, and return
- * a live CodeGraph instance. Instances are cached per root for the session
- * and all closed on session shutdown.
+ * seed, build, or open the index for that worktree, reconcile it, and
+ * return the live Index adapter for that root. Adapters are cached per
+ * root for the session and all closed on session shutdown.
+ *
+ * The library itself is reached only through the Index adapter (spec
+ * 0003): the session names none of the library's instance API, types, or
+ * schema. The per-root factory is injected (the real factory in
+ * production, the in-memory one in tests) or resolved from the default
+ * registry / a lazy dynamic import, so the state machine is testable
+ * without the native library.
  *
  * Cross-process safety: the create-or-seed-or-build decision runs under
  * codegraph's own per-root file lock. A process that finds a live build
- * marker waits; a process that finds a dead marker adopts the on-disk state
- * and converges it with a sync. Two concurrent ensureReady calls in the same
- * process share one in-flight promise, so a build always runs once.
+ * marker waits; a process that finds a dead marker adopts the on-disk
+ * state and converges it with a sync. Two concurrent ensureReady calls in
+ * the same process share one in-flight promise, so a build always runs
+ * once.
  *
  * The internal protocols live in their own modules: the build marker
- * (marker.ts), the watcher policy (watcher.ts), and the per-index meta
- * record (index-meta.ts). This class keeps the state machine and the
- * public interface.
- *
- * The runtime compatibility stack (env defaults, library load, shim
- * wiring, preflight, runtime-gap classification) lives in runtime.ts;
- * this class runs the once-per-process preflight before the first query
- * and maps runtime-gap errors to the unavailable contract.
+ * (marker.ts), the watcher policy (watcher.ts), the per-index meta record
+ * (index-meta.ts), and the reconcile lock-contention contract
+ * (sync-retry.ts). This class keeps the state machine and the public
+ * interface.
  */
-import {
-  CodeGraph,
-  DatabaseSync,
-  FileLock,
-  getDatabasePath,
-  getCodeGraphDir,
-  isInitialized,
-  preflight,
-  RUNTIME_SQLITE_NOTICE,
-  RUNTIME_SQLITE_REASON,
-  runtimeGapReason,
-} from "./runtime";
-import type { GraphStats, IndexProgress, SyncResult } from "./runtime";
+import type {
+  IndexAdapter,
+  IndexAdapterFactory,
+  IndexProgress,
+  SyncResult,
+} from "./indexAdapter";
+import { getDefaultIndexFactory } from "./factory-registry";
 import fs from "node:fs";
 import path from "node:path";
 import { gitCommonDir, isGitWorktree, listWorktrees } from "./git";
@@ -49,18 +47,20 @@ import {
   waitForBuild as markerWaitForBuild,
   writeMarker,
 } from "./marker";
+import type { ResolvedRoot } from "./root";
 import { CodegraphUnavailable, resolveRoot, unsafeRootReason } from "./root";
-import { findSeedSource, seedDb } from "./seed";
+import { findSeedSource } from "./seed";
 import { startWatcher as startCodegraphWatcher, type WatcherState } from "./watcher";
 
 export type { WatcherState };
+export type { ResolvedRoot };
 
 const LOCK_RETRY_MS = 500;
 const LOCK_TIMEOUT_MS = 10 * 60 * 1000;
 const BUILD_WAIT_TIMEOUT_MS = 30 * 60 * 1000;
 
 interface InstanceEntry {
-  cg: CodeGraph;
+  cg: IndexAdapter;
   root: string;
   firstSyncDone: boolean;
   watcher: WatcherState;
@@ -71,7 +71,7 @@ interface InstanceEntry {
 
 /** A ready-to-query index. */
 export interface ReadyInfo {
-  cg: CodeGraph;
+  cg: IndexAdapter;
   root: string;
   mainCheckout?: string;
   isMainCheckout: boolean;
@@ -129,12 +129,31 @@ export class CodegraphSession {
   private autoOn: boolean;
   readonly seedingOn: boolean;
   private ui: SessionUi | undefined;
+  private readonly factoryOpt: IndexAdapterFactory | undefined;
+  private readonly buildWaitTimeoutMs: number;
+  private factoryPromise: Promise<IndexAdapterFactory> | undefined;
 
-  constructor(opts: { autoIndex?: boolean; seeding?: boolean } = {}) {
+  constructor(
+    opts: {
+      autoIndex?: boolean;
+      seeding?: boolean;
+      /**
+       * The Index factory (spec 0003). Production injects the real one;
+       * tests inject the in-memory one. When omitted, the real factory is
+       * resolved from the default registry or loaded lazily on the first
+       * async use.
+       */
+      factory?: IndexAdapterFactory;
+      /** Test seam for the build-wait deadline; the default is 30 minutes. */
+      buildWaitTimeoutMs?: number;
+    } = {},
+  ) {
     this.autoOn = envSwitch("CODEGRAPH_PI_AUTO_INDEX", true);
     if (opts.autoIndex !== undefined) this.autoOn = opts.autoIndex;
     this.seedingOn = envSwitch("CODEGRAPH_PI_SEEDING", true);
     if (opts.seeding !== undefined) this.seedingOn = opts.seeding;
+    this.factoryOpt = opts.factory;
+    this.buildWaitTimeoutMs = opts.buildWaitTimeoutMs ?? BUILD_WAIT_TIMEOUT_MS;
   }
 
   /** Bind the TUI sink for notifications and status line updates. */
@@ -188,19 +207,89 @@ export class CodegraphSession {
     this.ui?.status?.(text);
   }
 
+  // ------------------------------------------------------------------
+  // factory plumbing
+  // ------------------------------------------------------------------
+
+  /**
+   * The factory for this session: the injected one, the registered default
+   * (handlers.ts registers the real one at module load), or the real one
+   * loaded lazily. The lazy load keeps the module graph of a
+   * factory-less session free of the library until it is actually needed.
+   */
+  private async factory(): Promise<IndexAdapterFactory> {
+    if (this.factoryOpt) return this.factoryOpt;
+    const registered = getDefaultIndexFactory();
+    if (registered) return registered;
+    if (!this.factoryPromise) {
+      this.factoryPromise = import("./indexAdapter").then(
+        (m) => m.realIndexFactory,
+      );
+    }
+    return this.factoryPromise;
+  }
+
+  /** The factory available synchronously, for the sync entry points. */
+  private syncFactory(): IndexAdapterFactory | undefined {
+    return this.factoryOpt ?? getDefaultIndexFactory();
+  }
+
+  /** The nearest-root lookup as resolveRoot expects, or undefined. */
+  private nearest(
+    f: IndexAdapterFactory | undefined,
+  ): ((startPath: string) => string | null | undefined) | undefined {
+    return f ? (p) => f.findNearestRoot(p) : undefined;
+  }
+
+  // ------------------------------------------------------------------
+  // runtime compatibility (spec 0002)
+  // ------------------------------------------------------------------
+
+  /** Translate runtime gaps into the actionable unavailable contract. */
+  private classifyError(f: IndexAdapterFactory, err: unknown): unknown {
+    if (err instanceof CodegraphUnavailable) return err;
+    const gap = f.runtimeGap(err);
+    if (gap !== undefined) {
+      this.notifyOnce("runtime-sqlite", "warning", gap.notice);
+      return new CodegraphUnavailable(gap.reason, true);
+    }
+    return err;
+  }
+
+  /**
+   * The once-per-process preflight of the runtime compatibility stack
+   * (runtime.ts). A failing stack is reported with an actionable reason
+   * before the first query, instead of after the first failure. A
+   * runtime-gap failure carries the frozen vocabulary and the one-time
+   * notification, exactly like the classifyError path.
+   */
+  private assertRuntime(f: IndexAdapterFactory): void {
+    const res = f.preflight();
+    if (res.ok) return;
+    const gap = f.runtimeGap(res.reason);
+    if (gap !== undefined) {
+      this.notifyOnce("runtime-sqlite", "warning", gap.notice);
+      throw new CodegraphUnavailable(gap.reason, true);
+    }
+    throw new CodegraphUnavailable(res.reason, true);
+  }
+
+  // ------------------------------------------------------------------
+  // public interface
+  // ------------------------------------------------------------------
+
   /**
    * The single boundary every tool call goes through. Resolves the root,
    * creates/seedes/builds/opens the index for that worktree when needed,
-   * reconciles it, and returns a live instance. A worktree that was removed
-   * and re-added is re-seeded from a sibling instead of served from a dead
-   * snapshot.
+   * reconciles it, and returns the ready adapter. A worktree that was
+   * removed and re-added is re-seeded from a sibling instead of served
+   * from a dead snapshot.
    */
   async queryReady(startDir: string, file?: string): Promise<ReadyInfo> {
     const info = await this.ensureReady(startDir, file);
     const entry = this.instances.get(info.root);
     if (!entry) return info;
-    const db = getDatabasePath(info.root);
-    if (!fs.existsSync(db)) {
+    if (!entry.cg.databaseExists()) {
       // The index file is gone: the worktree was removed and re-added
       // without an index. Drop the dead instance and run the create path
       // again, which seeds from a sibling.
@@ -224,57 +313,31 @@ export class CodegraphSession {
 
   /**
    * Ensure an index exists and is up to date for the root of `startDir`
-   * (or of the `file` argument's location), and return a ready instance.
+   * (or of the `file` argument's location), and return a ready adapter.
    * This is the primary test seam.
    */
   async ensureReady(startDir: string, file?: string): Promise<ReadyInfo> {
-    this.assertRuntime();
+    const f = await this.factory();
+    this.assertRuntime(f);
     try {
-      return await this.ensureReadyCore(startDir, file);
+      return await this.ensureReadyCore(f, startDir, file);
     } catch (err) {
-      throw this.classifyError(err);
+      throw this.classifyError(f, err);
     }
-  }
-
-  /** Translate runtime gaps into the actionable unavailable contract. */
-  private classifyError(err: unknown): unknown {
-    if (err instanceof CodegraphUnavailable) return err;
-    const reason = runtimeGapReason(err);
-    if (reason !== undefined) {
-      this.notifyOnce("runtime-sqlite", "warning", RUNTIME_SQLITE_NOTICE);
-      return new CodegraphUnavailable(reason, true);
-    }
-    return err;
-  }
-
-  /**
-   * The once-per-process preflight of the runtime compatibility stack
-   * (runtime.ts). A failing stack is reported with an actionable reason
-   * before the first query, instead of after the first failure. A
-   * runtime-gap failure carries the frozen vocabulary and the one-time
-   * notification, exactly like the classifyError path.
-   */
-  private assertRuntime(): void {
-    const res = preflight();
-    if (res.ok) return;
-    if (runtimeGapReason(res.reason) !== undefined) {
-      this.notifyOnce("runtime-sqlite", "warning", RUNTIME_SQLITE_NOTICE);
-      throw new CodegraphUnavailable(RUNTIME_SQLITE_REASON, true);
-    }
-    throw new CodegraphUnavailable(res.reason, true);
   }
 
   private async ensureReadyCore(
+    f: IndexAdapterFactory,
     startDir: string,
     file?: string,
   ): Promise<ReadyInfo> {
-    const resolved = resolveRoot(startDir, file);
+    const resolved = resolveRoot(startDir, file, this.nearest(f));
     let { needsCreate, mainCheckout, isMainCheckout } = resolved;
     const { root } = resolved;
 
     const cached = this.instances.get(root);
     if (cached) {
-      if (fs.existsSync(getDatabasePath(root))) {
+      if (cached.cg.databaseExists()) {
         let reopened = false;
         try {
           reopened = cached.cg.reopenIfReplaced();
@@ -289,7 +352,7 @@ export class CodegraphSession {
         return { cg: cached.cg, root, mainCheckout, isMainCheckout };
       }
       this.drop(root);
-      if (!isInitialized(root)) needsCreate = true;
+      if (!f.create(root).initialized()) needsCreate = true;
     }
 
     const pending = this.inFlight.get(root);
@@ -297,6 +360,7 @@ export class CodegraphSession {
     const promise = (async (): Promise<ReadyInfo> => {
       try {
         return await this.createOrOpen(
+          f,
           root,
           needsCreate,
           mainCheckout,
@@ -326,9 +390,10 @@ export class CodegraphSession {
    */
   isReadyFor(dir: string): boolean {
     try {
-      const { root, needsCreate } = resolveRoot(dir);
+      const f = this.syncFactory();
+      const { root, needsCreate } = resolveRoot(dir, undefined, this.nearest(f));
       if (needsCreate) return this.instances.has(root);
-      const marker = readMarker(root);
+      const marker = f ? readMarker(f.create(root).codeGraphDir()) : undefined;
       if (marker && isBuildInFlight(marker)) {
         return false;
       }
@@ -338,16 +403,27 @@ export class CodegraphSession {
     }
   }
 
+  /**
+   * The resolved root for `dir` without touching the index. Used by the
+   * /codegraph command, which must name the root before it acts.
+   */
+  resolveRootFor(dir: string): ResolvedRoot {
+    return resolveRoot(dir, undefined, this.nearest(this.syncFactory()));
+  }
+
   /** A status snapshot for the /codegraph command. */
   statusFor(dir: string): RootStatus {
-    const resolved = resolveRoot(dir);
+    const f = this.syncFactory();
+    const resolved = resolveRoot(dir, undefined, this.nearest(f));
     const entry = this.instances.get(resolved.root);
-    const meta = isInitialized(resolved.root) ? readMeta(resolved.root) : {};
+    const adapter = f ? f.create(resolved.root) : undefined;
+    const meta =
+      adapter && adapter.initialized() ? readMeta(adapter.codeGraphDir()) : {};
     // An index that exists on disk but is not open in this session still
     // reports its counts: they are read straight from the index database,
     // so the bare /codegraph status shows the file/node/edge counts without
     // opening the index.
-    const disk = entry ? undefined : diskStats(resolved.root);
+    const disk = entry ? undefined : adapter?.diskStats();
     return {
       root: resolved.root,
       needsCreate: resolved.needsCreate,
@@ -368,23 +444,27 @@ export class CodegraphSession {
 
   /** Force a full rebuild of the index for `dir`'s root. */
   async rebuild(dir: string): Promise<ReadyInfo> {
-    this.assertRuntime();
+    const f = await this.factory();
+    this.assertRuntime(f);
     try {
-      return await this.rebuildCore(dir);
+      return await this.rebuildCore(f, dir);
     } catch (err) {
-      throw this.classifyError(err);
+      throw this.classifyError(f, err);
     }
   }
 
-  private async rebuildCore(dir: string): Promise<ReadyInfo> {
-    const resolved = resolveRoot(dir);
+  private async rebuildCore(
+    f: IndexAdapterFactory,
+    dir: string,
+  ): Promise<ReadyInfo> {
+    const resolved = resolveRoot(dir, undefined, this.nearest(f));
     if (resolved.needsCreate) return this.ensureReady(dir);
     const { root, mainCheckout, isMainCheckout } = resolved;
     this.drop(root);
-    writeMarker(root, "build");
-    let cg: CodeGraph;
+    const cg = f.create(root);
+    writeMarker(cg.codeGraphDir(), "build");
     try {
-      cg = await CodeGraph.recreate(root);
+      await cg.recreate();
       this.status(`codegraph: rebuilding index at ${root}`);
       const res = await cg.indexAll({
         onProgress: (p) => this.status(formatProgress(p, root)),
@@ -392,11 +472,7 @@ export class CodegraphSession {
       this.status(undefined);
       if (!res.success) {
         const detail = res.errors?.[0]?.message ?? "unknown error";
-        try {
-          cg.close();
-        } catch {
-          // ignore
-        }
+        cg.close();
         this.notifyOnce(
           `build-failed:${root}`,
           "warning",
@@ -404,13 +480,13 @@ export class CodegraphSession {
         );
         throw new CodegraphUnavailable(`index rebuild failed: ${detail}`, true);
       }
-      clearSeedRecord(root);
+      clearSeedRecord(cg.codeGraphDir());
       const entry = this.register(cg, root);
       entry.firstSyncDone = true;
       this.startWatcher(entry);
       return { cg, root, mainCheckout, isMainCheckout, justBuilt: true };
     } finally {
-      clearMarker(root);
+      clearMarker(cg.codeGraphDir());
     }
   }
 
@@ -419,19 +495,21 @@ export class CodegraphSession {
    * (`sourceDir`), or from the default seed source.
    */
   async reseed(dir: string, sourceDir?: string): Promise<ReadyInfo> {
-    this.assertRuntime();
+    const f = await this.factory();
+    this.assertRuntime(f);
     try {
-      return await this.reseedCore(dir, sourceDir);
+      return await this.reseedCore(f, dir, sourceDir);
     } catch (err) {
-      throw this.classifyError(err);
+      throw this.classifyError(f, err);
     }
   }
 
   private async reseedCore(
+    f: IndexAdapterFactory,
     dir: string,
     sourceDir?: string,
   ): Promise<ReadyInfo> {
-    const resolved = resolveRoot(dir);
+    const resolved = resolveRoot(dir, undefined, this.nearest(f));
     const { root } = resolved;
     // The same guard the auto path applies: a manual seed must not create
     // an index at a refused root (the home directory, the filesystem root).
@@ -443,7 +521,7 @@ export class CodegraphSession {
     let source: string;
     if (sourceDir) {
       const abs = path.resolve(dir, sourceDir);
-      if (!isInitialized(abs)) {
+      if (!f.create(abs).initialized()) {
         throw new CodegraphUnavailable(`no codegraph index found at ${abs}`);
       }
       if (!isSiblingOf(root, abs)) {
@@ -453,7 +531,7 @@ export class CodegraphSession {
       }
       source = abs;
     } else {
-      const found = findSeedSource(root);
+      const found = findSeedSource(root, (p) => f.create(p).initialized());
       if (!found) {
         throw new CodegraphUnavailable(
           "no sibling worktree with an index was found to seed from",
@@ -463,15 +541,14 @@ export class CodegraphSession {
     }
 
     this.drop(root);
-    if (!isInitialized(root)) {
-      const created = await CodeGraph.init(root);
-      created.close();
+    const cg = f.create(root);
+    if (!cg.initialized()) {
+      await cg.createEmpty();
     }
-    writeMarker(root, "seed");
-    let cg: CodeGraph;
+    writeMarker(cg.codeGraphDir(), "seed");
     try {
-      await seedDb(root, source);
-      cg = await CodeGraph.open(root, { sync: false });
+      await cg.seedFrom(source);
+      await cg.open();
       const entry = this.register(cg, root);
       return await this.finishSeed(
         entry,
@@ -480,17 +557,19 @@ export class CodegraphSession {
         resolved.isMainCheckout,
       );
     } finally {
-      clearMarker(root);
+      clearMarker(cg.codeGraphDir());
       this.status(undefined);
     }
   }
 
   /** Remove the index for `dir`'s root. */
   async uninit(dir: string): Promise<{ root: string; removed: boolean }> {
-    const { root } = resolveRoot(dir);
+    const f = await this.factory();
+    const { root } = resolveRoot(dir, undefined, this.nearest(f));
     this.drop(root);
-    if (!isInitialized(root)) return { root, removed: false };
-    fs.rmSync(getCodeGraphDir(root), { recursive: true, force: true });
+    const cg = f.create(root);
+    if (!cg.initialized()) return { root, removed: false };
+    fs.rmSync(cg.codeGraphDir(), { recursive: true, force: true });
     return { root, removed: true };
   }
 
@@ -498,7 +577,7 @@ export class CodegraphSession {
   // internals
   // ------------------------------------------------------------------
 
-  private register(cg: CodeGraph, root: string): InstanceEntry {
+  private register(cg: IndexAdapter, root: string): InstanceEntry {
     const entry: InstanceEntry = {
       cg,
       root,
@@ -510,13 +589,14 @@ export class CodegraphSession {
   }
 
   private async createOrOpen(
+    f: IndexAdapterFactory,
     root: string,
     needsCreate: boolean,
     mainCheckout?: string,
     isMainCheckout = false,
   ): Promise<ReadyInfo> {
     if (!needsCreate) {
-      return this.openExisting(root, mainCheckout, isMainCheckout);
+      return this.openExisting(f, root, mainCheckout, isMainCheckout);
     }
     if (!this.autoOn) {
       throw new CodegraphUnavailable(
@@ -534,15 +614,16 @@ export class CodegraphSession {
     }
 
     for (;;) {
-      const prepared = await this.prepareUnderLock(root);
+      const prepared = await this.prepareUnderLock(f, root);
       if (prepared.mode === "wait") {
-        await this.waitForBuild(root);
+        await this.waitForBuild(f, root);
         continue;
       }
       if (prepared.mode === "adopt") {
-        return this.openExisting(root, mainCheckout, isMainCheckout);
+        return this.openExisting(f, root, mainCheckout, isMainCheckout);
       }
       return this.runBuildOrSeed(
+        f,
         root,
         prepared.mode === "seed" ? prepared.seedSource : undefined,
         mainCheckout,
@@ -553,13 +634,15 @@ export class CodegraphSession {
 
   /** Open an existing index, run the first-use reconcile, and start the watcher. */
   private async openExisting(
+    f: IndexAdapterFactory,
     root: string,
     mainCheckout?: string,
     isMainCheckout = false,
   ): Promise<ReadyInfo> {
-    await this.awaitBuildMarker(root);
-    const cg = await CodeGraph.open(root, { sync: false });
+    await this.awaitBuildMarker(f, root);
+    const cg = f.create(root);
     try {
+      await cg.open();
       const entry = this.register(cg, root);
       this.startWatcher(entry);
       await this.syncForQuery(entry);
@@ -571,12 +654,14 @@ export class CodegraphSession {
   }
 
   /**
-   * Under codegraph's per-root file lock: decide whether to wait for a live
-   * build, adopt an existing index, or prepare an empty (optionally seeded)
-   * index for the full build / post-seed reconcile that runs outside the
-   * lock (codegraph holds the lock itself during index operations).
+   * Under codegraph's per-root file lock: decide whether to wait for a
+   * live build, adopt an existing index, or prepare an empty (optionally
+   * seeded) index for the full build / post-seed reconcile that runs
+   * outside the lock (codegraph holds the lock itself during index
+   * operations).
    */
   private async prepareUnderLock(
+    f: IndexAdapterFactory,
     root: string,
   ): Promise<
     | { mode: "wait" }
@@ -584,13 +669,12 @@ export class CodegraphSession {
     | { mode: "build" }
     | { mode: "seed"; seedSource: string }
   > {
-    const dir = getCodeGraphDir(root);
-    const lock = new FileLock(path.join(dir, "codegraph.lock"));
+    const cg = f.create(root);
     const deadline = Date.now() + LOCK_TIMEOUT_MS;
     for (;;) {
-      fs.mkdirSync(dir, { recursive: true });
       try {
-        lock.acquire();
+        cg.acquireLock();
+        break;
       } catch {
         if (Date.now() > deadline) {
           throw new CodegraphUnavailable(
@@ -601,31 +685,32 @@ export class CodegraphSession {
         await sleep(LOCK_RETRY_MS);
         continue;
       }
-      try {
-        if (isInitialized(root)) {
-          const marker = readMarker(root);
-          if (marker && isLivePeer(marker)) {
-            return { mode: "wait" };
-          }
-          clearMarker(root);
-          return { mode: "adopt" };
+    }
+    try {
+      if (cg.initialized()) {
+        const marker = readMarker(cg.codeGraphDir());
+        if (marker && isLivePeer(marker)) {
+          return { mode: "wait" };
         }
-        // No index yet. Create the index directory via codegraph's own
-        // directory setup (this also creates an empty database), then seed
-        // it from a sibling when one is available.
-        const created = await CodeGraph.init(root);
-        created.close();
-        const source = this.seedingOn ? findSeedSource(root) : undefined;
-        if (source) {
-          await seedDb(root, source.path);
-          writeMarker(root, "seed");
-          return { mode: "seed", seedSource: source.path };
-        }
-        writeMarker(root, "build");
-        return { mode: "build" };
-      } finally {
-        lock.release();
+        clearMarker(cg.codeGraphDir());
+        return { mode: "adopt" };
       }
+      // No index yet. Create the index directory via codegraph's own
+      // directory setup (this also creates an empty database), then seed
+      // it from a sibling when one is available.
+      await cg.createEmpty();
+      const source = this.seedingOn
+        ? findSeedSource(root, (p) => f.create(p).initialized())
+        : undefined;
+      if (source) {
+        await cg.seedFrom(source.path);
+        writeMarker(cg.codeGraphDir(), "seed");
+        return { mode: "seed", seedSource: source.path };
+      }
+      writeMarker(cg.codeGraphDir(), "build");
+      return { mode: "build" };
+    } finally {
+      cg.releaseLock();
     }
   }
 
@@ -634,10 +719,10 @@ export class CodegraphSession {
    * (its build marker is present). A marker whose process is dead is
    * removed and the on-disk state is adopted instead.
    */
-  private async waitForBuild(root: string): Promise<void> {
+  private async waitForBuild(f: IndexAdapterFactory, root: string): Promise<void> {
     try {
-      await markerWaitForBuild(root, {
-        timeoutMs: BUILD_WAIT_TIMEOUT_MS,
+      await markerWaitForBuild(f.create(root).codeGraphDir(), {
+        timeoutMs: this.buildWaitTimeoutMs,
         onStatus: (text) => this.status(text),
       });
     } catch (err) {
@@ -660,10 +745,10 @@ export class CodegraphSession {
    * Without this, the open path could serve a snapshot of an index that a
    * concurrent /codegraph init is about to replace.
    */
-  private async awaitBuildMarker(root: string): Promise<void> {
-    const marker = readMarker(root);
+  private async awaitBuildMarker(f: IndexAdapterFactory, root: string): Promise<void> {
+    const marker = readMarker(f.create(root).codeGraphDir());
     if (marker && isLivePeer(marker)) {
-      await this.waitForBuild(root);
+      await this.waitForBuild(f, root);
     }
   }
 
@@ -682,7 +767,7 @@ export class CodegraphSession {
     this.status(`codegraph: reconciling seeded index at ${entry.root}`);
     const res = await this.runSync(entry);
     const changed = res.filesAdded + res.filesModified + res.filesRemoved;
-    recordSeed(entry.root, seedSource);
+    recordSeed(entry.cg.codeGraphDir(), seedSource);
     this.notifyOnce(
       `seeded:${entry.root}`,
       "info",
@@ -701,24 +786,27 @@ export class CodegraphSession {
 
   /** Run the full build or the post-seed reconcile for a prepared index. */
   private async runBuildOrSeed(
+    f: IndexAdapterFactory,
     root: string,
     seedSource: string | undefined,
     mainCheckout?: string,
     isMainCheckout = false,
   ): Promise<ReadyInfo> {
-    let cg: CodeGraph;
+    const cg = f.create(root);
     try {
-      cg = await CodeGraph.open(root, { sync: false });
+      await cg.open();
     } catch (err) {
       if (!seedSource) throw err;
       // A crashed seed may have left a corrupt database. Discard it, re-seed
       // once, and try again.
-      const discarded = isInitialized(root)
-        ? await CodeGraph.recreate(root)
-        : await CodeGraph.init(root);
-      discarded.close();
-      await seedDb(root, seedSource);
-      cg = await CodeGraph.open(root, { sync: false });
+      if (cg.initialized()) {
+        await cg.recreate();
+      } else {
+        await cg.createEmpty();
+      }
+      cg.close();
+      await cg.seedFrom(seedSource);
+      await cg.open();
     }
     const entry = this.register(cg, root);
     try {
@@ -744,7 +832,7 @@ export class CodegraphSession {
       this.startWatcher(entry);
       return { cg, root, mainCheckout, isMainCheckout, justBuilt: true };
     } finally {
-      clearMarker(root);
+      clearMarker(cg.codeGraphDir());
       this.status(undefined);
     }
   }
@@ -770,16 +858,10 @@ export class CodegraphSession {
   }
 
   private async runSync(entry: InstanceEntry): Promise<SyncResult> {
-    // `sync` reports a held per-root lock as an all-zero result (a real
-    // no-change sync still reports how many files it checked), so
-    // filesChecked === 0 means the lock was not acquired. A concurrent
-    // codegraph process can hold it briefly; retry before failing.
-    let res: SyncResult;
-    for (let attempt = 0; ; attempt++) {
-      res = await entry.cg.sync();
-      if (res.filesChecked > 0 || attempt >= 2) break;
-      await sleep(750 * (attempt + 1));
-    }
+    // The adapter runs the lock-contention contract internally (see
+    // sync-retry.ts); a returned result with filesChecked === 0 is the
+    // "the lock could not be acquired" signal.
+    const res = await entry.cg.sync();
     if (res.filesChecked === 0) {
       this.notifyOnce(
         `sync-failed:${entry.root}`,
@@ -792,7 +874,7 @@ export class CodegraphSession {
       );
     }
     const changed = res.filesAdded + res.filesModified + res.filesRemoved;
-    entry.lastReconcileAt = recordReconcile(entry.root, changed);
+    entry.lastReconcileAt = recordReconcile(entry.cg.codeGraphDir(), changed);
     entry.lastReconcileChanged = changed;
     return res;
   }
@@ -828,67 +910,6 @@ export class CodegraphSession {
         `codegraph: file watcher unavailable (${reason}); the index is reconciled before every query`,
       );
     }
-  }
-}
-
-/** The index state values codegraph writes to project_metadata. */
-const INDEX_STATES = ["indexing", "complete", "partial", "failed"] as const;
-
-/**
- * Read the index counts and state straight from the index database, without
- * opening a CodeGraph instance. Used by /codegraph status when the index
- * exists on disk but the session has not opened it yet. The counts mirror
- * CodeGraph.getStats() (the same table counts). Returns undefined when the
- * database cannot be read.
- *
- * Known coupling: the query names codegraph's schema directly (files,
- * nodes, edges, project_metadata). An upstream schema change breaks the
- * counts until this query is updated; the failure is graceful (status
- * falls back to "counts unavailable"), never a crash. Re-check this query
- * when the pinned codegraph version is bumped.
- */
-function diskStats(
-  root: string,
-): {
-  fileCount: number;
-  nodeCount: number;
-  edgeCount: number;
-  indexState: string | null;
-} | undefined {
-  if (!isInitialized(root)) return undefined;
-  const db = new DatabaseSync(getDatabasePath(root), { readOnly: true });
-  try {
-    const row = db
-      .prepare(
-        "SELECT (SELECT COUNT(*) FROM files) AS file_count, " +
-          "(SELECT COUNT(*) FROM nodes) AS node_count, " +
-          "(SELECT COUNT(*) FROM edges) AS edge_count, " +
-          "(SELECT value FROM project_metadata WHERE key = 'index_state') AS index_state",
-      )
-      .get() as
-      | {
-          file_count: number;
-          node_count: number;
-          edge_count: number;
-          index_state: string | null | undefined;
-        }
-      | undefined;
-    if (!row) return undefined;
-    const state = row.index_state;
-    return {
-      fileCount: Number(row.file_count),
-      nodeCount: Number(row.node_count),
-      edgeCount: Number(row.edge_count),
-      indexState:
-        typeof state === "string" &&
-        (INDEX_STATES as readonly string[]).includes(state)
-          ? state
-          : null,
-    };
-  } catch {
-    return undefined;
-  } finally {
-    db.close();
   }
 }
 

@@ -1,18 +1,21 @@
 /**
  * The cross-process build marker.
  *
- * `<root>/.codegraph/pi-codegraph-build.json` announces that a process is
- * building or seeding the index for `root`: its pid, the start time, and
- * the mode. A process that finds a live peer's marker waits for the build;
- * one that finds a dead marker (its process is gone) removes the file and
- * adopts the on-disk state. The marker is written under codegraph's
- * per-root file lock and cleared when the build or seed ends.
+ * `<codeGraphDir>/pi-codegraph-build.json` announces that a process is
+ * building or seeding the index for the root that owns `codeGraphDir`:
+ * its pid, the start time, and the mode. A process that finds a live
+ * peer's marker waits for the build; one that finds a dead marker (its
+ * process is gone) removes the file and adopts the on-disk state. The
+ * marker is written under codegraph's per-root file lock and cleared when
+ * the build or seed ends.
+ *
+ * The module takes the index directory as a parameter, not the root: the
+ * directory layout belongs to the codegraph library and is known only to
+ * the Index adapter (spec 0003).
  */
 import fs from "node:fs";
 import path from "node:path";
-import { getCodeGraphDir } from "./runtime";
 
-/** Exported for tests that simulate another process's live build. */
 export const MARKER_NAME = "pi-codegraph-build.json";
 
 export type BuildMode = "build" | "seed";
@@ -31,20 +34,17 @@ export class BuildWaitTimeout extends Error {
   }
 }
 
-const sleep = (ms: number) =>
-  new Promise<void>((resolve) => setTimeout(resolve, ms));
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-export function markerPath(root: string): string {
-  return path.join(getCodeGraphDir(root), MARKER_NAME);
+export function markerPath(dir: string): string {
+  return path.join(dir, MARKER_NAME);
 }
 
 /** A missing or malformed file reads as no marker. */
-export function readMarker(root: string): BuildMarker | undefined {
+export function readMarker(dir: string): BuildMarker | undefined {
   let marker: BuildMarker | undefined;
   try {
-    marker = JSON.parse(
-      fs.readFileSync(markerPath(root), "utf-8"),
-    ) as BuildMarker;
+    marker = JSON.parse(fs.readFileSync(markerPath(dir), "utf-8")) as BuildMarker;
   } catch {
     return undefined;
   }
@@ -55,19 +55,15 @@ export function readMarker(root: string): BuildMarker | undefined {
  * Write the marker for `pid` (this process by default; tests pass a peer's
  * pid to simulate another process's build).
  */
-export function writeMarker(
-  root: string,
-  mode: BuildMode,
-  pid: number = process.pid,
-): void {
+export function writeMarker(dir: string, mode: BuildMode, pid: number = process.pid): void {
   fs.writeFileSync(
-    markerPath(root),
+    markerPath(dir),
     JSON.stringify({ pid, startedAt: Date.now(), mode }),
   );
 }
 
-export function clearMarker(root: string): void {
-  fs.rmSync(markerPath(root), { force: true });
+export function clearMarker(dir: string): void {
+  fs.rmSync(markerPath(dir), { force: true });
 }
 
 /** Signal-0 probe: true when `pid` is alive (including another user's). */
@@ -94,13 +90,13 @@ export function isBuildInFlight(marker: BuildMarker): boolean {
 }
 
 /**
- * Block while another live process is building the index for `root` (its
- * marker is present). A marker whose process is dead is removed and the
- * on-disk state is adopted instead. `onStatus` reports the wait on each
- * poll. Throws BuildWaitTimeout when the wait exceeds `timeoutMs`.
+ * Block while another live process is building the index (its marker is
+ * present). A marker whose process is dead is removed and the on-disk
+ * state is adopted instead. `onStatus` reports the wait on each poll.
+ * Throws BuildWaitTimeout when the wait exceeds `timeoutMs`.
  */
 export async function waitForBuild(
-  root: string,
+  dir: string,
   opts: {
     timeoutMs: number;
     pollMs?: number;
@@ -109,14 +105,14 @@ export async function waitForBuild(
 ): Promise<void> {
   const deadline = Date.now() + opts.timeoutMs;
   for (;;) {
-    const marker = readMarker(root);
+    const marker = readMarker(dir);
     if (!marker) return;
     if (marker.pid !== process.pid && !isPidAlive(marker.pid)) {
-      clearMarker(root);
+      clearMarker(dir);
       return;
     }
     opts.onStatus?.(
-      `codegraph: waiting for the index build at ${root} (pid ${marker.pid})`,
+      `codegraph: waiting for the index build at ${dir} (pid ${marker.pid})`,
     );
     if (Date.now() > deadline) throw new BuildWaitTimeout();
     await sleep(opts.pollMs ?? 300);

@@ -10,7 +10,7 @@ import { buildFixture, type Fixture } from "./fixture";
 import codegraphExtension from "../../extensions/codegraph/index";
 import { CodegraphSession } from "../../extensions/codegraph/session";
 import { clearMarker, writeMarker } from "../../extensions/codegraph/marker";
-import { CodeGraph } from "../../extensions/codegraph/runtime";
+import { CodeGraph, getCodeGraphDir } from "../../extensions/codegraph/runtime";
 import { PROMPT_NOTE } from "../../extensions/codegraph/handlers";
 import type {
   ExtensionAPI,
@@ -130,7 +130,7 @@ describe("system prompt note", () => {
     const { spawn } = await import("node:child_process");
     const peer = spawn("sleep", ["30"], { stdio: "ignore" });
     try {
-      writeMarker(fixture.feature, "build", peer.pid!);
+      writeMarker(getCodeGraphDir(fixture.feature), "build", peer.pid!);
       expect(h(event(), makeCtx(fixture.feature))).toBeUndefined();
 
       // A dead marker is a crashed build, not a live one: the on-disk index
@@ -145,7 +145,7 @@ describe("system prompt note", () => {
       expect(result?.systemPrompt).toContain(PROMPT_NOTE);
     } finally {
       if (!peer.killed) peer.kill();
-      clearMarker(fixture.feature);
+      clearMarker(getCodeGraphDir(fixture.feature));
     }
   });
 

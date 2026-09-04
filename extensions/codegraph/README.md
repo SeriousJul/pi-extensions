@@ -180,18 +180,32 @@ codegraph is unavailable (<reason>). Use the built-in read and grep tools instea
   runtime-gap error classification with its frozen unavailable strings.
 - `sqlite-shim.cjs` - the `node:sqlite` compatibility shim used by the
   patched codegraph tree (pure CJS so every loader parses it).
+- `indexAdapter.ts` - the Index adapter: the only module that names the
+  codegraph library's instance API, types, or schema (spec 0003). The real
+  adapter wraps a library instance from `runtime.ts`; the session, the
+  renderers, and the staleness gate call the adapter's operations and never
+  see the library's shape.
+- `factory-registry.ts` - the default `IndexAdapterFactory` registry
+  (library-free): the entrypoint and the handlers register the real factory
+  at load; a session resolves it without importing the adapter module.
+- `sync-retry.ts` - the reconcile retry contract shared by both adapters
+  (initial attempt + 2 retries at a 750 ms ramp; library-free).
 - `root.ts` - project root resolution and the unsafe-root guard.
 - `git.ts` - git worktree helpers (sibling discovery).
-- `seed.ts` - seed source discovery and the database copy.
+- `seed.ts` - seed source discovery (the database copy is the adapter's
+  `seedFrom` operation).
 - `marker.ts` - the cross-process build marker: file format, read/write/
-  clear, pid liveness, and the wait-for-peer-build loop.
+  clear, pid liveness, and the wait-for-peer-build loop. Operates on the
+  index directory.
 - `index-meta.ts` - the per-index advisory meta record (seed source, last
-  reconcile) in `pi-codegraph-meta.json`.
+  reconcile) in `pi-codegraph-meta.json`. Operates on the index directory.
 - `watcher.ts` - the watcher policy: disabled reasons (`CODEGRAPH_NO_WATCH`,
   WSL2 `/mnt`), start, and degradation handling.
 - `session.ts` - `CodegraphSession`: the per-session index manager and the
   single boundary every tool call goes through (`ensureReady`/`queryReady`).
-  The marker, watcher, and meta protocols live in the modules above.
+  The state machine, instance cache, in-flight dedup, and notifications live
+  here; all library access goes through the adapter. The marker, watcher,
+  and meta protocols live in the modules above.
 - `staleness.ts` - the point-of-emission staleness gate (size + mtime +
   content hash against the indexed record) that keeps the renderers from
   slicing a file that drifted after its last index sync.

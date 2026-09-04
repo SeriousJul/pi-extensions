@@ -2,26 +2,28 @@
  * codegraph extension entrypoint.
  *
  * Embeds the codegraph library in-process (no MCP, no daemon): registers the
- * six codegraph tools and the /codegraph command, and keeps one CodeGraph
- * instance open per project root in this pi session. Every worktree of a
- * git repository gets its own index, seeded from a sibling worktree's index
- * and kept current by codegraph's own file watcher (with a reconcile before
- * every query when watching is degraded).
+ * six codegraph tools and the /codegraph command, and keeps one index open
+ * per project root in this pi session. Every worktree of a git repository
+ * gets its own index, seeded from a sibling worktree's index and kept
+ * current by codegraph's own file watcher (with a reconcile before every
+ * query when watching is degraded).
  *
- * The env defaults that must precede the codegraph library load live in
- * runtime.ts (loaded through the session's import of it), ahead of the
- * library load in file order, so no file can load the library without
- * them.
+ * The library is reached only through the Index adapter (spec 0003): the
+ * real factory is injected into the session here. The env defaults that
+ * must precede the codegraph library load live in runtime.ts (loaded
+ * through the adapter's import of it), ahead of the library load in file
+ * order, so no file can load the library without them.
  */
 import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { PROMPT_NOTE, registerCommand, registerTools } from "./handlers";
+import { realIndexFactory } from "./indexAdapter";
 import { CodegraphSession } from "./session";
 
 export default function codegraphExtension(pi: ExtensionAPI): void {
-  const session = new CodegraphSession();
+  const session = new CodegraphSession({ factory: realIndexFactory });
 
   const bindUi = (ctx: ExtensionContext): void => {
     session.setUi({
