@@ -59,3 +59,13 @@ time, tool, outcome, duration, and result size. Lives and dies with the
 index. Never leaves the machine.
 _Avoid_: telemetry (implies data leaves the machine), metrics (metrics are
 aggregates; this is an event log)
+
+**Source section**:
+The one structured block a renderer may serve as the source of a file at
+its indexed line ranges: a numbered slice of the current bytes (fresh
+file), the numbered full current source (small drifted file), an omission
+(large drifted file), or a missing-file decision (file gone). The renderers
+own wording and layout only; the drift gate, the whole-file caps, and the
+short-TTL memo live with the section, so a new source renderer inherits the
+never-a-drifted-slice guarantee by construction.
+_Avoid_: code block, snippet, file view
