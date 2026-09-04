@@ -1,10 +1,10 @@
 /**
  * CodegraphSession: the session-scoped index manager.
  *
- * Every tool call and the /codegraph command go through `queryReady`/
- * `ensureReady`, which resolve the project root for the call, then create,
- * seed, build, or open the index for that worktree, reconcile it, and
- * return the live Index adapter for that root. Adapters are cached per
+ * Every tool call and the /codegraph command go through `ensureReady`,
+ * which resolves the project root for the call, then creates, seeds,
+ * builds, or opens the index for that worktree, reconciles it, and
+ * returns the live Index adapter for that root. Adapters are cached per
  * root for the session and all closed on session shutdown.
  *
  * The library itself is reached only through the Index adapter (spec
@@ -279,42 +279,12 @@ export class CodegraphSession {
   // ------------------------------------------------------------------
 
   /**
-   * The single boundary every tool call goes through. Resolves the root,
+   * The single boundary every tool call and every test crosses. Resolves
+   * the root of `startDir` (or of the `file` argument's location),
    * creates/seedes/builds/opens the index for that worktree when needed,
-   * reconciles it, and returns the ready adapter. A worktree that was
-   * removed and re-added is re-seeded from a sibling instead of served
-   * from a dead snapshot.
-   */
-  async queryReady(startDir: string, file?: string): Promise<ReadyInfo> {
-    const info = await this.ensureReady(startDir, file);
-    const entry = this.instances.get(info.root);
-    if (!entry) return info;
-    if (!entry.cg.databaseExists()) {
-      // The index file is gone: the worktree was removed and re-added
-      // without an index. Drop the dead instance and run the create path
-      // again, which seeds from a sibling.
-      this.drop(info.root);
-      return this.ensureReady(startDir, file);
-    }
-    // `reopenIfReplaced` no-ops (returns false) when the db file was not
-    // replaced; a successful reopen means a fresh snapshot now sits at the
-    // same path and must be reconciled before serving queries.
-    let reopened = false;
-    try {
-      reopened = entry.cg.reopenIfReplaced();
-    } catch {
-      reopened = false;
-    }
-    if (reopened) {
-      await this.syncForQuery(entry, "replaced index file", true);
-    }
-    return info;
-  }
-
-  /**
-   * Ensure an index exists and is up to date for the root of `startDir`
-   * (or of the `file` argument's location), and return a ready adapter.
-   * This is the primary test seam.
+   * reconciles it, and returns the ready adapter. The recovery for a
+   * removed-then-re-added worktree lives in the cached-instance branch of
+   * the core path below.
    */
   async ensureReady(startDir: string, file?: string): Promise<ReadyInfo> {
     const f = await this.factory();
@@ -338,6 +308,11 @@ export class CodegraphSession {
     const cached = this.instances.get(root);
     if (cached) {
       if (cached.cg.databaseExists()) {
+        // Replaced-index recovery: `reopenIfReplaced` no-ops (returns
+        // false) when the db file was not replaced; a successful reopen
+        // means the index file was replaced (a worktree re-added with its
+        // index preserved) and a fresh snapshot now sits at the same path,
+        // which must be reconciled before serving queries.
         let reopened = false;
         try {
           reopened = cached.cg.reopenIfReplaced();
@@ -351,6 +326,10 @@ export class CodegraphSession {
         );
         return { cg: cached.cg, root, mainCheckout, isMainCheckout };
       }
+      // Dead-index recovery: the index file is gone, so the worktree was
+      // removed and re-added without an index. Drop the dead instance and
+      // run the create path below, which seeds from a sibling when one is
+      // available.
       this.drop(root);
       if (!f.create(root).initialized()) needsCreate = true;
     }
