@@ -211,3 +211,10 @@ codegraph is unavailable (<reason>). Use the built-in read and grep tools instea
   slicing a file that drifted after its last index sync.
 - `format.ts` - rendering of query results.
 - `handlers.ts` - the six tool definitions and the `/codegraph` command.
+
+## Specs
+
+The design specs (0001-0007) live as GitHub issues on this repository; the
+issue titles carry the spec numbers, and the `spec 000X` references in code
+comments point to them. The closed issues are the implemented history; the
+open ones are ready for the next agent pass.
