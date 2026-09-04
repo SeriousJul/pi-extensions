@@ -390,6 +390,12 @@ export class CodegraphSession {
    * (a peer's live marker). While a build runs the database file exists,
    * but the index is not ready, and the prompt note must not steer toward
    * a tool that would block on the build.
+   *
+   * Cost note: this runs on every before_agent_start and spawns two git
+   * calls (rev-parse, worktree list) per turn. That cost is accepted
+   * instead of cached: the result only gates the prompt note, and a
+   * cached answer would go stale exactly when a worktree is added or
+   * removed.
    */
   isReadyFor(dir: string): boolean {
     try {
@@ -953,6 +959,12 @@ const INDEX_STATES = ["indexing", "complete", "partial", "failed"] as const;
  * exists on disk but the session has not opened it yet. The counts mirror
  * CodeGraph.getStats() (the same table counts). Returns undefined when the
  * database cannot be read.
+ *
+ * Known coupling: the query names codegraph's schema directly (files,
+ * nodes, edges, project_metadata). An upstream schema change breaks the
+ * counts until this query is updated; the failure is graceful (status
+ * falls back to "counts unavailable"), never a crash. Re-check this query
+ * when the pinned codegraph version is bumped.
  */
 function diskStats(
   root: string,

@@ -100,6 +100,17 @@ Every git worktree gets its own index under `<worktree>/.codegraph/`:
   disabled (`CODEGRAPH_NO_WATCH=1`, or WSL2 under `/mnt/`) or degrades,
   the index is reconciled before every query instead, and a one-time
   warning is shown.
+- **Staleness gate at emission.** `codegraph_node` symbol mode and
+  `codegraph_explore` slice current on-disk bytes at indexed line ranges.
+  When a file changed after its last index sync (inside the watcher's
+  debounce window, or after a missed sync), those ranges can point at a
+  different symbol's code. Every sliced file is therefore checked at
+  emission against its indexed record (size + mtime, content hash on a
+  mismatch - codegraph's own `isFileStaleOnDisk` test). A drifted file
+  never emits a slice: a small one serves its full current source
+  (Read-parity) with a stale notice, a large one serves a notice pointing
+  at the file-read modes. File mode is unaffected - it always reads the
+  whole file fresh.
 - **Removed and re-added worktrees** are re-seeded from a sibling instead
   of serving a dead snapshot (the replaced-inode check in codegraph
   detects the new database file and reopens it).
@@ -165,5 +176,8 @@ codegraph is unavailable (<reason>). Use the built-in read and grep tools instea
 - `seed.ts` - seed source discovery and the database copy.
 - `session.ts` - `CodegraphSession`: the per-session index manager and the
   single boundary every tool call goes through (`ensureReady`/`queryReady`).
+- `staleness.ts` - the point-of-emission staleness gate (size + mtime +
+  content hash against the indexed record) that keeps the renderers from
+  slicing a file that drifted after its last index sync.
 - `format.ts` - rendering of query results.
 - `handlers.ts` - the six tool definitions and the `/codegraph` command.

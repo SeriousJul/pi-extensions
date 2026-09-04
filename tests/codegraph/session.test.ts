@@ -100,6 +100,14 @@ describe("ensureReady (primary seam)", () => {
     const mainEntry = cg.getNodesByName("mainEntry")[0];
     const callees = cg.getCallees(mainEntry.id).map((r) => r.node.name);
     expect(callees).toContain("featureOnlySymbol");
+    // A sibling-only file (src/mainonly.ts, committed on main after the
+    // feature branch was cut) must be reconciled OUT of the seeded index:
+    // a query run from a worktree never answers from another worktree's
+    // files.
+    expect(cg.getNodesByName("mainOnlySymbol").length).toBe(0);
+    expect(cg.getFiles().some((f) => f.path === "src/mainonly.ts")).toBe(
+      false,
+    );
     // Sibling-only state did not leak into main.
     expect(nodeNames(main.cg)).toEqual(mainNodes);
   });

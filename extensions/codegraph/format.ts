@@ -13,6 +13,7 @@ import type {
 import fs from "node:fs";
 import path from "node:path";
 import { CodegraphUnavailable } from "./root";
+import { isFileStaleOnDisk, staleWholeFile } from "./staleness";
 
 const MAX_BODY_LINES = 400;
 const MAX_EXPLORE_LINES_PER_FILE = 200;
@@ -71,6 +72,36 @@ function clusterLines(ranges: Array<[number, number]>, gap = 8, cap = 50): Clust
 
 function nodeLoc(n: Node): string {
   return `${n.filePath}:${n.startLine}`;
+}
+
+/**
+ * Symbol body for a drifted file (the upstream stale-section contract):
+ * never a slice. A small file serves its full CURRENT source
+ * (Read-parity); a large one serves a notice pointing at the file-read
+ * modes. The location and signature above stay - they are the index's
+ * answer - but are flagged as possibly shifted.
+ */
+function staleSymbolBody(node: Node, abs: string): string[] {
+  const lines: string[] = [
+    `  (stale: ${node.filePath} changed on disk after the last index sync; the line above may have shifted)`,
+  ];
+  const whole = staleWholeFile(abs);
+  if (whole !== undefined) {
+    lines.push(
+      "  Full CURRENT source of the file instead of a slice (treat it as already read):",
+    );
+    lines.push("");
+    lines.push(whole);
+    return lines;
+  }
+  if (!fs.existsSync(abs)) {
+    lines.push(`  (source file missing on disk: ${node.filePath})`);
+    return lines;
+  }
+  lines.push(
+    `  The symbol body is omitted: the indexed line range no longer reliably matches, and a slice of the current file could show a different symbol's code. Read the current file with the built-in read tool, or with codegraph_node file mode (file: "${node.filePath}", no symbol). The change is picked up on the next index reconcile.`,
+  );
+  return lines;
 }
 
 export interface EdgeRef {
@@ -268,19 +299,27 @@ export function renderSymbol(
         lines.push(`  (source unavailable: ${reasonOf(err)})`);
         continue;
       }
-      try {
-        const body = readSource(
-          abs,
-          node.startLine,
-          Math.min(node.endLine, node.startLine + MAX_BODY_LINES - 1),
-        );
-        lines.push("");
-        lines.push(...body);
-        if (node.endLine > node.startLine + MAX_BODY_LINES - 1) {
-          lines.push(`  ... truncated at ${MAX_BODY_LINES} lines`);
+      // Point-of-emission staleness gate: the body would be CURRENT bytes
+      // sliced at INDEXED line ranges. On a file that drifted after the
+      // last sync that slice can be a different symbol's code served under
+      // this node's name, so a drifted file never emits a slice.
+      if (isFileStaleOnDisk(cg, root, node.filePath)) {
+        lines.push(...staleSymbolBody(node, abs));
+      } else {
+        try {
+          const body = readSource(
+            abs,
+            node.startLine,
+            Math.min(node.endLine, node.startLine + MAX_BODY_LINES - 1),
+          );
+          lines.push("");
+          lines.push(...body);
+          if (node.endLine > node.startLine + MAX_BODY_LINES - 1) {
+            lines.push(`  ... truncated at ${MAX_BODY_LINES} lines`);
+          }
+        } catch {
+          lines.push(`  (source file missing on disk: ${node.filePath})`);
         }
-      } catch {
-        lines.push(`  (source file missing on disk: ${node.filePath})`);
       }
       const callers = cg.getCallers(node.id).slice(0, 12);
       const callees = cg.getCallees(node.id).slice(0, 12);
@@ -505,11 +544,19 @@ export async function renderExplore(
 
   for (const [filePath, nodes] of shown) {
     out.push(`## ${filePath}`);
-    for (const n of nodes.sort((a, b) => a.startLine - b.startLine)) {
-      const sig = n.signature ? ` ${n.signature}` : "";
-      out.push(`  ${n.name} (${n.kind}) [${n.startLine}-${n.endLine}]${sig}`);
+    // Point-of-emission staleness gate: the clusters below would be
+    // CURRENT bytes sliced at INDEXED line ranges, so a drifted file
+    // never emits a slice (the same contract as symbol mode). The
+    // per-symbol line ranges are the unreliable part of a drifted file,
+    // so they are not listed for it.
+    const stale = isFileStaleOnDisk(cg, root, filePath);
+    if (!stale) {
+      for (const n of nodes.sort((a, b) => a.startLine - b.startLine)) {
+        const sig = n.signature ? ` ${n.signature}` : "";
+        out.push(`  ${n.name} (${n.kind}) [${n.startLine}-${n.endLine}]${sig}`);
+      }
+      out.push("");
     }
-    out.push("");
     let abs: string;
     try {
       abs = absFile(root, filePath);
@@ -517,22 +564,39 @@ export async function renderExplore(
       continue;
     }
     try {
-      const clusters = clusterLines(
-        nodes.map((n) => [n.startLine, Math.min(n.endLine, n.startLine + MAX_BODY_LINES - 1)]),
-        8,
-        5,
-      );
-      for (const cluster of clusters) {
-        const body = readSource(
-          abs,
-          cluster.start,
-          Math.min(cluster.end, cluster.start + MAX_EXPLORE_LINES_PER_FILE - 1),
-        );
-        if (body.length > MAX_EXPLORE_LINES_PER_FILE) {
-          out.push(...body.slice(0, MAX_EXPLORE_LINES_PER_FILE));
-          out.push("  ... (cluster truncated)");
+      if (stale) {
+        const whole = staleWholeFile(abs);
+        if (whole !== undefined) {
+          out.push(
+            "  (stale: changed on disk after the last index sync; the full CURRENT source is shown instead of a slice, and symbol positions may have shifted)",
+          );
+          out.push("");
+          out.push(whole);
+        } else if (fs.existsSync(abs)) {
+          out.push(
+            "  (stale: changed on disk after the last index sync - source omitted, the indexed line ranges no longer match. Read the file directly for current content; the change is picked up on the next index reconcile.)",
+          );
         } else {
-          out.push(...body);
+          out.push(`  (source file missing on disk: ${filePath})`);
+        }
+      } else {
+        const clusters = clusterLines(
+          nodes.map((n) => [n.startLine, Math.min(n.endLine, n.startLine + MAX_BODY_LINES - 1)]),
+          8,
+          5,
+        );
+        for (const cluster of clusters) {
+          const body = readSource(
+            abs,
+            cluster.start,
+            Math.min(cluster.end, cluster.start + MAX_EXPLORE_LINES_PER_FILE - 1),
+          );
+          if (body.length > MAX_EXPLORE_LINES_PER_FILE) {
+            out.push(...body.slice(0, MAX_EXPLORE_LINES_PER_FILE));
+            out.push("  ... (cluster truncated)");
+          } else {
+            out.push(...body);
+          }
         }
       }
     } catch {

@@ -2,8 +2,11 @@
  * Fixture: a tiny TypeScript repository with two git worktrees.
  *
  * main worktree:
- *   src/shared.ts  - helper(), ANSWER
- *   src/main.ts    - mainEntry() calls helper()
+ *   src/shared.ts   - helper(), ANSWER
+ *   src/main.ts     - mainEntry() calls helper()
+ *   src/mainonly.ts - mainOnlySymbol() (committed on main AFTER the
+ *                     feature branch was cut, so it exists only in the
+ *                     main worktree)
  *
  * feature worktree (branch `feature`), placed under a nested foreign
  * directory (`<base>/elsewhere/feature`) to prove placement irrelevance:
@@ -48,6 +51,11 @@ export function helper(x: number): number {
 }
 `;
 
+export const MAIN_ONLY = `export function mainOnlySymbol(): number {
+  return 43;
+}
+`;
+
 function git(cwd: string, args: string[]): void {
   execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
 }
@@ -87,6 +95,13 @@ export function buildFixture(): Fixture {
   fs.writeFileSync(path.join(feature, "src/main.ts"), FEATURE_MAIN_ENTRY);
   git(feature, ["add", "-A"]);
   git(feature, ["commit", "-q", "-m", "feature"]);
+
+  // Committed on main after the feature branch was cut: a sibling-only
+  // file, present in the main worktree and its index only. Pins the
+  // "sibling-only state reconciled away" direction of seed convergence.
+  fs.writeFileSync(path.join(main, "src/mainonly.ts"), MAIN_ONLY);
+  git(main, ["add", "-A"]);
+  git(main, ["commit", "-q", "-m", "mainonly"]);
 
   const cleanup = (): void => {
     try {
