@@ -23,6 +23,7 @@ import {
   unsafeRootReason,
 } from "../../extensions/codegraph/root";
 import { listWorktrees } from "../../extensions/codegraph/git";
+import { MARKER_NAME } from "../../extensions/codegraph/marker";
 
 function git(cwd: string, args: string[]): void {
   execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
@@ -178,7 +179,7 @@ describe("ensureReady (primary seam)", () => {
     // A real live child process owns the build marker and exits after ~2s.
     const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 2000)"]);
     fs.writeFileSync(
-      path.join(getCodeGraphDir(other), "pi-codegraph-build.json"),
+      path.join(getCodeGraphDir(other), MARKER_NAME),
       JSON.stringify({
         pid: child.pid,
         startedAt: Date.now(),
@@ -198,9 +199,7 @@ describe("ensureReady (primary seam)", () => {
     expect(info.cg.getProjectRoot()).toBe(other);
     expect(info.cg.getNodesByName("helper").length).toBeGreaterThan(0);
     expect(
-      fs.existsSync(
-        path.join(getCodeGraphDir(other), "pi-codegraph-build.json"),
-      ),
+      fs.existsSync(path.join(getCodeGraphDir(other), MARKER_NAME)),
     ).toBe(false);
     git(fixture.main, ["worktree", "remove", "--force", other]);
   }, 120_000);
@@ -217,7 +216,7 @@ describe("ensureReady (primary seam)", () => {
     git(fixture.main, ["worktree", "remove", "--force", fixture.feature]);
     git(fixture.main, ["worktree", "add", "-q", "--detach", fixture.feature, "HEAD"]);
 
-    const second = await s.queryReady(fixture.feature);
+    const second = await s.ensureReady(fixture.feature);
     expect(second.cg.getNodesByName("featureOnlySymbol").length).toBe(0);
     expect(second.cg.getNodesByName("helper").length).toBeGreaterThan(0);
   });
@@ -243,7 +242,7 @@ describe("ensureReady (primary seam)", () => {
     fs.cpSync(preserved, getCodeGraphDir(fixture.feature), { recursive: true });
     fs.rmSync(preserved, { recursive: true, force: true });
 
-    const second = await s.queryReady(fixture.feature);
+    const second = await s.ensureReady(fixture.feature);
     expect(second.cg.getNodesByName("addedLate").length).toBe(1);
     expect(second.cg.getNodesByName("featureOnlySymbol").length).toBeGreaterThan(0);
   });
@@ -347,14 +346,14 @@ describe("watcher disabled (CODEGRAPH_NO_WATCH=1)", () => {
         path.join(fixture.main, "src", "late1.ts"),
         "export function lateSymbolOne(): number { return 1; }\n",
       );
-      const second = await s.queryReady(fixture.main);
+      const second = await s.ensureReady(fixture.main);
       expect(second.cg.getNodesByName("lateSymbolOne").length).toBe(1);
 
       fs.writeFileSync(
         path.join(fixture.main, "src", "late2.ts"),
         "export function lateSymbolTwo(): number { return 2; }\n",
       );
-      const third = await s.queryReady(fixture.main);
+      const third = await s.ensureReady(fixture.main);
       expect(third.cg.getNodesByName("lateSymbolTwo").length).toBe(1);
 
       // The notice is one-time across the whole session.

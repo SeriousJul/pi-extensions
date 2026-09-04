@@ -136,7 +136,7 @@ function makeExecute(
     try {
       let effective = params;
       const anchor = anchorFile && params.file !== undefined;
-      const info = await session.queryReady(
+      const info = await session.ensureReady(
         ctx.cwd,
         anchor ? String(params.file) : undefined,
       );
