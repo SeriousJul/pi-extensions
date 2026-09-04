@@ -1,7 +1,6 @@
 /**
  * Rendering of query results into the text tool outputs.
  */
-import "./env";
 import type {
   CodeGraph,
   Edge,
@@ -9,7 +8,7 @@ import type {
   NodeKind,
   SearchResult,
   Subgraph,
-} from "./codegraph";
+} from "./runtime";
 import fs from "node:fs";
 import path from "node:path";
 import { CodegraphUnavailable } from "./root";

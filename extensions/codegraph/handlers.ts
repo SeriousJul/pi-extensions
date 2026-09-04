@@ -5,7 +5,7 @@
  */
 import path from "node:path";
 import { Type } from "typebox";
-import type { NodeKind } from "./codegraph";
+import type { NodeKind } from "./runtime";
 import {
   unavailableText,
   reasonOf,

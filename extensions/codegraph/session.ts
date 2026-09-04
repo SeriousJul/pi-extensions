@@ -17,16 +17,25 @@
  * (marker.ts), the watcher policy (watcher.ts), and the per-index meta
  * record (index-meta.ts). This class keeps the state machine and the
  * public interface.
+ *
+ * The runtime compatibility stack (env defaults, library load, shim
+ * wiring, preflight, runtime-gap classification) lives in runtime.ts;
+ * this class runs the once-per-process preflight before the first query
+ * and maps runtime-gap errors to the unavailable contract.
  */
-import "./env";
 import {
   CodeGraph,
+  DatabaseSync,
   FileLock,
   getDatabasePath,
   getCodeGraphDir,
   isInitialized,
-} from "./codegraph";
-import type { GraphStats, IndexProgress, SyncResult } from "./codegraph";
+  preflight,
+  RUNTIME_SQLITE_NOTICE,
+  RUNTIME_SQLITE_REASON,
+  runtimeGapReason,
+} from "./runtime";
+import type { GraphStats, IndexProgress, SyncResult } from "./runtime";
 import fs from "node:fs";
 import path from "node:path";
 import { gitCommonDir, isGitWorktree, listWorktrees } from "./git";
@@ -42,7 +51,6 @@ import {
 } from "./marker";
 import { CodegraphUnavailable, resolveRoot, unsafeRootReason } from "./root";
 import { findSeedSource, seedDb } from "./seed";
-import shim from "./sqlite-shim.cjs";
 import { startWatcher as startCodegraphWatcher, type WatcherState } from "./watcher";
 
 export type { WatcherState };
@@ -220,6 +228,7 @@ export class CodegraphSession {
    * This is the primary test seam.
    */
   async ensureReady(startDir: string, file?: string): Promise<ReadyInfo> {
+    this.assertRuntime();
     try {
       return await this.ensureReadyCore(startDir, file);
     } catch (err) {
@@ -230,21 +239,29 @@ export class CodegraphSession {
   /** Translate runtime gaps into the actionable unavailable contract. */
   private classifyError(err: unknown): unknown {
     if (err instanceof CodegraphUnavailable) return err;
-    const msg = err instanceof Error ? err.message : String(err);
-    if (/node:sqlite|No such built-in module/i.test(msg)) {
-      this.notifyOnce(
-        "runtime-sqlite",
-        "warning",
-        "codegraph: this runtime has no node:sqlite (pi bundles bun < 1.4). " +
-          "The installed codegraph package is not patched for it. Run " +
-          "`npm install` in the pi-extensions repo, then restart pi.",
-      );
-      return new CodegraphUnavailable(
-        "this runtime has no node:sqlite and codegraph is not patched for it (run npm install in the pi-extensions repo, then restart pi)",
-        true,
-      );
+    const reason = runtimeGapReason(err);
+    if (reason !== undefined) {
+      this.notifyOnce("runtime-sqlite", "warning", RUNTIME_SQLITE_NOTICE);
+      return new CodegraphUnavailable(reason, true);
     }
     return err;
+  }
+
+  /**
+   * The once-per-process preflight of the runtime compatibility stack
+   * (runtime.ts). A failing stack is reported with an actionable reason
+   * before the first query, instead of after the first failure. A
+   * runtime-gap failure carries the frozen vocabulary and the one-time
+   * notification, exactly like the classifyError path.
+   */
+  private assertRuntime(): void {
+    const res = preflight();
+    if (res.ok) return;
+    if (runtimeGapReason(res.reason) !== undefined) {
+      this.notifyOnce("runtime-sqlite", "warning", RUNTIME_SQLITE_NOTICE);
+      throw new CodegraphUnavailable(RUNTIME_SQLITE_REASON, true);
+    }
+    throw new CodegraphUnavailable(res.reason, true);
   }
 
   private async ensureReadyCore(
@@ -351,6 +368,7 @@ export class CodegraphSession {
 
   /** Force a full rebuild of the index for `dir`'s root. */
   async rebuild(dir: string): Promise<ReadyInfo> {
+    this.assertRuntime();
     try {
       return await this.rebuildCore(dir);
     } catch (err) {
@@ -401,6 +419,7 @@ export class CodegraphSession {
    * (`sourceDir`), or from the default seed source.
    */
   async reseed(dir: string, sourceDir?: string): Promise<ReadyInfo> {
+    this.assertRuntime();
     try {
       return await this.reseedCore(dir, sourceDir);
     } catch (err) {
@@ -837,7 +856,7 @@ function diskStats(
   indexState: string | null;
 } | undefined {
   if (!isInitialized(root)) return undefined;
-  const db = new shim.DatabaseSync(getDatabasePath(root), { readOnly: true });
+  const db = new DatabaseSync(getDatabasePath(root), { readOnly: true });
   try {
     const row = db
       .prepare(

@@ -9,12 +9,15 @@
  * Run the vitest suite under `bun test`/vitest-in-bun as well to exercise
  * the bun path end to end (see shim-bun.test.cts for a bun-only full
  * codegraph round trip).
+ *
+ * The shim surface is imported through the runtime module, the one place
+ * that re-exports it.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import shim from "../../extensions/codegraph/sqlite-shim.cjs";
+import * as shim from "../../extensions/codegraph/runtime";
 
 let dir: string;
 

@@ -16,7 +16,7 @@ import {
   recordSeed,
   writeMeta,
 } from "../../extensions/codegraph/index-meta";
-import { getCodeGraphDir } from "../../extensions/codegraph/codegraph";
+import { getCodeGraphDir } from "../../extensions/codegraph/runtime";
 
 let root: string;
 

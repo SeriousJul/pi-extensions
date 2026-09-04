@@ -7,8 +7,7 @@
  * the worktree itself, so an index that belongs to another worktree is
  * treated as absent and a local index is created (seeded from a sibling).
  */
-import "./env";
-import { findNearestCodeGraphRoot } from "./codegraph";
+import { findNearestCodeGraphRoot } from "./runtime";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";

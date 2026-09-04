@@ -10,7 +10,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { getCodeGraphDir } from "./codegraph";
+import { getCodeGraphDir } from "./runtime";
 
 /** Exported for tests that simulate another process's live build. */
 export const MARKER_NAME = "pi-codegraph-build.json";

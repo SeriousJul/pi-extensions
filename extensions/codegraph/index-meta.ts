@@ -8,7 +8,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { getCodeGraphDir } from "./codegraph";
+import { getCodeGraphDir } from "./runtime";
 
 export const META_NAME = "pi-codegraph-meta.json";
 

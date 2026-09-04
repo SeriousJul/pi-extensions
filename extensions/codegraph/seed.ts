@@ -7,10 +7,14 @@
  * API), so it is a consistent snapshot even while another process has the
  * sibling's index open.
  */
-import "./env";
-import { getDatabasePath, isInitialized } from "./codegraph";
+import {
+  backup,
+  backupFile,
+  DatabaseSync,
+  getDatabasePath,
+  isInitialized,
+} from "./runtime";
 import fs from "node:fs";
-import shim from "./sqlite-shim.cjs";
 import { listWorktrees } from "./git";
 
 export interface SeedSource {
@@ -57,14 +61,14 @@ export async function seedDb(targetRoot: string, sourceRoot: string): Promise<vo
   for (const suffix of ["", "-wal", "-shm", "-journal"]) {
     fs.rmSync(dstPath + suffix, { force: true });
   }
-  const src = new shim.DatabaseSync(srcPath, { readOnly: true });
+  const src = new DatabaseSync(srcPath, { readOnly: true });
   try {
-    if (shim.backup) {
-      await shim.backup(src, dstPath);
+    if (backup) {
+      await backup(src, dstPath);
     } else {
       // Node 22.5-22.15: no node:sqlite backup API. The checkpoint + file
       // copy fallback yields a consistent snapshot at the checkpoint moment.
-      await shim.backupFile(srcPath, dstPath);
+      await backupFile(srcPath, dstPath);
     }
   } finally {
     src.close();

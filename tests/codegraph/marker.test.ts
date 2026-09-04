@@ -21,7 +21,7 @@ import {
   waitForBuild,
   writeMarker,
 } from "../../extensions/codegraph/marker";
-import { getCodeGraphDir } from "../../extensions/codegraph/codegraph";
+import { getCodeGraphDir } from "../../extensions/codegraph/runtime";
 
 let root: string;
 

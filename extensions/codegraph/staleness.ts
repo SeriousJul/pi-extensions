@@ -27,7 +27,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import type { CodeGraph } from "./codegraph";
+import type { CodeGraph } from "./runtime";
 
 const DRIFT_TTL_MS = 2000;
 const driftCache = new Map<string, { at: number; stale: boolean }>();

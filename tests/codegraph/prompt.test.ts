@@ -10,7 +10,7 @@ import { buildFixture, type Fixture } from "./fixture";
 import codegraphExtension from "../../extensions/codegraph/index";
 import { CodegraphSession } from "../../extensions/codegraph/session";
 import { clearMarker, writeMarker } from "../../extensions/codegraph/marker";
-import { CodeGraph } from "../../extensions/codegraph/codegraph";
+import { CodeGraph } from "../../extensions/codegraph/runtime";
 import { PROMPT_NOTE } from "../../extensions/codegraph/handlers";
 import type {
   ExtensionAPI,
@@ -168,46 +168,6 @@ describe("system prompt note", () => {
       execFileSync("git", ["worktree", "remove", "--force", extra], {
         cwd: fixture.main,
       });
-    }
-  });
-});
-
-describe("environment defaults", () => {
-  it("defaults telemetry and update-check vars only when unset", async () => {
-    const saved = {
-      t: process.env.CODEGRAPH_TELEMETRY,
-      u: process.env.CODEGRAPH_NO_UPDATE_CHECK,
-    };
-    delete process.env.CODEGRAPH_TELEMETRY;
-    delete process.env.CODEGRAPH_NO_UPDATE_CHECK;
-    try {
-      await import("../../extensions/codegraph/env?fresh=" + Date.now());
-      expect(process.env.CODEGRAPH_TELEMETRY).toBe("0");
-      expect(process.env.CODEGRAPH_NO_UPDATE_CHECK).toBe("1");
-    } finally {
-      if (saved.t === undefined) delete process.env.CODEGRAPH_TELEMETRY;
-      else process.env.CODEGRAPH_TELEMETRY = saved.t;
-      if (saved.u === undefined) delete process.env.CODEGRAPH_NO_UPDATE_CHECK;
-      else process.env.CODEGRAPH_NO_UPDATE_CHECK = saved.u;
-    }
-  });
-
-  it("keeps explicit user settings", async () => {
-    const saved = {
-      t: process.env.CODEGRAPH_TELEMETRY,
-      u: process.env.CODEGRAPH_NO_UPDATE_CHECK,
-    };
-    process.env.CODEGRAPH_TELEMETRY = "1";
-    delete process.env.CODEGRAPH_NO_UPDATE_CHECK;
-    try {
-      await import("../../extensions/codegraph/env?fresh=" + Date.now());
-      expect(process.env.CODEGRAPH_TELEMETRY).toBe("1");
-      expect(process.env.CODEGRAPH_NO_UPDATE_CHECK).toBe("1");
-    } finally {
-      if (saved.t === undefined) delete process.env.CODEGRAPH_TELEMETRY;
-      else process.env.CODEGRAPH_TELEMETRY = saved.t;
-      if (saved.u === undefined) delete process.env.CODEGRAPH_NO_UPDATE_CHECK;
-      else process.env.CODEGRAPH_NO_UPDATE_CHECK = saved.u;
     }
   });
 });

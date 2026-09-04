@@ -16,8 +16,9 @@ Bun-compiled binary, and two things in codegraph break under it:
    shim (`sqlite-shim.cjs`). The shim uses the real `node:sqlite` on
    Node and on bun >= 1.4 (bun provides it), and emulates the same
    surface over `bun:sqlite` on older bun, so one installed tree works
-   in every runtime. The env defaults (`env.ts`, imported before the
-   library loads) set `CODEGRAPH_NO_FAST_INIT=1` automatically on the
+   in every runtime. The env defaults (`runtime.ts`, which runs them
+   before the library loads in file order) set `CODEGRAPH_NO_FAST_INIT=1`
+   automatically on the
    bun RUNTIME (unless the user set it), because codegraph's fast-init
    path sets `journal_mode = MEMORY` from a second connection, which
    bun's SQLite engine rejects with "database is locked" - whether it is
@@ -35,7 +36,10 @@ The patch is idempotent (patched files carry a marker comment) and uses
 absolute paths, so the repo may not be moved after install; re-run
 `npm install` if it is. On a runtime without `node:sqlite`, an
 unpatched codegraph still fails with codegraph's own clear error, which
-the extension reports as its standard unavailable line.
+the extension reports as its standard unavailable line. The runtime
+module's preflight (a temporary-database round trip through the shim)
+runs once before the first query and reports a broken stack with an
+actionable reason before a real index is at stake.
 
 The Node floor is 22.5 (the first version with `node:sqlite`). On Node
 22.5-22.15 the seed copy uses a WAL checkpoint + file copy instead of
@@ -59,6 +63,9 @@ package, so the postinstall also looks for it in ancestor
 - `bun test tests/codegraph/shim-bun.test.cts` - bun-only test that runs
   a real codegraph index build and query over the `bun:sqlite` shim
   path.
+- `bun test tests/codegraph/runtime-bun.test.cts` - bun-only test that
+  the runtime module reports the `bun:sqlite` backend when forced by
+  `CODEGRAPH_PI_SQLITE_SHIM=bun`, and that its preflight passes on it.
 - `npx tsc --noEmit` - typecheck.
 
 ## Tools
@@ -164,11 +171,13 @@ codegraph is unavailable (<reason>). Use the built-in read and grep tools instea
 - `index.ts` - pi entrypoint: registers tools and the command, adds the
   system prompt note when the index is ready, closes instances on session
   shutdown.
-- `codegraph.ts` - the single import point for the codegraph library:
-  loads it through CJS require (Node ESM cannot see the named exports of
-  the package's CJS re-export) and re-exports its values and types.
-- `env.ts` - telemetry/update-check/fast-init environment defaults,
-  imported before the codegraph library loads.
+- `runtime.ts` - the runtime compatibility stack in one module, in file
+  order (the order is the contract): the env defaults (telemetry,
+  update-check, fast-init), the single import point for the codegraph
+  library (CJS require - Node ESM cannot see the named exports of the
+  package's CJS re-export), the sqlite-shim re-exports, the
+  once-per-process preflight (temporary-database round trip), and the
+  runtime-gap error classification with its frozen unavailable strings.
 - `sqlite-shim.cjs` - the `node:sqlite` compatibility shim used by the
   patched codegraph tree (pure CJS so every loader parses it).
 - `root.ts` - project root resolution and the unsafe-root guard.

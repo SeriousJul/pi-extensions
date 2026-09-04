@@ -8,10 +8,11 @@
  * and kept current by codegraph's own file watcher (with a reconcile before
  * every query when watching is degraded).
  *
- * `./env` is imported first, before anything that loads codegraph, so the
- * telemetry and update-check environment defaults are set in time.
+ * The env defaults that must precede the codegraph library load live in
+ * runtime.ts (loaded through the session's import of it), ahead of the
+ * library load in file order, so no file can load the library without
+ * them.
  */
-import "./env";
 import type {
   ExtensionAPI,
   ExtensionContext,

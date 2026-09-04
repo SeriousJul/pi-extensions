@@ -10,7 +10,7 @@
  * per-instance state and the one-time notifications.
  */
 import fs from "node:fs";
-import type { CodeGraph } from "./codegraph";
+import type { CodeGraph } from "./runtime";
 import { recordReconcile } from "./index-meta";
 
 export type WatcherState = "active" | "degraded" | "disabled" | "off";

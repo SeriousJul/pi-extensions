@@ -16,9 +16,9 @@ import {
   watchDisabledReason,
   type WatcherHooks,
 } from "../../extensions/codegraph/watcher";
-import type { CodeGraph } from "../../extensions/codegraph/codegraph";
+import type { CodeGraph } from "../../extensions/codegraph/runtime";
 import { readMeta } from "../../extensions/codegraph/index-meta";
-import { getCodeGraphDir } from "../../extensions/codegraph/codegraph";
+import { getCodeGraphDir } from "../../extensions/codegraph/runtime";
 
 interface WatchOptions {
   debounceMs?: number;
