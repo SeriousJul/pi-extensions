@@ -202,10 +202,10 @@ codegraph is unavailable (<reason>). Use the built-in read and grep tools instea
 - `watcher.ts` - the watcher policy: disabled reasons (`CODEGRAPH_NO_WATCH`,
   WSL2 `/mnt`), start, and degradation handling.
 - `session.ts` - `CodegraphSession`: the per-session index manager and the
-  single boundary every tool call goes through (`ensureReady`/`queryReady`).
-  The state machine, instance cache, in-flight dedup, and notifications live
-  here; all library access goes through the adapter. The marker, watcher,
-  and meta protocols live in the modules above.
+  single ready boundary every tool call and every test crosses
+  (`ensureReady`). The state machine, instance cache, in-flight dedup, and
+  notifications live here; all library access goes through the adapter. The
+  marker, watcher, and meta protocols live in the modules above.
 - `staleness.ts` - the point-of-emission staleness gate (size + mtime +
   content hash against the indexed record) that keeps the renderers from
   slicing a file that drifted after its last index sync.

@@ -135,8 +135,10 @@ function makeExecute(
   return async (_toolCallId, params, _signal, _onUpdate, ctx) => {
     try {
       const anchor = anchorFile?.(params);
-      const info = await session.queryReady(ctx.cwd, anchor);
-      const file = info.file ?? (params.file !== undefined ? String(params.file) : undefined);
+      const info = await session.ensureReady(ctx.cwd, anchor);
+      const file =
+        info.file ??
+        (params.file !== undefined ? String(params.file) : undefined);
       return ok(await run(info, params, file));
     } catch (err) {
       return fail(err);
