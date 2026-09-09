@@ -19,7 +19,11 @@
  * marker waits; a process that finds a dead marker adopts the on-disk
  * state and converges it with a sync. Two concurrent ensureReady calls in
  * the same process share one in-flight promise, so a build always runs
- * once.
+ * once. The background prewarm's promise is deliberately not that shared
+ * promise: a tool call waits for the prewarm and then runs its own path, so a
+ * successful build is reused and a failed one is retried, never inherited. A
+ * session that shuts down while a prewarm still builds refuses its result in
+ * `register`, so no open index or live watcher outlives the session.
  *
  * The internal protocols live in their own modules: the build marker
  * (marker.ts), the watcher policy (watcher.ts), the per-index meta record
@@ -50,6 +54,7 @@ import {
 import type { ResolvedRoot } from "./root";
 import { CodegraphUnavailable, resolveRoot, unsafeRootReason } from "./root";
 import { findSeedSource } from "./seed";
+import { emptyUsage, readUsage, USAGE_NAME, type UsageSummary } from "./usage";
 import { startWatcher as startCodegraphWatcher, type WatcherState } from "./watcher";
 
 export type { WatcherState };
@@ -87,6 +92,8 @@ export interface ReadyInfo {
   justBuilt?: boolean;
 }
 
+export type IndexPromptState = "ready" | "building" | "none";
+
 /** The counts /codegraph status shows for an index (open or on disk only). */
 export interface IndexCounts {
   fileCount: number;
@@ -108,6 +115,7 @@ export interface RootStatus {
   lastReconcileAt?: number;
   lastReconcileChanged?: number;
   instanceOpen: boolean;
+  usage: UsageSummary;
 }
 
 export interface SessionUi {
@@ -130,6 +138,9 @@ function formatProgress(p: IndexProgress, root: string): string {
   return `codegraph: indexing ${root} [${p.phase}]${counts}${file}`;
 }
 
+/** The reason a create path reports when its session has already shut down. */
+const SESSION_CLOSED = "the codegraph session is closed";
+
 export class CodegraphSession {
   private readonly instances = new Map<string, InstanceEntry>();
   private readonly inFlight = new Map<string, Promise<ReadyInfo>>();
@@ -139,6 +150,20 @@ export class CodegraphSession {
   private ui: SessionUi | undefined;
   private readonly factoryOpt: IndexAdapterFactory | undefined;
   private readonly buildWaitTimeoutMs: number;
+  private readonly prewarmOn: boolean;
+  private readonly prewarmStarted = new Set<string>();
+  /**
+   * The running background prewarm per root. The promise is total: it resolves
+   * with the ReadyInfo on success and with undefined on a failure the prewarm
+   * has already reported. A tool call waits on it and then runs its own path,
+   * so a prewarm rejection can never reach a tool result.
+   */
+  private readonly prewarming = new Map<
+    string,
+    Promise<ReadyInfo | undefined>
+  >();
+  /** True from `closeAll` on: work in flight must leave nothing open behind. */
+  private closed = false;
   private factoryPromise: Promise<IndexAdapterFactory> | undefined;
 
   constructor(
@@ -154,10 +179,13 @@ export class CodegraphSession {
       factory?: IndexAdapterFactory;
       /** Test seam for the build-wait deadline; the default is 30 minutes. */
       buildWaitTimeoutMs?: number;
+      /** Test seam for disabling the background first-turn build. */
+      prewarm?: boolean;
     } = {},
   ) {
     this.autoOn = envSwitch("CODEGRAPH_PI_AUTO_INDEX", true);
     if (opts.autoIndex !== undefined) this.autoOn = opts.autoIndex;
+    this.prewarmOn = opts.prewarm ?? envSwitch("CODEGRAPH_PI_PREWARM", true);
     this.seedingOn = envSwitch("CODEGRAPH_PI_SEEDING", true);
     if (opts.seeding !== undefined) this.seedingOn = opts.seeding;
     this.factoryOpt = opts.factory;
@@ -177,19 +205,25 @@ export class CodegraphSession {
     return this.autoOn;
   }
 
-  /** One notification per session per key. */
+  /** One notification per session per key, and none after shutdown. */
   notifyOnce(
     key: string,
     level: "info" | "warning" | "error",
     message: string,
   ): void {
-    if (this.notified.has(key)) return;
+    if (this.closed || this.notified.has(key)) return;
     this.notified.add(key);
     this.ui?.notify(level, message);
   }
 
-  /** Close all open instances (session shutdown). */
+  /**
+   * Close all open instances (session shutdown). The session is then closed
+   * for good: a background prewarm that is still building cannot be aborted,
+   * but `register` and `startWatcher` refuse its result, so nothing it opens
+   * outlives the session it was started for.
+   */
   closeAll(): void {
+    this.closed = true;
     for (const entry of this.instances.values()) {
       try {
         entry.cg.close();
@@ -198,6 +232,7 @@ export class CodegraphSession {
       }
     }
     this.instances.clear();
+    this.prewarming.clear();
   }
 
   private drop(root: string): void {
@@ -212,6 +247,7 @@ export class CodegraphSession {
   }
 
   private status(text: string | undefined): void {
+    if (this.closed) return;
     this.ui?.status?.(text);
   }
 
@@ -279,6 +315,13 @@ export class CodegraphSession {
       this.notifyOnce("runtime-sqlite", "warning", gap.notice);
       throw new CodegraphUnavailable(gap.reason, true);
     }
+    // An unrecognized preflight failure is still a runtime problem the user
+    // can only see here: a background prewarm swallows it, so report it once.
+    this.notifyOnce(
+      "runtime-preflight",
+      "warning",
+      `codegraph: the codegraph runtime failed its preflight check (${res.reason})`,
+    );
     throw new CodegraphUnavailable(res.reason, true);
   }
 
@@ -303,10 +346,63 @@ export class CodegraphSession {
    * cached-instance branch of the core path below.
    */
   async ensureReady(startDir: string, file?: string): Promise<ReadyInfo> {
+    return this.ready(startDir, file, true);
+  }
+
+  /**
+   * `ensureReady` on the ready seam: every tool and command call waits for a
+   * running background prewarm before it starts work of its own.
+   */
+  private async ready(
+    startDir: string,
+    file: string | undefined,
+    waitForPrewarm: boolean,
+  ): Promise<ReadyInfo> {
     const f = await this.factory();
+    return this.readyFrom(f, { startDir, file }, waitForPrewarm);
+  }
+
+  /**
+   * The ready seam for a call described by its origin: the directory it came
+   * from, the file argument that anchors it, and optionally the project root
+   * its caller already resolved. A caller that passes `resolved` (the turn's
+   * prewarm) does not pay for the root walk twice; see `projectRootFor`.
+   *
+   * `waitForPrewarm` is true for every call a tool or a command makes, so such
+   * a call joins a running background build instead of starting a second one; it
+   * is false only for the prewarm itself, which must not wait on the attempt it
+   * is running.
+   *
+   * The wait is deliberately not a share of the prewarm's promise. The prewarm's
+   * waiters' promise is total (it resolves with `undefined` on any failure), so
+   * after it settles this call re-resolves its root and runs the normal
+   * lifecycle as its own owner:
+   *
+   * - Success: the prewarm registered its instance, so the fresh resolution
+   *   lands in the cheap cached branch and the build is never paid twice.
+   * - Failure: nothing is registered, so this call builds on its own and owns
+   *   its own error. A background problem therefore cannot become a tool result.
+   */
+  private async readyFrom(
+    f: IndexAdapterFactory,
+    origin: { startDir: string; file?: string; resolved?: ResolvedRoot },
+    waitForPrewarm: boolean,
+  ): Promise<ReadyInfo> {
     this.assertRuntime(f);
     try {
-      const resolved = resolveRoot(startDir, file, this.nearest(f));
+      const nearest = this.nearest(f);
+      let resolved =
+        origin.resolved ?? resolveRoot(origin.startDir, origin.file, nearest);
+      const background = waitForPrewarm
+        ? this.prewarming.get(resolved.root)
+        : undefined;
+      if (background) {
+        // The map entry is removed before the waiters' promise settles, so this
+        // is one wait and one fresh resolution, never a loop. The re-resolution
+        // is what lets a successful prewarm serve from its cached instance.
+        await background;
+        resolved = resolveRoot(origin.startDir, origin.file, nearest);
+      }
       const ready = await this.ensureReadyCore(f, resolved);
       if (resolved.file === undefined) return ready;
       return { ...ready, file: resolved.file };
@@ -317,7 +413,7 @@ export class CodegraphSession {
 
   /**
    * The index lifecycle for an already resolved root. The result reports the
-   * root `resolveRoot` chose; the file form belongs to `ensureReady`, which is
+   * root `resolveRoot` chose; the file form belongs to `readyFrom`, which is
    * the only site that puts it on a ready result.
    */
   private async ensureReadyCore(
@@ -326,6 +422,11 @@ export class CodegraphSession {
   ): Promise<ReadyInfo> {
     let { needsCreate, mainCheckout, isMainCheckout } = resolved;
     const { root } = resolved;
+    const unsafe = unsafeRootReason(root);
+    if (unsafe) {
+      this.notifyOnce(`unsafe-root:${root}`, "warning", `codegraph: ${unsafe}`);
+      throw new CodegraphUnavailable(unsafe, true);
+    }
 
     const cached = this.instances.get(root);
     if (cached) {
@@ -386,40 +487,209 @@ export class CodegraphSession {
   }
 
   /**
-   * True when the index for `dir`'s root is ready to serve queries: it
-   * exists (on disk or in this session) and no build or seed is running -
-   * not in this process (its own marker) and not in another live process
-   * (a peer's live marker). While a build runs the database file exists,
-   * but the index is not ready, and the prompt note must not steer toward
-   * a tool that would block on the build.
-   *
-   * Cost note: this runs on every before_agent_start and spawns two git
-   * calls (rev-parse, worktree list) per turn. That cost is accepted
-   * instead of cached: the result only gates the prompt note, and a
-   * cached answer would go stale exactly when a worktree is added or
-   * removed.
+   * The project root for one agent turn, or undefined when no codegraph project
+   * resolves at or above `dir`. The entrypoint resolves once per turn and hands
+   * the result to `prewarmFor` and `indexStateFor`: both need the same answer,
+   * and a root walk costs several git and filesystem probes.
    */
-  isReadyFor(dir: string): boolean {
+  projectRootFor(dir: string): ResolvedRoot | undefined {
     try {
-      const f = this.syncFactory();
-      const { root, needsCreate } = resolveRoot(dir, undefined, this.nearest(f));
-      if (needsCreate) return this.instances.has(root);
-      const marker = f ? readMarker(f.create(root).codeGraphDir()) : undefined;
-      if (marker && isBuildInFlight(marker)) {
-        return false;
-      }
-      return true;
+      return resolveRoot(dir, undefined, this.nearest(this.syncFactory()));
     } catch {
-      return false;
+      // No git repository and no build manifest: no codegraph call can be
+      // served from this directory, so there is nothing to build and nothing to
+      // tell the agent about it.
+      return undefined;
     }
   }
 
   /**
-   * The resolved root for `dir` without touching the index. Used by the
-   * /codegraph command, which must name the root before it acts.
+   * The index state the first-turn prompt note reports, or undefined when no
+   * note belongs in the prompt. The note promises that a codegraph call answers
+   * (and, in the "none" state, that the first call builds the index), so it must
+   * not appear where no call can deliver that: the note would send the agent to
+   * a tool that only fails, and the agent would go back to a grep loop - the
+   * exact behavior this note exists to remove.
+   *
+   * A call can be served only when all of these hold, so each one gates here:
+   * - a project root resolves at or above the turn's directory;
+   * - that root is one the extension agrees to index (not a home or fs root);
+   * - the runtime compatibility stack passes its preflight (see below);
+   * - either an index exists to serve the query, or automatic indexing is on so
+   *   the first call can build one.
+   *
+   * The preflight gate is the one check that suppresses the note in every state,
+   * including "ready": every public entry asserts the runtime before it serves a
+   * query, so on a machine where the stack is broken no call can answer even when
+   * the index on disk is perfect. `preflight()` is cached per process, so this
+   * costs one temporary database open for the whole session, not one per turn.
+   * This method stays side-effect free: it never warns. The actionable runtime
+   * notice belongs to the first call (or to the prewarm), which reports it once.
+   *
+   * Synchronous by design (it runs inside the prompt hook), and it reuses the
+   * same root, instance, and marker knowledge as the ready check.
    */
-  resolveRootFor(dir: string): ResolvedRoot {
-    return resolveRoot(dir, undefined, this.nearest(this.syncFactory()));
+  indexStateFor(
+    dir: string,
+    resolved?: ResolvedRoot,
+  ): IndexPromptState | undefined {
+    const f = this.syncFactory();
+    const turn = resolved ?? this.projectRootFor(dir);
+    if (!turn) return undefined;
+    const { root } = turn;
+    // An existing index at the home or filesystem root is unsafe too: the note
+    // must not advertise a query path that the ready lifecycle refuses.
+    if (unsafeRootReason(root)) return undefined;
+    // A broken runtime makes every call fail, whatever the index looks like.
+    if (!f || !f.preflight().ok) return undefined;
+    if (this.prewarming.has(root) || this.inFlight.has(root)) {
+      return "building";
+    }
+    let adapter: IndexAdapter | undefined;
+    try {
+      adapter = f.create(root);
+      const marker = readMarker(adapter.codeGraphDir());
+      if (marker && isBuildInFlight(marker)) return "building";
+      if (
+        adapter.initialized() ||
+        this.instances.get(root)?.cg.databaseExists()
+      ) {
+        return "ready";
+      }
+    } catch {
+      // No index visible: fall through to the "no build is possible" check.
+    }
+    // Nothing on disk to serve a query from. The note may promise only what a
+    // call can deliver: automatic indexing on, a factory to build with, and a
+    // root the extension agrees to index.
+    if (!this.autoOn || unsafeRootReason(root)) return undefined;
+    return "none";
+  }
+
+  /**
+   * Start one background build for a fresh root, at most once per root per
+   * session. The promise is intentionally not returned to the agent-start hook:
+   * a failure is reported as one warning here and never becomes a tool result
+   * or blocks the turn. A concurrent tool call waits on the attempt (see
+   * `ensureReadyCore`) and then runs its own path, so it retries instead of
+   * inheriting the background failure.
+   *
+   * `resolved` is the turn's already-resolved root (see `projectRootFor`).
+   */
+  prewarmFor(dir: string, resolved?: ResolvedRoot): void {
+    if (!this.prewarmOn || !this.autoOn || this.closed) return;
+    const f = this.syncFactory();
+    // A broken runtime cannot build an index, and the ready seam would refuse
+    // the attempt before it started. Spending one attempt per worktree on a
+    // machine where the stack is broken buys nothing but a warning key.
+    if (!f || !f.preflight().ok) return;
+
+    const turn = resolved ?? this.projectRootFor(dir);
+    if (!turn) return;
+    const { root } = turn;
+    if (unsafeRootReason(root) || this.prewarmStarted.has(root)) return;
+    if (this.prewarming.has(root)) return;
+
+    try {
+      if (f.create(root).initialized()) return;
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      this.notifyOnce(
+        `prewarm-failed:${root}`,
+        "warning",
+        `codegraph: background index prewarm failed at ${root}: ${reason}`,
+      );
+      return;
+    }
+
+    this.prewarmStarted.add(root);
+    // The waiters' promise is created first and settled by the attempt, so the
+    // entry is in the map before the ready seam runs (and the attempt itself
+    // skips that wait). The turn's resolved root is handed to the seam so this
+    // turn walks the project root once, not twice.
+    let settle!: (info: ReadyInfo | undefined) => void;
+    const attempt = new Promise<ReadyInfo | undefined>((resolve) => {
+      settle = resolve;
+    });
+    this.prewarming.set(root, attempt);
+    void this.readyFrom(f, { startDir: dir, resolved: turn }, false).then(
+      (info) => {
+        this.prewarming.delete(root);
+        if (this.closed) {
+          // `session_shutdown` outran this build. The index on disk is a real
+          // result the next session will adopt, but this session holds nothing
+          // open for a turn that no longer exists.
+          this.drop(root);
+          settle(undefined);
+          return;
+        }
+        settle(info);
+      },
+      (err: unknown) => {
+        this.prewarming.delete(root);
+        // A closed session has no one to read a warning, and its own failure
+        // ("the codegraph session is closed") is not something that went wrong.
+        if (!this.closed) this.reportPrewarmFailure(root, err);
+        // The waiters retry on their own; undefined keeps this rejection from
+        // ever reaching a tool result.
+        settle(undefined);
+      },
+    );
+  }
+
+  /**
+   * True while a background prewarm owns the first build at `root`. A command
+   * that removes or rebuilds an index must not race that build: the build
+   * marker covers other processes, not this session's own attempt.
+   */
+  isPrewarming(root: string): boolean {
+    return this.prewarming.has(root);
+  }
+
+  /**
+   * Report a failed prewarm exactly once. Every structural failure the create
+   * path can hit reports itself with a one-time warning and surfaces as a
+   * CodegraphUnavailable (build failure, unsafe root, lock contention, build
+   * wait timeout, runtime preflight). Anything else is unexpected and would
+   * vanish silently in the background, so the prewarm names it.
+   */
+  private reportPrewarmFailure(root: string, err: unknown): void {
+    if (err instanceof CodegraphUnavailable) return;
+    const reason = err instanceof Error ? err.message : String(err);
+    this.notifyOnce(
+      `prewarm-failed:${root}`,
+      "warning",
+      `codegraph: background index prewarm failed at ${root}: ${reason}`,
+    );
+  }
+
+  /**
+   * The resolved root for `dir` without touching the index. Used by the
+   * /codegraph command and the tool ledger, which must name the root before
+   * they act.
+   */
+  resolveRootFor(dir: string, file?: string): ResolvedRoot {
+    return resolveRoot(dir, file, this.nearest(this.syncFactory()));
+  }
+
+  /**
+   * The index directory a call would record its usage in, without opening the
+   * index.
+   *
+   * The `file` argument stays part of this signature on purpose: file anchoring
+   * moved into `resolveRoot` (spec 0006), so the same argument that decides
+   * which root serves a call also decides which ledger records it. A caller that
+   * omitted it could write a failure into another project's ledger.
+   *
+   * Only a call's failure path needs this: a successful call names its ledger
+   * from the ready result (`ReadyInfo`'s own adapter), which is the resolution
+   * the seam already did.
+   */
+  usageDirFor(dir: string, file?: string): string | undefined {
+    const f = this.syncFactory();
+    if (!f) return undefined;
+    const resolved = resolveRoot(dir, file, this.nearest(f));
+    return f.create(resolved.root).codeGraphDir();
   }
 
   /** A status snapshot for the /codegraph command. */
@@ -435,13 +705,14 @@ export class CodegraphSession {
     // so the bare /codegraph status shows the file/node/edge counts without
     // opening the index.
     const disk = entry ? undefined : adapter?.diskStats();
+    const usageDir = entry?.cg.codeGraphDir() ?? adapter?.codeGraphDir();
     return {
       root: resolved.root,
       needsCreate: resolved.needsCreate,
       mainCheckout: resolved.mainCheckout,
       isMainCheckout: resolved.isMainCheckout,
       stats: entry ? entry.cg.getStats() : disk,
-      indexState: entry ? entry.cg.getIndexState() : disk?.indexState ?? null,
+      indexState: entry ? entry.cg.getIndexState() : (disk?.indexState ?? null),
       watcher: entry?.watcher ?? "off",
       watcherReason: entry?.watcherReason,
       seedSource: meta.seedSource,
@@ -450,6 +721,7 @@ export class CodegraphSession {
       lastReconcileChanged:
         entry?.lastReconcileChanged ?? meta.lastReconcileChanged,
       instanceOpen: entry !== undefined,
+      usage: usageDir ? readUsage(usageDir) : emptyUsage(),
     };
   }
 
@@ -573,15 +845,32 @@ export class CodegraphSession {
     }
   }
 
-  /** Remove the index for `dir`'s root. */
-  async uninit(dir: string): Promise<{ root: string; removed: boolean }> {
+  /**
+   * Remove the index for `dir`'s root, and the usage ledger with it. A ledger
+   * can exist without an index (a failing call still records its reason), so
+   * the directory is removed in that case too: the ledger is disposable with
+   * the index by contract.
+   *
+   * `removed` is true when an index was deleted; `usageOnly` is true when no
+   * index existed and only the ledger was deleted.
+   */
+  async uninit(dir: string): Promise<{
+    root: string;
+    removed: boolean;
+    usageOnly: boolean;
+  }> {
     const f = await this.factory();
     const { root } = resolveRoot(dir, undefined, this.nearest(f));
     this.drop(root);
     const cg = f.create(root);
-    if (!cg.initialized()) return { root, removed: false };
-    fs.rmSync(cg.codeGraphDir(), { recursive: true, force: true });
-    return { root, removed: true };
+    const indexDir = cg.codeGraphDir();
+    const removed = cg.initialized();
+    const usageOnly =
+      !removed && fs.existsSync(path.join(indexDir, USAGE_NAME));
+    if (removed || usageOnly) {
+      fs.rmSync(indexDir, { recursive: true, force: true });
+    }
+    return { root, removed, usageOnly };
   }
 
   // ------------------------------------------------------------------
@@ -595,6 +884,18 @@ export class CodegraphSession {
       firstSyncDone: false,
       watcher: "off",
     };
+    if (this.closed) {
+      // The session ended while this index was being opened or built (the
+      // first-turn prewarm runs in the background). Tracking it here would put
+      // an open database and a watcher in a map nobody is going to close again,
+      // so the instance is closed and left untracked.
+      try {
+        cg.close();
+      } catch {
+        // already closed
+      }
+      return entry;
+    }
     this.instances.set(root, entry);
     return entry;
   }
@@ -616,11 +917,7 @@ export class CodegraphSession {
     }
     const unsafe = unsafeRootReason(root);
     if (unsafe) {
-      this.notifyOnce(
-        `unsafe-root:${root}`,
-        "warning",
-        `codegraph: ${unsafe}`,
-      );
+      this.notifyOnce(`unsafe-root:${root}`, "warning", `codegraph: ${unsafe}`);
       throw new CodegraphUnavailable(unsafe, true);
     }
 
@@ -655,6 +952,10 @@ export class CodegraphSession {
     try {
       await cg.open();
       const entry = this.register(cg, root);
+      // A shutdown that landed during the open ends the attempt here: `register`
+      // already closed the adapter, so nothing may query it, watch it, or hand
+      // it to a session that no longer exists.
+      if (this.closed) throw new CodegraphUnavailable(SESSION_CLOSED, true);
       this.startWatcher(entry);
       await this.syncForQuery(entry);
       return { cg, root, mainCheckout, isMainCheckout };
@@ -688,10 +989,15 @@ export class CodegraphSession {
         break;
       } catch {
         if (Date.now() > deadline) {
-          throw new CodegraphUnavailable(
-            `timed out waiting for the codegraph lock at ${root}`,
-            true,
+          const reason = `timed out waiting for the codegraph lock at ${root}`;
+          // Report it the way every other structural create-path failure is
+          // reported: a background prewarm swallows the error itself.
+          this.notifyOnce(
+            `lock-timeout:${root}`,
+            "warning",
+            `codegraph: ${reason}`,
           );
+          throw new CodegraphUnavailable(reason, true);
         }
         await sleep(LOCK_RETRY_MS);
         continue;
@@ -730,7 +1036,10 @@ export class CodegraphSession {
    * (its build marker is present). A marker whose process is dead is
    * removed and the on-disk state is adopted instead.
    */
-  private async waitForBuild(f: IndexAdapterFactory, root: string): Promise<void> {
+  private async waitForBuild(
+    f: IndexAdapterFactory,
+    root: string,
+  ): Promise<void> {
     try {
       await markerWaitForBuild(f.create(root).codeGraphDir(), {
         timeoutMs: this.buildWaitTimeoutMs,
@@ -756,7 +1065,10 @@ export class CodegraphSession {
    * Without this, the open path could serve a snapshot of an index that a
    * concurrent /codegraph init is about to replace.
    */
-  private async awaitBuildMarker(f: IndexAdapterFactory, root: string): Promise<void> {
+  private async awaitBuildMarker(
+    f: IndexAdapterFactory,
+    root: string,
+  ): Promise<void> {
     const marker = readMarker(f.create(root).codeGraphDir());
     if (marker && isLivePeer(marker)) {
       await this.waitForBuild(f, root);
@@ -821,6 +1133,12 @@ export class CodegraphSession {
     }
     const entry = this.register(cg, root);
     try {
+      // A shutdown that landed during the open ends the attempt here: the build
+      // it would have run belongs to a session that is gone, and `register`
+      // already closed the adapter it would have indexed into.
+      if (this.closed) {
+        throw new CodegraphUnavailable(SESSION_CLOSED, true);
+      }
       if (seedSource) {
         return this.finishSeed(entry, seedSource, mainCheckout, isMainCheckout);
       }
@@ -832,6 +1150,10 @@ export class CodegraphSession {
       if (!res.success) {
         const detail = res.errors?.[0]?.message ?? "unknown error";
         this.drop(root);
+        // `indexAll` may have created a partial database before reporting the
+        // failure. Remove it before the prewarm waiters re-resolve the root, or
+        // they would adopt that failed database through `openExisting`.
+        cg.discard();
         this.notifyOnce(
           `build-failed:${root}`,
           "warning",
@@ -891,6 +1213,7 @@ export class CodegraphSession {
   }
 
   private startWatcher(entry: InstanceEntry): void {
+    if (this.closed) return;
     const { state, reason } = startCodegraphWatcher(entry.cg, entry.root, {
       onDegraded: (r: string) => {
         entry.watcher = "degraded";

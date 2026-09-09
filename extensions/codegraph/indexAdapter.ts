@@ -107,6 +107,8 @@ export interface IndexAdapterOps {
   createEmpty(): Promise<void>;
   /** Recreate the index directory from scratch. The adapter holds the open instance. */
   recreate(): Promise<void>;
+  /** Remove a failed or otherwise unusable index so it cannot be adopted. */
+  discard(): void;
   /** Open the existing index. The adapter holds the open instance. */
   open(): Promise<void>;
   close(): void;
@@ -318,6 +320,12 @@ class RealIndexAdapter implements IndexAdapterOps {
   }
   async recreate(): Promise<void> {
     this.instance = await CodeGraph.recreate(this.root);
+  }
+  discard(): void {
+    this.close();
+    for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+      fs.rmSync(this.databasePath() + suffix, { force: true });
+    }
   }
   async open(): Promise<void> {
     this.instance = await CodeGraph.open(this.root, { sync: false });

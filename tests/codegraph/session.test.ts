@@ -312,6 +312,28 @@ describe("ensureReady (primary seam)", () => {
         err.reason.includes("auto-index"),
     );
   });
+
+  it.skipIf(Boolean(process.versions.bun))(
+    "refuses to serve an existing index at an unsafe root",
+    async () => {
+      const builder = newSession();
+      await builder.ensureReady(fixture.main);
+
+      const savedHome = process.env.HOME;
+      process.env.HOME = fixture.main;
+      try {
+        const s = newSession();
+        await expect(s.ensureReady(fixture.main)).rejects.toSatisfy(
+          (err: unknown) =>
+            err instanceof CodegraphUnavailable &&
+            err.reason.includes("refusing to index the home directory"),
+        );
+      } finally {
+        if (savedHome === undefined) delete process.env.HOME;
+        else process.env.HOME = savedHome;
+      }
+    },
+  );
 });
 
 describe("root resolution", () => {

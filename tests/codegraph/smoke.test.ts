@@ -27,7 +27,7 @@ const node = findNode();
 if (node) {
   describe("plain node smoke test (pi jiti load path)", () => {
     it(
-      "loads the extension through jiti under plain node and runs a tool handler",
+      "loads the extension through jiti under plain node, prewarms the first turn, and runs tool handlers",
       () => {
         const script = fileURLToPath(
           new URL("smoke/smoke-node.mjs", import.meta.url),

@@ -3,7 +3,7 @@
  *
  * A session constructed without an injected factory resolves the factory
  * registered here. handlers.ts registers the real factory at module load,
- * so the session's synchronous entry points (statusFor, isReadyFor) work
+ * so the session's synchronous entry points (statusFor, indexStateFor) work
  * without waiting for the first async use. This module is library-free on
  * purpose: importing it never loads the codegraph library.
  */

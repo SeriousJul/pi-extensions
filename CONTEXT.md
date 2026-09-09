@@ -57,14 +57,26 @@ different failure)
 **Prewarm**:
 Background creation of a worktree's index, started on the first agent turn of
 a session when the worktree has no index yet. Makes the first tool call and
-the first prompt note both find a nearly-ready index.
+the first prompt note both find a nearly-ready index. Attempted once per root
+per session. A tool call that arrives mid-prewarm waits for it and then takes
+its own path, so a prewarm failure never becomes a tool result.
 _Avoid_: prebuild (implies the index is finished before the session starts),
 warmup (too generic)
+
+**Prompt note**:
+The one codegraph block the extension appends to the system prompt on an agent
+turn: a first line stating the index state, then the fixed policy lines saying
+which tool fits which job. It appears only when a codegraph call can be served
+from the working directory, so it never promises what a call cannot deliver.
+_Avoid_: system prompt injection (generic), steering text (the note is the only
+one, so the shorter name is unambiguous)
 
 **Usage log**:
 The `.codegraph/usage.jsonl` file: one line per codegraph tool call, with
 time, tool, outcome, duration, and result size. Lives and dies with the
-index. Never leaves the machine.
+index. A record of a call that failed before an index existed still creates the
+index directory, which then carries codegraph's own ignore rule so git never
+stages the log. Never leaves the machine.
 _Avoid_: telemetry (implies data leaves the machine), metrics (metrics are
 aggregates; this is an event log)
 
