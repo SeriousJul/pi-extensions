@@ -1,8 +1,10 @@
 /**
  * Project root resolution.
  *
- * A call's index is the nearest initialized ancestor of the call's working
- * directory (a file argument anchors the lookup to that file's location).
+ * A call's index is the nearest initialized ancestor of its anchor: the
+ * call's working directory, or, when a file argument anchors the call
+ * (`codegraph_node` file mode; see "Anchor" in the repository CONTEXT.md), that
+ * file's location.
  * A borrowed index is never served: inside a git worktree the root is always
  * the worktree itself, so an index that belongs to another worktree is
  * treated as absent and a local index is created (seeded from a sibling).
@@ -11,7 +13,8 @@
  * `resolveRoot` returns the file's root-relative form beside the root, so no
  * caller re-derives it. The root policy (`resolveRootPolicy`) and the file
  * form (`rootRelativeFile`) are computed apart and joined once, in
- * `resolveRoot`.
+ * `resolveRoot`. `ResolvedRoot.file` is then the only carrier of that form on
+ * its way to a tool: the session copies it, unchanged, onto the ready result.
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -34,9 +37,16 @@ export interface ResolvedRoot {
   root: string;
   /**
    * The file argument expressed relative to `root`, when a file argument was
-   * given. A form that would escape `root` is refused: the caller's original
-   * argument is kept instead, so an indexed-file lookup reports the file as
-   * absent rather than reading across the project boundary.
+   * given. This is the one carrier of that form: `CodegraphSession.ensureReady`
+   * copies it to `ReadyInfo.file`, and no consumer re-derives it.
+   *
+   * A form that would leave `root` is refused and the caller's own argument is
+   * kept instead. That happens on a real escape (a path outside the project,
+   * so the indexed-file lookup reports it absent rather than reading across the
+   * project boundary) and on an apparent one, when `startDir` and `root` reach
+   * the same directory by different paths (see `rootRelativeFile`). An
+   * argument that names `root` itself is `"."`, which the indexed-file lookup
+   * reports as absent: a directory is never a file.
    */
   file?: string;
   /** True when no index exists at `root` and one must be created. */
@@ -126,7 +136,9 @@ export function nearestManifestDir(dir: string): string | undefined {
 
 /**
  * Express `fileArg` (a path relative to the call's `startDir`, or absolute)
- * as a path relative to `root`. The one rule behind `ResolvedRoot.file`.
+ * as a path relative to `root`. The one rule behind `ResolvedRoot.file`, and
+ * the rule a caller must not re-implement: root resolution applies it, and the
+ * ready result carries the answer.
  *
  * When the relative form would escape `root` the original argument is kept,
  * so a file the root does not contain is reported as absent by the index

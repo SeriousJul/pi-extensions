@@ -155,6 +155,22 @@ function nodeFileAnchor(params: Record<string, unknown>): string | undefined {
   return String(params.file);
 }
 
+/**
+ * The path `codegraph_node` file mode reads, in the root-relative form the
+ * index knows, or undefined when the call is not in file mode.
+ *
+ * `nodeFileAnchor` is the one predicate that both anchors root resolution and
+ * selects this mode, so the mode cannot drift from the anchor. The value comes
+ * from the ready result: `ReadyInfo.file` is the only carrier of the form root
+ * resolution decided for the anchored call, and parameters are never rewritten.
+ */
+function nodeFileRead(
+  params: Record<string, unknown>,
+  info: ReadyInfo,
+): string | undefined {
+  return nodeFileAnchor(params) === undefined ? undefined : info.file;
+}
+
 /** Register the six codegraph tools. */
 export function registerTools(pi: ExtensionAPI, session: CodegraphSession): void {
   pi.registerTool({
@@ -356,14 +372,15 @@ export function registerTools(pi: ExtensionAPI, session: CodegraphSession): void
             typeof params.line === "number" ? params.line : undefined,
           );
         }
-        // File mode. `info.file` is the root-relative form of the argument the
-        // anchor handed to ensureReady, so it is set whenever this mode runs:
-        // the ready result is the only carrier of that path.
-        if (info.file !== undefined) {
+        // File mode. The anchor predicate decides the mode and the ready
+        // result carries the root-relative path, so the two cannot disagree
+        // about what a `{ file }` call means.
+        const fileToRead = nodeFileRead(params, info);
+        if (fileToRead !== undefined) {
           return renderFileView(
             info.cg,
             info.root,
-            info.file,
+            fileToRead,
             typeof params.offset === "number" ? params.offset : 1,
             typeof params.limit === "number" ? params.limit : 2000,
             params.symbolsOnly === true,

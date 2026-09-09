@@ -48,12 +48,7 @@ import {
   writeMarker,
 } from "./marker";
 import type { ResolvedRoot } from "./root";
-import {
-  CodegraphUnavailable,
-  resolveRoot,
-  rootRelativeFile,
-  unsafeRootReason,
-} from "./root";
+import { CodegraphUnavailable, resolveRoot, unsafeRootReason } from "./root";
 import { findSeedSource } from "./seed";
 import { startWatcher as startCodegraphWatcher, type WatcherState } from "./watcher";
 
@@ -79,11 +74,11 @@ export interface ReadyInfo {
   cg: IndexAdapter;
   root: string;
   /**
-   * The file argument expressed relative to `root`, when the call gave one
-   * (the session asks root resolution for the form, spec 0006). A form that
-   * would escape `root` keeps the caller's original argument instead, so an
-   * indexed-file lookup never reads across the project boundary. Consumers
-   * use this instead of rewriting parameters.
+   * The file argument expressed relative to `root`, when the call gave one.
+   * `ensureReady` copies it from `ResolvedRoot.file`, the one decision of that
+   * form (spec 0006); see `rootRelativeFile` for the escape rule that keeps
+   * the caller's own argument when the relative form would leave `root`. An
+   * anchored consumer reads this instead of rewriting parameters.
    */
   file?: string;
   mainCheckout?: string;
@@ -297,11 +292,12 @@ export class CodegraphSession {
    * creates/seedes/builds/opens the index for that worktree when needed,
    * reconciles it, and returns the ready adapter.
    *
-   * This is also the one place the ready result gains its file form: the
-   * core path never threads it, so a new early return there cannot drop it.
-   * Callers that share one in-flight preparation still each get their own
-   * form, because it is derived from that caller's argument and the shared
-   * root.
+   * This is also the one place the ready result gains its file form. Root
+   * resolution decides the form once (`ResolvedRoot.file`, spec 0006) and this
+   * method copies it onto the result, so the core path below never threads it
+   * and a new early return there cannot drop it. Callers that share one
+   * in-flight preparation still each get their own form, because each call
+   * resolves its own root and file.
    *
    * The recovery for a removed-then-re-added worktree lives in the
    * cached-instance branch of the core path below.
@@ -310,25 +306,24 @@ export class CodegraphSession {
     const f = await this.factory();
     this.assertRuntime(f);
     try {
-      const ready = await this.ensureReadyCore(f, startDir, file);
-      if (file === undefined) return ready;
-      return { ...ready, file: rootRelativeFile(ready.root, startDir, file) };
+      const resolved = resolveRoot(startDir, file, this.nearest(f));
+      const ready = await this.ensureReadyCore(f, resolved);
+      if (resolved.file === undefined) return ready;
+      return { ...ready, file: resolved.file };
     } catch (err) {
       throw this.classifyError(f, err);
     }
   }
 
   /**
-   * The index lifecycle for the call's root: it reports the root that
-   * `resolveRoot` chose (the same root the file form will be expressed
-   * against) and never threads the file itself.
+   * The index lifecycle for an already resolved root. The result reports the
+   * root `resolveRoot` chose; the file form belongs to `ensureReady`, which is
+   * the only site that puts it on a ready result.
    */
   private async ensureReadyCore(
     f: IndexAdapterFactory,
-    startDir: string,
-    file?: string,
+    resolved: ResolvedRoot,
   ): Promise<ReadyInfo> {
-    const resolved = resolveRoot(startDir, file, this.nearest(f));
     let { needsCreate, mainCheckout, isMainCheckout } = resolved;
     const { root } = resolved;
 
@@ -369,7 +364,8 @@ export class CodegraphSession {
     const pending = this.inFlight.get(root);
     if (pending) {
       // The shared preparation belongs to another caller. Its result is
-      // returned as it is: no file form, because that is this caller's own.
+      // returned as it is: the file form is added by this call's own
+      // ensureReady, from this call's own root resolution.
       return await pending;
     }
     const promise = (async (): Promise<ReadyInfo> => {
