@@ -19,7 +19,7 @@
  *   whole   - drifted file within the whole-file caps: the full current
  *             source, numbered from line 1 (Read parity).
  *   omitted - drifted file beyond the caps: no source is served.
- *   missing - file gone from disk.
+ *   missing - file gone or unreadable on disk.
  *
  * The entry returns structure, not text: the stale/omitted notices are
  * wording that differs between symbol mode and explore mode, so the
@@ -126,7 +126,7 @@ export type SourceSection =
   | { kind: "whole"; lines: string[] }
   /** Drifted file beyond the caps: the source is withheld. */
   | { kind: "omitted" }
-  /** File gone from disk. */
+  /** File gone or unreadable on disk. */
   | { kind: "missing" };
 
 /** Absolute path of a result file, guarded to stay inside the index root. */
