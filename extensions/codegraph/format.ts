@@ -312,12 +312,23 @@ export type FileResolveStatus =
   | { status: "ambiguous"; candidates: string[] }
   | { status: "notfound"; tried: string };
 
+/**
+ * Forms that name a directory instead of a file: the root itself, its parent,
+ * and the empty argument. The partial (substring) fallback below would match
+ * them against nearly every indexed path and answer with an ambiguity list, so
+ * they are decided here: a directory is never in the index.
+ */
+const NOT_A_FILE = new Set(["", ".", "..", "../"]);
+
 export function resolveIndexedFile(
   cg: IndexAdapter,
   root: string,
   file: string,
 ): FileResolveStatus {
   const normalized = file.replace(/\\/g, "/").replace(/^\.\//, "");
+  if (NOT_A_FILE.has(normalized)) {
+    return { status: "notfound", tried: normalized };
+  }
   const files = cg.getFiles();
   const exact = files.filter((f) => f.path === normalized);
   let candidates: string[];

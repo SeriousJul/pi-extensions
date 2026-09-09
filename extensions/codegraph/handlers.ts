@@ -3,7 +3,6 @@
  * upstream MCP tools, minus the projectPath parameter: the index is always
  * the one for the call's own worktree), plus the /codegraph command.
  */
-import path from "node:path";
 import { Type } from "typebox";
 import type { NodeKind } from "./indexAdapter";
 import { realIndexFactory } from "./indexAdapter";
@@ -119,10 +118,12 @@ type Execute = (
  * failure - including mid-query index problems - to the standard fallback
  * line.
  *
- * `anchorFile` marks tools whose `file` parameter names the file to read
- * (codegraph_node file mode); that file anchors the root resolution. In the
- * other tools `file` only disambiguates a symbol and the root stays the
- * call's working directory.
+ * `fileAnchor` returns the path a call anchors root resolution on, or
+ * undefined to anchor on the call's own working directory. Only
+ * `codegraph_node` file mode passes one; in the other tools, and in node
+ * symbol mode, `file` only disambiguates a symbol and must not move the
+ * index. The wrapper rewrites no parameters: the root-relative form of an
+ * anchored file arrives on the ready result (`ReadyInfo.file`).
  */
 function makeExecute(
   session: CodegraphSession,
@@ -130,36 +131,44 @@ function makeExecute(
     info: ReadyInfo,
     params: Record<string, unknown>,
   ) => string | Promise<string>,
-  anchorFile = false,
+  fileAnchor?: (params: Record<string, unknown>) => string | undefined,
 ): Execute {
   return async (_toolCallId, params, _signal, _onUpdate, ctx) => {
     try {
-      let effective = params;
-      const anchor = anchorFile && params.file !== undefined;
-      const info = await session.ensureReady(
-        ctx.cwd,
-        anchor ? String(params.file) : undefined,
-      );
-      if (anchor) {
-        // The file argument was resolved against the call's cwd, but index
-        // paths are relative to the resolved root. When the anchor put the
-        // root somewhere else (a file in a sibling worktree), re-express the
-        // file relative to that root for the lookup.
-        const abs = path.resolve(ctx.cwd, String(params.file));
-        const rel = path.relative(info.root, abs);
-        if (
-          !path.isAbsolute(rel) &&
-          !rel.startsWith("..") &&
-          rel !== String(params.file)
-        ) {
-          effective = { ...params, file: rel };
-        }
-      }
-      return ok(await run(info, effective));
+      const info = await session.ensureReady(ctx.cwd, fileAnchor?.(params));
+      return ok(await run(info, params));
     } catch (err) {
       return fail(err);
     }
   };
+}
+
+/**
+ * The anchor for `codegraph_node`: file mode reads a whole file from the
+ * index, so that file's location decides the root. Symbol mode keeps the
+ * call's working directory as the root, where `file` only narrows a name.
+ */
+function nodeFileAnchor(params: Record<string, unknown>): string | undefined {
+  if (params.symbol !== undefined || params.file === undefined) {
+    return undefined;
+  }
+  return String(params.file);
+}
+
+/**
+ * The path `codegraph_node` file mode reads, in the root-relative form the
+ * index knows, or undefined when the call is not in file mode.
+ *
+ * `nodeFileAnchor` is the one predicate that both anchors root resolution and
+ * selects this mode, so the mode cannot drift from the anchor. The value comes
+ * from the ready result: `ReadyInfo.file` is the only carrier of the form root
+ * resolution decided for the anchored call, and parameters are never rewritten.
+ */
+function nodeFileRead(
+  params: Record<string, unknown>,
+  info: ReadyInfo,
+): string | undefined {
+  return nodeFileAnchor(params) === undefined ? undefined : info.file;
 }
 
 /** Register the six codegraph tools. */
@@ -346,32 +355,41 @@ export function registerTools(pi: ExtensionAPI, session: CodegraphSession): void
         }),
       ),
     }),
-    execute: makeExecute(session, (info, params) => {
-      // Symbol mode wins when both are given: `file` then narrows the symbol
-      // to the definition in that file (the spec's file+symbol priority).
-      // File mode only when `symbol` is absent.
-      if (params.symbol !== undefined) {
-        return renderSymbol(
-          info.cg,
-          info.root,
-          String(params.symbol),
-          params.includeCode !== false,
-          params.file !== undefined ? String(params.file) : undefined,
-          typeof params.line === "number" ? params.line : undefined,
-        );
-      }
-      if (params.file !== undefined) {
-        return renderFileView(
-          info.cg,
-          info.root,
-          String(params.file),
-          typeof params.offset === "number" ? params.offset : 1,
-          typeof params.limit === "number" ? params.limit : 2000,
-          params.symbolsOnly === true,
-        );
-      }
-      return "Either `file` or `symbol` must be provided.";
-    }, true),
+    execute: makeExecute(
+      session,
+      (info, params) => {
+        // Symbol mode wins when both are given: `file` then narrows the symbol
+        // to the definition in that file (the spec's file+symbol priority).
+        // The disambiguating file stays in the caller's own form: this call is
+        // not anchored, so its root is the working directory.
+        if (params.symbol !== undefined) {
+          return renderSymbol(
+            info.cg,
+            info.root,
+            String(params.symbol),
+            params.includeCode !== false,
+            params.file !== undefined ? String(params.file) : undefined,
+            typeof params.line === "number" ? params.line : undefined,
+          );
+        }
+        // File mode. The anchor predicate decides the mode and the ready
+        // result carries the root-relative path, so the two cannot disagree
+        // about what a `{ file }` call means.
+        const fileToRead = nodeFileRead(params, info);
+        if (fileToRead !== undefined) {
+          return renderFileView(
+            info.cg,
+            info.root,
+            fileToRead,
+            typeof params.offset === "number" ? params.offset : 1,
+            typeof params.limit === "number" ? params.limit : 2000,
+            params.symbolsOnly === true,
+          );
+        }
+        return "Either `file` or `symbol` must be provided.";
+      },
+      nodeFileAnchor,
+    ),
   });
 
   pi.registerTool({

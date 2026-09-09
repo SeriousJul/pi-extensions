@@ -73,6 +73,14 @@ interface InstanceEntry {
 export interface ReadyInfo {
   cg: IndexAdapter;
   root: string;
+  /**
+   * The file argument expressed relative to `root`, when the call gave one.
+   * `ensureReady` copies it from `ResolvedRoot.file`, the one decision of that
+   * form (spec 0006); see `rootRelativeFile` for the escape rule that keeps
+   * the caller's own argument when the relative form would leave `root`. An
+   * anchored consumer reads this instead of rewriting parameters.
+   */
+  file?: string;
   mainCheckout?: string;
   isMainCheckout: boolean;
   justSeeded?: { source: string; changedFiles: number };
@@ -282,26 +290,40 @@ export class CodegraphSession {
    * The single boundary every tool call and every test crosses. Resolves
    * the root of `startDir` (or of the `file` argument's location),
    * creates/seedes/builds/opens the index for that worktree when needed,
-   * reconciles it, and returns the ready adapter. The recovery for a
-   * removed-then-re-added worktree lives in the cached-instance branch of
-   * the core path below.
+   * reconciles it, and returns the ready adapter.
+   *
+   * This is also the one place the ready result gains its file form. Root
+   * resolution decides the form once (`ResolvedRoot.file`, spec 0006) and this
+   * method copies it onto the result, so the core path below never threads it
+   * and a new early return there cannot drop it. Callers that share one
+   * in-flight preparation still each get their own form, because each call
+   * resolves its own root and file.
+   *
+   * The recovery for a removed-then-re-added worktree lives in the
+   * cached-instance branch of the core path below.
    */
   async ensureReady(startDir: string, file?: string): Promise<ReadyInfo> {
     const f = await this.factory();
     this.assertRuntime(f);
     try {
-      return await this.ensureReadyCore(f, startDir, file);
+      const resolved = resolveRoot(startDir, file, this.nearest(f));
+      const ready = await this.ensureReadyCore(f, resolved);
+      if (resolved.file === undefined) return ready;
+      return { ...ready, file: resolved.file };
     } catch (err) {
       throw this.classifyError(f, err);
     }
   }
 
+  /**
+   * The index lifecycle for an already resolved root. The result reports the
+   * root `resolveRoot` chose; the file form belongs to `ensureReady`, which is
+   * the only site that puts it on a ready result.
+   */
   private async ensureReadyCore(
     f: IndexAdapterFactory,
-    startDir: string,
-    file?: string,
+    resolved: ResolvedRoot,
   ): Promise<ReadyInfo> {
-    const resolved = resolveRoot(startDir, file, this.nearest(f));
     let { needsCreate, mainCheckout, isMainCheckout } = resolved;
     const { root } = resolved;
 
@@ -324,7 +346,12 @@ export class CodegraphSession {
           reopened ? "replaced index file" : undefined,
           reopened,
         );
-        return { cg: cached.cg, root, mainCheckout, isMainCheckout };
+        return {
+          cg: cached.cg,
+          root,
+          mainCheckout,
+          isMainCheckout,
+        };
       }
       // Dead-index recovery: the index file is gone, so the worktree was
       // removed and re-added without an index. Drop the dead instance and
@@ -335,7 +362,12 @@ export class CodegraphSession {
     }
 
     const pending = this.inFlight.get(root);
-    if (pending) return pending;
+    if (pending) {
+      // The shared preparation belongs to another caller. Its result is
+      // returned as it is: the file form is added by this call's own
+      // ensureReady, from this call's own root resolution.
+      return await pending;
+    }
     const promise = (async (): Promise<ReadyInfo> => {
       try {
         return await this.createOrOpen(
@@ -350,7 +382,7 @@ export class CodegraphSession {
       }
     })();
     this.inFlight.set(root, promise);
-    return promise;
+    return await promise;
   }
 
   /**

@@ -166,6 +166,29 @@ describe("ensureReady (primary seam)", () => {
     expect(a.justBuilt).toBe(true);
   });
 
+  it("preserves each caller's file form during concurrent preparation", async () => {
+    const s = newSession();
+    const featureFile = path.relative(
+      fixture.main,
+      path.join(fixture.feature, "src", "feature.ts"),
+    );
+    const mainFile = path.relative(
+      fixture.main,
+      path.join(fixture.feature, "src", "main.ts"),
+    );
+
+    const [featureInfo, mainInfo] = await Promise.all([
+      s.ensureReady(fixture.main, featureFile),
+      s.ensureReady(fixture.main, mainFile),
+    ]);
+
+    expect(featureInfo.cg).toBe(mainInfo.cg);
+    expect(featureInfo.root).toBe(fixture.feature);
+    expect(featureInfo.file).toBe("src/feature.ts");
+    expect(mainInfo.root).toBe(fixture.feature);
+    expect(mainInfo.file).toBe("src/main.ts");
+  });
+
   it("waits for another live process's build before adopting", async () => {
     const builder = newSession();
     await builder.ensureReady(fixture.main);
@@ -268,6 +291,19 @@ describe("ensureReady (primary seam)", () => {
     expect(info.cg.getProjectRoot()).toBe(fixture.main);
   });
 
+  it("carries the root-relative file through the ready result", async () => {
+    const s = newSession();
+    const info = await s.ensureReady(fixture.main, "src/shared.ts");
+    expect(info.root).toBe(fixture.main);
+    expect(info.file).toBe("src/shared.ts");
+
+    // A second call is served from the cached instance, which is another
+    // return in the core path: the file form is attached the same way.
+    const again = await s.ensureReady(fixture.main, "src/shared.ts");
+    expect(again.root).toBe(fixture.main);
+    expect(again.file).toBe("src/shared.ts");
+  });
+
   it("throws CodegraphUnavailable with a reason when auto-index is off", async () => {
     const s = newSession({ autoIndex: false });
     await expect(s.ensureReady(fixture.feature)).rejects.toSatisfy(
@@ -290,6 +326,73 @@ describe("root resolution", () => {
     const resolved = resolveRoot(fixture.feature);
     expect(resolved.isMainCheckout).toBe(false);
     expect(resolved.mainCheckout).toBe(fixture.main);
+  });
+
+  it("returns a sibling worktree root and root-relative file", () => {
+    const file = path.relative(
+      fixture.main,
+      path.join(fixture.feature, "src", "feature.ts"),
+    );
+    const resolved = resolveRoot(fixture.main, file);
+    expect(resolved.root).toBe(fixture.feature);
+    expect(resolved.file).toBe("src/feature.ts");
+  });
+
+  it("returns a worktree root and root-relative file for a sub-directory file", () => {
+    const resolved = resolveRoot(fixture.main, "src/shared.ts");
+    expect(resolved.root).toBe(fixture.main);
+    expect(resolved.file).toBe("src/shared.ts");
+  });
+
+  it("anchors on a file that does not exist yet", () => {
+    const resolved = resolveRoot(fixture.main, "src/not-yet-indexed.ts");
+    expect(resolved.root).toBe(fixture.main);
+    expect(resolved.file).toBe("src/not-yet-indexed.ts");
+  });
+
+  it("reports the root itself as the file form when the argument is the root", () => {
+    // A file argument that names the root has no root-relative file form, so
+    // it is ".". The indexed-file lookup reports that as absent: a directory is
+    // never a file (covered at the tool seam in tools.test.ts).
+    for (const arg of [".", "", fixture.main]) {
+      expect(resolveRoot(fixture.main, arg).file).toBe(".");
+    }
+  });
+
+  it("keeps the caller's file form when it escapes the resolved root", () => {
+    const outside = path.join(fixture.base, "outside.ts");
+    const relative = path.relative(fixture.main, outside);
+    // The injected nearest root is not an ancestor of the queried path: no
+    // real nearest-root lookup does that, because both the real factory and
+    // the in-memory one walk ancestors. This pins the escape rule at the
+    // seam; the symlinked worktree below pins the setup where the guard fires
+    // for real (git reports the physical toplevel while the file argument
+    // stays logical).
+    for (const arg of [outside, relative]) {
+      // Expressing the path relative to the root would leave it, so the
+      // argument is kept as the caller wrote it.
+      const resolved = resolveRoot(fixture.main, arg, () => fixture.main);
+      expect(resolved.root).toBe(fixture.main);
+      expect(resolved.file).toBe(arg);
+    }
+  });
+
+  it("keeps the caller's file form when a symlinked worktree looks like an escape", () => {
+    // The reachable trigger of the escape guard: the call works through a
+    // symlink to the worktree, so git resolves the root to the physical path
+    // while the file argument stays under the logical one.
+    const link = path.join(fixture.base, "feature-link");
+    fs.symlinkSync(fixture.feature, link, "dir");
+
+    const resolved = resolveRoot(link, "src/feature.ts");
+
+    expect(resolved.root).toBe(fixture.feature);
+    // The original relative form is kept, and it is the form the index knows.
+    expect(resolved.file).toBe("src/feature.ts");
+  });
+
+  it("leaves the file form empty when no file argument is given", () => {
+    expect(resolveRoot(fixture.main).file).toBeUndefined();
   });
 
   it("falls back to the nearest build manifest outside git", () => {

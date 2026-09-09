@@ -23,6 +23,14 @@ The directory that holds an index. For a git worktree, this is the worktree
 itself, not the main checkout.
 _Avoid_: repo root, workspace
 
+**Anchor**:
+The directory a call's root resolution starts from: the call's working
+directory, or the location of the named file when the tool reads a file
+(`codegraph_node` file mode). A `file` argument used only to disambiguate a
+symbol never moves the anchor. The root-relative form of an anchored file is
+decided once, together with the root.
+_Avoid_: base, cwd, anchor file (the anchor is a directory, not the file)
+
 **Sibling worktree**:
 Another git worktree of the same repository, identified by a shared common
 git dir. Includes worktrees created by herdr under `~/.herdr/worktrees/` and

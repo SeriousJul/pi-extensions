@@ -12,6 +12,7 @@ import {
   registerCommand,
   registerTools,
 } from "../../extensions/codegraph/handlers";
+import { createInMemoryIndexFactory } from "./inMemoryIndex";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 interface MockUi {
@@ -200,6 +201,18 @@ describe("tool outputs", () => {
     expect(text).toContain("File: src/shared.ts");
   });
 
+  it("node file mode reports an argument that names the project root as absent", async () => {
+    // A `file` argument that points at the root itself (".", "", the absolute
+    // root, or the nested "./" form) names a directory, never a file. The
+    // lookup must not substring-match it against the whole index: the answer
+    // is that the file is not in the index.
+    for (const arg of [".", "", "./", fixture.main]) {
+      expect(await h.call("codegraph_node", { file: arg })).toBe(
+        'File "." not found in the index. Use the built-in read tool for files outside the index.',
+      );
+    }
+  });
+
   it("node symbol mode returns signature, body, and top callers/callees", async () => {
     const text = await h.call("codegraph_node", { symbol: "helper" });
     expect(text).toContain("helper (function)");
@@ -279,6 +292,56 @@ describe("tool outputs", () => {
     expect(text).toContain("src/shared.ts");
     expect(text).toContain("return x + ANSWER");
     expect(text).not.toContain("return x * 2");
+  });
+
+  it("does not anchor node symbol mode on its file parameter", async () => {
+    const rel = path.relative(
+      fixture.main,
+      path.join(fixture.feature, "src", "feature.ts"),
+    );
+    const text = await h.call(
+      "codegraph_node",
+      { symbol: "featureOnlySymbol", file: rel },
+      fixture.main,
+    );
+    expect(text).toBe('Symbol "featureOnlySymbol" not found');
+    expect(h.session.statusFor(fixture.main).root).toBe(fixture.main);
+    expect(h.session.statusFor(fixture.feature).needsCreate).toBe(true);
+  });
+
+  it("reports an out-of-root file as not found", async () => {
+    const baseFactory = createInMemoryIndexFactory();
+    const factory = {
+      ...baseFactory,
+      findNearestRoot(startPath: string): string | null {
+        // Model a nearest-root lookup that resolves an existing project while
+        // the requested path itself is outside that root. That result is not
+        // an ancestor walk a real lookup can produce (both the real factory
+        // and the in-memory one walk ancestors); the escape rule is pinned
+        // here for its behavior and by a reachable setup (a symlinked
+        // worktree path) in session.test.ts.
+        if (path.resolve(startPath) === fixture.base) return fixture.main;
+        return baseFactory.findNearestRoot(startPath);
+      },
+    };
+    const outsideHarness = makeHarness(newSession({ factory }), fixture.main);
+
+    await outsideHarness.call("codegraph_search", { query: "helper" });
+    const outside = path.join(fixture.base, "outside.ts");
+    const relative = path.relative(fixture.main, outside);
+
+    // The root-relative form would leave the root, so each argument is
+    // looked up as written: never a path outside the project root.
+    expect(
+      await outsideHarness.call("codegraph_node", { file: outside }),
+    ).toBe(
+      `File "${outside}" not found in the index. Use the built-in read tool for files outside the index.`,
+    );
+    expect(
+      await outsideHarness.call("codegraph_node", { file: relative }),
+    ).toBe(
+      `File "${relative}" not found in the index. Use the built-in read tool for files outside the index.`,
+    );
   });
 
   it("serves each worktree from its own index", async () => {
