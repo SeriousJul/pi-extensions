@@ -5,6 +5,9 @@ import {
   expect,
   it,
 } from "vitest";
+import { execFileSync, spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { buildFixture, type Fixture } from "./fixture";
 import { CodegraphSession } from "../../extensions/codegraph/session";
@@ -14,6 +17,8 @@ import {
 } from "../../extensions/codegraph/handlers";
 import { createInMemoryIndexFactory } from "./inMemoryIndex";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getCodeGraphDir, getDatabasePath } from "../../extensions/codegraph/runtime";
+import { IGNORE_NAME, USAGE_NAME } from "../../extensions/codegraph/usage";
 
 interface MockUi {
   notifications: Array<[string, string]>;
@@ -377,6 +382,58 @@ describe("tool outputs", () => {
     );
   });
 
+  it("writes one usage record for successful and failed calls", async () => {
+    const success = await h.call("codegraph_search", { query: "helper" });
+    expect(success).toContain("helper");
+
+    const failedHarness = makeHarness(
+      newSession({ autoIndex: false }),
+      fixture.feature,
+    );
+    const failure = await failedHarness.call("codegraph_search", {
+      query: "helper",
+    });
+    expect(failure).toContain("codegraph is unavailable");
+
+    const successLines = fs
+      .readFileSync(path.join(getCodeGraphDir(fixture.main), USAGE_NAME), "utf-8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(successLines).toHaveLength(1);
+    expect(successLines[0]).toMatchObject({
+      tool: "codegraph_search",
+      ok: true,
+    });
+    expect(successLines[0].duration_ms).toBeGreaterThanOrEqual(0);
+    expect(successLines[0].chars).toBeGreaterThan(0);
+
+    const failureLines = fs
+      .readFileSync(path.join(getCodeGraphDir(fixture.feature), USAGE_NAME), "utf-8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(failureLines).toHaveLength(1);
+    expect(failureLines[0]).toMatchObject({
+      tool: "codegraph_search",
+      ok: false,
+      chars: 0,
+      reason: "auto-index is off for this session (enable it with /codegraph auto on)",
+    });
+  });
+
+  it("does not write a ledger when no project root resolves", async () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "codegraph-no-project-"));
+    try {
+      const h = makeHarness(newSession({ autoIndex: false }), outside);
+      const text = await h.call("codegraph_search", { query: "helper" });
+      expect(text).toContain("no git repository or build manifest found");
+      expect(fs.existsSync(getCodeGraphDir(outside))).toBe(false);
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
   it("reports unknown symbols without failing", async () => {
     const text = await h.call("codegraph_search", { query: "noSuchSymbolZzz" });
     expect(text).toContain('No symbols found matching "noSuchSymbolZzz"');
@@ -394,6 +451,43 @@ describe("/codegraph command", () => {
     expect(joined).toContain("codegraph: " + fixture.main);
     expect(joined).toContain("index: none yet");
     expect(ui.widgets.some(([key]) => key === "codegraph")).toBe(true);
+  });
+
+  it("status reports usage counts and the last failure", async () => {
+    const h = makeHarness(newSession(), fixture.main);
+    await h.call("codegraph_search", { query: "helper" });
+    const ui = freshUi();
+    await h.commands.get("codegraph")!.handler("", makeCtx(fixture.main, ui));
+    const joined = ui.notifications.map(([, m]) => m).join("\n");
+    expect(joined).toContain("usage: 1 ok, 0 failed (last call");
+    expect(joined).toContain("explore: 0  node: 0  search: 1  impact: 0  callers: 0  callees: 0");
+    expect(joined).not.toContain("last failure:");
+
+    const failedHarness = makeHarness(newSession({ autoIndex: false }), fixture.feature);
+    await failedHarness.call("codegraph_search", { query: "helper" });
+    const failedUi = freshUi();
+    await failedHarness.commands
+      .get("codegraph")!
+      .handler("", makeCtx(fixture.feature, failedUi));
+    const failedText = failedUi.notifications.map(([, m]) => m).join("\n");
+    expect(failedText).toContain("usage: 0 ok, 1 failed (last call");
+    expect(failedText).toContain("last failure: auto-index is off for this session");
+  });
+
+  it("accumulates usage across sessions of the same worktree", async () => {
+    const first = makeHarness(newSession(), fixture.main);
+    await first.call("codegraph_search", { query: "helper" });
+    first.session.closeAll();
+
+    // A fresh session (a new pi run over the same worktree): the ledger
+    // persists, so the counts are the worktree's total, not this session's.
+    const second = makeHarness(newSession(), fixture.main);
+    await second.call("codegraph_explore", { query: "helper" });
+    const ui = freshUi();
+    await second.commands.get("codegraph")!.handler("", makeCtx(fixture.main, ui));
+    const joined = ui.notifications.map(([, m]) => m).join("\n");
+    expect(joined).toContain("usage: 2 ok, 0 failed");
+    expect(joined).toContain("explore: 1  node: 0  search: 1  impact: 0  callers: 0  callees: 0");
   });
 
   it("status reports file/node/edge counts and index state once ready", async () => {
@@ -440,7 +534,7 @@ describe("/codegraph command", () => {
     await h.commands.get("codegraph")!.handler("uninit", makeCtx(fixture.main, declineUi));
     expect(declineUi.confirms).toBe(1);
     expect(declineUi.notifications.some(([, m]) => m.includes("cancelled"))).toBe(true);
-    expect(h.session.isReadyFor(fixture.main)).toBe(true);
+    expect(h.session.indexStateFor(fixture.main)).toBe("ready");
     expect(
       declineUi.notifications.some(([, m]) => m.includes("removed index")),
     ).toBe(false);
@@ -450,7 +544,74 @@ describe("/codegraph command", () => {
     await h.commands.get("codegraph")!.handler("uninit", makeCtx(fixture.main, acceptUi));
     expect(acceptUi.confirms).toBe(1);
     expect(acceptUi.notifications.some(([, m]) => m.includes("removed index"))).toBe(true);
-    expect(h.session.isReadyFor(fixture.main)).toBe(false);
+    // The index is gone and a build is possible again: the note returns in its
+    // "none" state, which is the promise the tools can keep.
+    expect(h.session.indexStateFor(fixture.main)).toBe("none");
+  });
+
+  it("uninit removes a usage ledger that has no index", async () => {
+    // Auto-index off: the call fails, records its reason, and builds nothing.
+    // The ledger still lives in the index directory, so uninit must clean it.
+    const h = makeHarness(newSession({ autoIndex: false }), fixture.feature);
+    const text = await h.call("codegraph_search", { query: "helper" });
+    expect(text).toContain("codegraph is unavailable");
+    const indexDir = getCodeGraphDir(fixture.feature);
+    expect(fs.existsSync(path.join(indexDir, USAGE_NAME))).toBe(true);
+    expect(fs.existsSync(getDatabasePath(fixture.feature))).toBe(false);
+
+    const ui = freshUi();
+    await h.commands.get("codegraph")!.handler("uninit", makeCtx(fixture.feature, ui));
+    expect(
+      ui.notifications.some(([, m]) => m.includes("removed the usage log")),
+    ).toBe(true);
+    expect(fs.existsSync(indexDir)).toBe(false);
+
+    // Status reads the ledger again: there is nothing left to report.
+    const statusUi = freshUi();
+    await h.commands.get("codegraph")!.handler("", makeCtx(fixture.feature, statusUi));
+    expect(statusUi.notifications.map(([, m]) => m).join("\n")).toContain(
+      "usage: 0 ok, 0 failed",
+    );
+  });
+
+  it("never lets git stage the usage ledger", async () => {
+    // The ledger of a worktree with no index is the only file in the index
+    // directory, and codegraph writes its own ignore file only when it builds an
+    // index there. Without one, `git add -A` in the user's worktree commits a
+    // local usage log with the rest of the change.
+    const h = makeHarness(newSession({ autoIndex: false }), fixture.feature);
+    const text = await h.call("codegraph_search", { query: "helper" });
+    expect(text).toContain("codegraph is unavailable");
+    const indexDir = getCodeGraphDir(fixture.feature);
+    const relDir = path.relative(fixture.feature, indexDir).split(path.sep).join("/");
+    expect(fs.existsSync(path.join(indexDir, USAGE_NAME))).toBe(true);
+
+    // The ledger itself is ignored, exactly as the index database would be.
+    expect(
+      spawnSync("git", ["check-ignore", "-q", `${relDir}/${USAGE_NAME}`], {
+        cwd: fixture.feature,
+      }).status,
+    ).toBe(0);
+
+    // And an add-all of the worktree stages no ledger. The ignore file is the
+    // only thing git may see there, which is how codegraph treats its own index
+    // directory: its default ignore file keeps just that one file visible.
+    execFileSync("git", ["add", "-A"], { cwd: fixture.feature });
+    try {
+      const staged = execFileSync(
+        "git",
+        ["diff", "--cached", "--name-only"],
+        { cwd: fixture.feature, encoding: "utf-8" },
+      )
+        .split("\n")
+        .filter(Boolean);
+      expect(staged.filter((f) => f.endsWith(USAGE_NAME))).toEqual([]);
+      expect(staged.filter((f) => f.startsWith(`${relDir}/`))).toEqual([
+        `${relDir}/${IGNORE_NAME}`,
+      ]);
+    } finally {
+      execFileSync("git", ["reset", "-q"], { cwd: fixture.feature });
+    }
   });
 
   it("auto on/off toggles the automatic index", async () => {

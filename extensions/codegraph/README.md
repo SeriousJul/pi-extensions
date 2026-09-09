@@ -99,9 +99,16 @@ Every git worktree gets its own index under `<worktree>/.codegraph/`:
   reconcile is a full walk that converges the copy to the worktree's own
   tree, so a symbol that exists only in the sibling is removed and one
   that exists only in this worktree is added.
-- **First use is blocking.** The first `codegraph_*` call in a worktree
-  waits for the build or seed to finish. Progress is shown in the
-  `codegraph` status slot.
+- **First use is prewarmed.** When automatic indexing is on and at least one
+  codegraph tool is active, the first agent turn starts a background build for
+  a fresh worktree. The first `codegraph_*` call waits for that build and is
+  served from it, so the build is never paid twice. Progress is shown in the
+  `codegraph` status slot. A background failure never becomes a tool result:
+  the first call takes its own path and retries, and the failure is reported as
+  one warning. A prewarm that is still building when the session shuts down
+  cannot be aborted, but its result is never adopted: the session closes the
+  index it opened and starts no watcher for it. Existing indexes are never
+  prewarmed - the per-call reconcile is the only staleness recovery path.
 - **Freshness.** On first use per session the index is reconciled once,
   then codegraph's own file watcher keeps it current. If watching is
   disabled (`CODEGRAPH_NO_WATCH=1`, or WSL2 under `/mnt/`) or degrades,
@@ -125,6 +132,24 @@ Every git worktree gets its own index under `<worktree>/.codegraph/`:
   lock. A process that finds a live build waits for it; a process that
   finds a crashed build adopts the on-disk state and converges it.
 
+## System prompt note
+
+Every agent turn appends one note to the system prompt: the first line states
+the index state (ready, building, or none) and six fixed policy lines say which
+tool fits which job. It is the only codegraph steering text in the prompt, so
+the note is the single place to change policy. The text is contract (issue #9).
+
+The note appears only when both conditions hold:
+
+- at least one `codegraph_*` tool is active in the session (a disabled toolset
+  must not be advertised), and
+- a codegraph call can actually be served from the working directory: a project
+  root resolves there, and, when no index exists yet, automatic indexing is on.
+
+The second gate matters because the "none" line promises that the agent's first
+call builds the index. Where no call can ever build one, the note would send the
+agent to a tool that only fails, and the agent would learn to ignore it.
+
 ## Project root
 
 The root for a call is the nearest initialized ancestor of the call's
@@ -145,14 +170,34 @@ home directory and the filesystem root are never indexed.
 | `/codegraph` | Show index status for the current directory. |
 | `/codegraph init` | Force a full rebuild of the index. |
 | `/codegraph seed [path]` | Re-seed the index from a named sibling worktree (or the default seed source), then reconcile. |
-| `/codegraph uninit` | Remove the index for the current directory (asks for confirmation). |
+| `/codegraph uninit` | Remove the index for the current directory, with its usage log (asks for confirmation). |
 | `/codegraph auto on\|off` | Toggle automatic index creation for the session. |
+
+`/codegraph` status also shows local usage from `<worktree>/.codegraph/usage.jsonl`:
+per-tool counts, successful and failed calls, time since the last call, and the
+reason of the newest failure. The file is append-only and is removed by
+`/codegraph uninit` with the rest of the index - including in a worktree that
+never got an index, where the ledger is all that is there. A worktree with no
+index gets an ignore file with its ledger, so `git add -A` can never stage a
+usage log out of a directory that was only created to record why a call failed.
+That ignore file is the one thing git can see in the index directory, which is
+codegraph's own convention for an index directory: its default ignore rule keeps
+just that file visible.
+
+The ledger is never rewritten or compacted, so the counts stay cumulative across
+sessions of the worktree; the read cost is bounded instead. A status call folds
+only the lines appended since the previous read (the running summary is held in
+memory, keyed by the ledger path, and re-parsed from scratch when the file is
+replaced, truncated, or deleted). A torn or malformed line is skipped, never
+counted, and read again once it is complete. Delete the file to start the counts
+over.
 
 ## Environment variables
 
 | Variable | Effect |
 | --- | --- |
 | `CODEGRAPH_PI_AUTO_INDEX` | `0`/`false`/`off` disables automatic index creation (tools return the fallback line until an index exists). |
+| `CODEGRAPH_PI_PREWARM` | `0` disables the first-turn background build. Existing indexes are never prewarmed. |
 | `CODEGRAPH_PI_SEEDING` | `0`/`false`/`off` disables seeding from sibling worktrees (first build is from scratch). |
 | `CODEGRAPH_NO_WATCH` | `1` disables the file watcher (reconcile before every query). |
 | `CODEGRAPH_PI_SQLITE_SHIM` | Set to `bun` to force the shim's `bun:sqlite` path (used by the bun-only test). |
@@ -170,11 +215,19 @@ back to the built-in tools:
 codegraph is unavailable (<reason>). Use the built-in read and grep tools instead.
 ```
 
+The reason is recorded in the worktree's usage log too, so `/codegraph status`
+shows it after the tool result has scrolled away. Structural failures also get
+one warning per session; a background prewarm adds no second warning on top of
+the one the failing path already emitted.
+
 ## Layout
 
 - `index.ts` - pi entrypoint: registers tools and the command, adds the
-  system prompt note when the index is ready, closes instances on session
-  shutdown.
+  tri-state system prompt note when codegraph tools are active and a call can be
+  served from the working directory, starts the first-turn prewarm (one project
+  root resolution per turn, shared by both), and closes instances on session
+  shutdown. Its second argument is the entrypoint's test seam for the Index
+  factory.
 - `runtime.ts` - the runtime compatibility stack in one module, in file
   order (the order is the contract): the env defaults (telemetry,
   update-check, fast-init), the single import point for the codegraph
@@ -214,7 +267,11 @@ codegraph is unavailable (<reason>). Use the built-in read and grep tools instea
   it owns the point-of-emission drift gate, its short memo, and the whole-file
   caps, so renderers never slice a file that drifted after its last index sync.
 - `format.ts` - rendering of query results.
-- `handlers.ts` - the six tool definitions and the `/codegraph` command.
+- `handlers.ts` - the six tool definitions, usage ledger wrapper, and the
+  `/codegraph` command.
+- `usage.ts` - the append-only local `usage.jsonl` ledger, the ignore file that
+  keeps it out of git, and the incremental reader that folds it into the status
+  summary.
 
 ## Specs
 

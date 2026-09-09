@@ -65,6 +65,11 @@ export interface InMemoryRoot {
   syncResult?: SyncResult;
   /** The build outcome. When unset, the build succeeds. */
   buildOutcome?: { success: false; error?: string };
+  /**
+   * Awaited at the start of every `indexAll`: a test holds a build here to
+   * model "the prewarm is still running when the first tool call arrives".
+   */
+  buildGate?: Promise<void>;
   /** The watcher start outcome. Default: "active". */
   watchMode: "active" | "degraded" | "throw";
   /** The reason for "degraded" (and the message for "throw"). */
@@ -79,6 +84,27 @@ export interface InMemoryRoot {
   findable: boolean;
   /** Whether the per-root lock is held by another process. Default: false. */
   lockHeld: boolean;
+  /**
+   * When set, `createEmpty` throws it: a fresh index that cannot be created.
+   * Superseded by `createFailuresLeft`, which uses it only as the message.
+   */
+  createFails?: string;
+  /**
+   * Awaited at the start of every `createEmpty`. A test holds a build here to
+   * park a prewarm in the window before any instance is registered, then
+   * releases it: a tool call that arrives in that window can only be served
+   * well by waiting for the prewarm and taking its own path afterwards.
+   */
+  createGate?: Promise<void>;
+  /**
+   * How many `createEmpty` attempts still fail, with the `createFails` reason or
+   * a default one. While it is defined this counter decides, so a test can fail
+   * exactly the prewarm's own attempt (1) and let the call that retries behind it
+   * succeed.
+   */
+  createFailuresLeft?: number;
+  /** How many times `createEmpty` has been entered (parked or not). */
+  createCount: number;
   /** Whether the on-disk read reports the database unreadable. */
   unreadableDb: boolean;
 
@@ -119,6 +145,7 @@ function makeRoot(): InMemoryRoot {
     edges: [],
     buildCount: 0,
     syncCount: 0,
+    createCount: 0,
     addFile(relPath, opts = {}) {
       const now = Date.now();
       root.files.push({
@@ -253,10 +280,23 @@ class InMemoryIndexAdapter implements IndexAdapterOps {
   }
 
   async createEmpty(): Promise<void> {
-    this.r.dirExists = true;
-    this.r.dbExists = true;
-    this.r.indexState = null;
-    this.r.open = false;
+    const r = this.r;
+    r.createCount += 1;
+    // The park point before the index exists: `register()` only runs later, so a
+    // prewarm held here is a background build a concurrent call must wait for.
+    if (r.createGate) await r.createGate;
+    if (r.createFailuresLeft !== undefined) {
+      if (r.createFailuresLeft > 0) {
+        r.createFailuresLeft -= 1;
+        throw new Error(r.createFails ?? "index create failed");
+      }
+    } else if (r.createFails) {
+      throw new Error(r.createFails);
+    }
+    r.dirExists = true;
+    r.dbExists = true;
+    r.indexState = null;
+    r.open = false;
   }
   async recreate(): Promise<void> {
     this.r.dirExists = true;
@@ -280,7 +320,10 @@ class InMemoryIndexAdapter implements IndexAdapterOps {
 
   async indexAll(options?: AdapterIndexOptions): Promise<IndexResult> {
     const r = this.r;
+    // Counted when the build starts (before the gate), so a test can see a
+    // background attempt in flight.
     r.buildCount += 1;
+    if (r.buildGate) await r.buildGate;
     options?.onProgress?.({ phase: "scanning", current: 0, total: 1 });
     if (r.buildOutcome && !r.buildOutcome.success) {
       r.indexState = "failed";
@@ -338,7 +381,11 @@ class InMemoryIndexAdapter implements IndexAdapterOps {
     const base: SyncResult =
       r.syncResult ??
       {
-        filesChecked: r.files.length,
+        // The walk examines every indexable file on disk, whether or not the
+        // index already holds it: an index created empty and adopted still
+        // reports the files it looked at (a real codegraph sync does, and a
+        // zero-checked-files report is the lock-contention signal).
+        filesChecked: Math.max(scanFiles(this.rootPath).length, r.files.length),
         filesAdded: 0,
         filesModified: 0,
         filesRemoved: 0,

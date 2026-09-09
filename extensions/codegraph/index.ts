@@ -18,12 +18,31 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { PROMPT_NOTE, registerCommand, registerTools } from "./handlers";
-import { realIndexFactory } from "./indexAdapter";
+import {
+  CODEGRAPH_TOOL_NAMES,
+  promptNoteFor,
+  registerCommand,
+  registerTools,
+} from "./handlers";
+import { realIndexFactory, type IndexAdapterFactory } from "./indexAdapter";
 import { CodegraphSession } from "./session";
 
-export default function codegraphExtension(pi: ExtensionAPI): void {
-  const session = new CodegraphSession({ factory: realIndexFactory });
+export interface CodegraphExtensionOptions {
+  /**
+   * Test seam: the Index factory the session runs on. Production omits it and
+   * gets the real adapter; the entrypoint tests inject the in-memory one, so a
+   * first-turn prewarm is observable and steerable without a native build.
+   */
+  factory?: IndexAdapterFactory;
+}
+
+export default function codegraphExtension(
+  pi: ExtensionAPI,
+  opts: CodegraphExtensionOptions = {},
+): void {
+  const session = new CodegraphSession({
+    factory: opts.factory ?? realIndexFactory,
+  });
 
   const bindUi = (ctx: ExtensionContext): void => {
     session.setUi({
@@ -39,14 +58,26 @@ export default function codegraphExtension(pi: ExtensionAPI): void {
   registerTools(pi, session);
   registerCommand(pi, session);
 
-  // The prompt note goes in only when the index for the working directory's
-  // root is ready; the first agent turn still triggers the lazy build.
+  // The note and the background first-use build are enabled only when at least
+  // one codegraph tool is active in this session, and only where a codegraph
+  // call can actually be served: a note that promises a build no call can
+  // deliver sends the agent to a failing tool, which is the behavior this
+  // extension exists to remove.
   pi.on("before_agent_start", (event, ctx) => {
     bindUi(ctx);
-    if (session.isReadyFor(ctx.cwd)) {
-      return { systemPrompt: `${event.systemPrompt}\n\n${PROMPT_NOTE}` };
+    const active = pi.getActiveTools();
+    if (!CODEGRAPH_TOOL_NAMES.some((name) => active.includes(name))) {
+      return undefined;
     }
-    return undefined;
+    // One root resolution for the whole turn: the prewarm and the note need the
+    // same answer, and each root walk runs git.
+    const resolved = session.projectRootFor(ctx.cwd);
+    session.prewarmFor(ctx.cwd, resolved);
+    const state = session.indexStateFor(ctx.cwd, resolved);
+    if (!state) return undefined;
+    return {
+      systemPrompt: `${event.systemPrompt}\n\n${promptNoteFor(state)}`,
+    };
   });
 
   // Rebind the UI sink on every codegraph tool execution so notifications

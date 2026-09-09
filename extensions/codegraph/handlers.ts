@@ -17,25 +17,61 @@ import {
   renderImpact,
   renderExplore,
 } from "./format";
-import type { CodegraphSession, ReadyInfo } from "./session";
+import type { CodegraphSession, IndexPromptState, ReadyInfo } from "./session";
+import { appendUsage, type UsageSummary } from "./usage";
 
 // This module is loaded when the tools are registered (production entry
 // point and integration test), so it is the right place to register the
 // real Index factory as the default: a factory-less session's sync entry
 // points resolve it without a lazy load (spec 0003).
 setDefaultIndexFactory(realIndexFactory);
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import type {
   AgentToolResult,
   AgentToolUpdateCallback,
 } from "@earendil-works/pi-agent-core";
 
-export const PROMPT_NOTE = [
-  "This project has a codegraph index. It reflects the current git worktree and stays current automatically.",
-  "For questions about how code works, and before editing a symbol or file, call `codegraph_explore` first instead of a grep/read loop.",
-  "Use `codegraph_node` to read a file or a single symbol.",
-  "Do not try to build or reindex the codegraph index yourself.",
-].join(" ");
+/**
+ * The six tool names. Each one is written once, in `TOOL`, and every use (the
+ * registration, the shared execute wrapper, the prompt gate in the entrypoint)
+ * names it through this map, so a rename cannot silently desynchronize the note
+ * from the tools it advertises. The entrypoint test asserts the registered names
+ * against `CODEGRAPH_TOOL_NAMES`.
+ */
+const TOOL = {
+  search: "codegraph_search",
+  callers: "codegraph_callers",
+  callees: "codegraph_callees",
+  impact: "codegraph_impact",
+  node: "codegraph_node",
+  explore: "codegraph_explore",
+} as const;
+
+export const CODEGRAPH_TOOL_NAMES = Object.values(TOOL);
+
+const PROMPT_POLICY = [
+  "- To understand an area or find where code lives, call codegraph_explore first.",
+  "- To read a file, call codegraph_node with the file name. Its output is the same as read, plus which files depend on it.",
+  "- Before you change a symbol, call codegraph_impact to see what your edit could break.",
+  "- To find a symbol by name, call codegraph_search.",
+  "- Use bash grep only for text that is not a symbol: comments, config values, log strings, and non-code files.",
+  "- This extension maintains the index. Do not build, reindex, or delete it yourself.",
+].join("\n");
+
+const PROMPT_FIRST_LINE: Record<IndexPromptState, string> = {
+  ready:
+    "This project has a codegraph index. It maps every symbol and call in the current worktree and stays current automatically.",
+  building:
+    "The codegraph index is building now; your first codegraph call may wait a few seconds.",
+  none: "The codegraph index is not built yet; your first codegraph call builds it and may wait a while.",
+};
+
+export function promptNoteFor(state: IndexPromptState): string {
+  return `${PROMPT_FIRST_LINE[state]}\n${PROMPT_POLICY}`;
+}
 
 const NodeKindUnion = Type.Union([
   Type.Literal("function"),
@@ -114,9 +150,9 @@ type Execute = (
 
 /**
  * Build the shared tool execute wrapper: resolve the index for the call's
- * worktree (blocking until it is ready), run the renderer, and map every
- * failure - including mid-query index problems - to the standard fallback
- * line.
+ * worktree (blocking until it is ready), run the renderer, append one usage
+ * line for the call, and map every failure - including mid-query index problems
+ * - to the standard fallback line.
  *
  * `fileAnchor` returns the path a call anchors root resolution on, or
  * undefined to anchor on the call's own working directory. Only
@@ -124,9 +160,15 @@ type Execute = (
  * symbol mode, `file` only disambiguates a symbol and must not move the
  * index. The wrapper rewrites no parameters: the root-relative form of an
  * anchored file arrives on the ready result (`ReadyInfo.file`).
+ *
+ * The usage ledger is the only thing this wrapper adds on top of the ready
+ * seam. It records every call, success or failure, so what `/codegraph status`
+ * shows is the truth about whether the agent used the tools. `chars` is 0 on a
+ * failure: there is no result to size.
  */
 function makeExecute(
   session: CodegraphSession,
+  toolName: string,
   run: (
     info: ReadyInfo,
     params: Record<string, unknown>,
@@ -134,10 +176,43 @@ function makeExecute(
   fileAnchor?: (params: Record<string, unknown>) => string | undefined,
 ): Execute {
   return async (_toolCallId, params, _signal, _onUpdate, ctx) => {
+    const startedAt = Date.now();
+    const anchor = fileAnchor?.(params);
+    let usageDir: string | undefined;
     try {
-      const info = await session.ensureReady(ctx.cwd, fileAnchor?.(params));
-      return ok(await run(info, params));
+      const info = await session.ensureReady(ctx.cwd, anchor);
+      // The ledger of the index that served this call. Naming it from the ready
+      // result reuses the resolution the seam already did, so a call resolves
+      // its project root once.
+      usageDir = info.cg.codeGraphDir();
+      const text = await run(info, params);
+      appendUsage(usageDir, {
+        tool: toolName,
+        ok: true,
+        duration_ms: Date.now() - startedAt,
+        chars: text.length,
+      });
+      return ok(text);
     } catch (err) {
+      // A failure is recorded where its index directory is knowable: the one
+      // the call reached, or the root resolved without opening an index. A call
+      // with no resolvable root has no ledger and is not recorded.
+      if (!usageDir) {
+        try {
+          usageDir = session.usageDirFor(ctx.cwd, anchor);
+        } catch {
+          // No resolved root means there is no index directory for the ledger.
+        }
+      }
+      if (usageDir) {
+        appendUsage(usageDir, {
+          tool: toolName,
+          ok: false,
+          reason: reasonOf(err),
+          duration_ms: Date.now() - startedAt,
+          chars: 0,
+        });
+      }
       return fail(err);
     }
   };
@@ -172,9 +247,12 @@ function nodeFileRead(
 }
 
 /** Register the six codegraph tools. */
-export function registerTools(pi: ExtensionAPI, session: CodegraphSession): void {
+export function registerTools(
+  pi: ExtensionAPI,
+  session: CodegraphSession,
+): void {
   pi.registerTool({
-    name: "codegraph_search",
+    name: TOOL.search,
     label: "codegraph search",
     description:
       "Quick symbol search by name. Returns locations only (no code). Use codegraph_explore instead to get the actual source / understand an area in one call.",
@@ -187,13 +265,19 @@ export function registerTools(pi: ExtensionAPI, session: CodegraphSession): void
       }),
       kind: NodeKinds,
       limit: Type.Optional(
-        Type.Integer({ description: "Maximum results (default 10).", default: 10 }),
+        Type.Integer({
+          description: "Maximum results (default 10).",
+          default: 10,
+        }),
       ),
       offset: Type.Optional(
-        Type.Integer({ description: "Skip the first N results for pagination.", default: 0 }),
+        Type.Integer({
+          description: "Skip the first N results for pagination.",
+          default: 0,
+        }),
       ),
     }),
-    execute: makeExecute(session, (info, params) =>
+    execute: makeExecute(session, TOOL.search, (info, params) =>
       renderSearch(
         info.cg,
         String(params.query),
@@ -205,7 +289,7 @@ export function registerTools(pi: ExtensionAPI, session: CodegraphSession): void
   });
 
   pi.registerTool({
-    name: "codegraph_callers",
+    name: TOOL.callers,
     label: "codegraph callers",
     description: "List functions that call <symbol>. For the full flow, use codegraph_explore.",
     promptSnippet: "codegraph_callers: list what calls a symbol.",
@@ -223,22 +307,20 @@ export function registerTools(pi: ExtensionAPI, session: CodegraphSession): void
         }),
       ),
     }),
-    execute: makeExecute(
-      session,
-      (info, params) =>
-        renderRefs(
-          info.cg,
-          String(params.symbol),
-          "callers",
-          params.file !== undefined ? String(params.file) : undefined,
-          typeof params.line === "number" ? params.line : undefined,
-          typeof params.limit === "number" ? params.limit : undefined,
-        ),
+    execute: makeExecute(session, TOOL.callers, (info, params) =>
+      renderRefs(
+        info.cg,
+        String(params.symbol),
+        "callers",
+        params.file !== undefined ? String(params.file) : undefined,
+        typeof params.line === "number" ? params.line : undefined,
+        typeof params.limit === "number" ? params.limit : undefined,
+      ),
     ),
   });
 
   pi.registerTool({
-    name: "codegraph_callees",
+    name: TOOL.callees,
     label: "codegraph callees",
     description: "List functions that <symbol> calls. For the full flow, use codegraph_explore.",
     promptSnippet: "codegraph_callees: list what a symbol calls.",
@@ -256,22 +338,20 @@ export function registerTools(pi: ExtensionAPI, session: CodegraphSession): void
         }),
       ),
     }),
-    execute: makeExecute(
-      session,
-      (info, params) =>
-        renderRefs(
-          info.cg,
-          String(params.symbol),
-          "callees",
-          params.file !== undefined ? String(params.file) : undefined,
-          typeof params.line === "number" ? params.line : undefined,
-          typeof params.limit === "number" ? params.limit : undefined,
-        ),
+    execute: makeExecute(session, TOOL.callees, (info, params) =>
+      renderRefs(
+        info.cg,
+        String(params.symbol),
+        "callees",
+        params.file !== undefined ? String(params.file) : undefined,
+        typeof params.line === "number" ? params.line : undefined,
+        typeof params.limit === "number" ? params.limit : undefined,
+      ),
     ),
   });
 
   pi.registerTool({
-    name: "codegraph_impact",
+    name: TOOL.impact,
     label: "codegraph impact",
     description: "List symbols affected by changing <symbol>. Use before a refactor.",
     promptSnippet: "codegraph_impact: show what breaks when a symbol changes.",
@@ -280,26 +360,29 @@ export function registerTools(pi: ExtensionAPI, session: CodegraphSession): void
         description: "Name of the symbol to analyze impact for",
       }),
       depth: Type.Optional(
-        Type.Integer({ description: "How many levels of dependencies to traverse (default: 2)", default: 2, minimum: 1 }),
+        Type.Integer({
+          description:
+            "How many levels of dependencies to traverse (default: 2)",
+          default: 2,
+          minimum: 1,
+        }),
       ),
       file: FileParam,
       line: LineParam,
     }),
-    execute: makeExecute(
-      session,
-      (info, params) =>
-        renderImpact(
-          info.cg,
-          String(params.symbol),
-          typeof params.depth === "number" ? params.depth : 2,
-          params.file !== undefined ? String(params.file) : undefined,
-          typeof params.line === "number" ? params.line : undefined,
-        ),
+    execute: makeExecute(session, TOOL.impact, (info, params) =>
+      renderImpact(
+        info.cg,
+        String(params.symbol),
+        typeof params.depth === "number" ? params.depth : 2,
+        params.file !== undefined ? String(params.file) : undefined,
+        typeof params.line === "number" ? params.line : undefined,
+      ),
     ),
   });
 
   pi.registerTool({
-    name: "codegraph_node",
+    name: TOOL.node,
     label: "codegraph node",
     description:
       "Two modes. (1) READ A FILE - use INSTEAD of the built-in read tool: " +
@@ -336,10 +419,20 @@ export function registerTools(pi: ExtensionAPI, session: CodegraphSession): void
         }),
       ),
       offset: Type.Optional(
-        Type.Integer({ description: "File mode: 1-based line to start reading from, exactly like the read tool's offset. Defaults to the start of the file.", default: 1, minimum: 1 }),
+        Type.Integer({
+          description:
+            "File mode: 1-based line to start reading from, exactly like the read tool's offset. Defaults to the start of the file.",
+          default: 1,
+          minimum: 1,
+        }),
       ),
       limit: Type.Optional(
-        Type.Integer({ description: "File mode: maximum number of lines to return, exactly like the read tool's limit. Defaults to the whole file (capped at 2000 lines, like read).", default: 2000, minimum: 1 }),
+        Type.Integer({
+          description:
+            "File mode: maximum number of lines to return, exactly like the read tool's limit. Defaults to the whole file (capped at 2000 lines, like read).",
+          default: 2000,
+          minimum: 1,
+        }),
       ),
       symbolsOnly: Type.Optional(
         Type.Boolean({
@@ -357,6 +450,7 @@ export function registerTools(pi: ExtensionAPI, session: CodegraphSession): void
     }),
     execute: makeExecute(
       session,
+      TOOL.node,
       (info, params) => {
         // Symbol mode wins when both are given: `file` then narrows the symbol
         // to the definition in that file (the spec's file+symbol priority).
@@ -393,7 +487,7 @@ export function registerTools(pi: ExtensionAPI, session: CodegraphSession): void
   });
 
   pi.registerTool({
-    name: "codegraph_explore",
+    name: TOOL.explore,
     label: "codegraph explore",
     description:
       "PRIMARY TOOL - call FIRST for almost any question OR before an edit: " +
@@ -410,17 +504,22 @@ export function registerTools(pi: ExtensionAPI, session: CodegraphSession): void
       query: Type.String({
         description:
           "Symbol names, file names, or short code terms to explore (e.g., " +
-          "\"AuthService loginUser session-manager\", \"GraphTraverser BFS " +
-          "impact traversal.ts\"). For a flow question, name the symbols " +
-          "spanning the flow (e.g. \"mutateElement renderScene\"). A " +
+          '"AuthService loginUser session-manager", "GraphTraverser BFS ' +
+          'impact traversal.ts"). For a flow question, name the symbols ' +
+          'spanning the flow (e.g. "mutateElement renderScene"). A ' +
           "natural-language question works too - no prior codegraph_search " +
           "needed.",
       }),
       maxFiles: Type.Optional(
-        Type.Integer({ description: "Maximum number of files to include source code from (default: 12)", default: 12, minimum: 1 }),
+        Type.Integer({
+          description:
+            "Maximum number of files to include source code from (default: 12)",
+          default: 12,
+          minimum: 1,
+        }),
       ),
     }),
-    execute: makeExecute(session, (info, params) =>
+    execute: makeExecute(session, TOOL.explore, (info, params) =>
       renderExplore(
         info.cg,
         info.root,
@@ -443,7 +542,36 @@ function fmtTime(ts?: number): string {
   return `${Math.floor(mins / 60)}h ago`;
 }
 
-function statusLines(session: CodegraphSession, ctx: ExtensionContext): string[] {
+/**
+ * The order the status block lists the tools in: the note's own order, then the
+ * two tools `codegraph_explore` covers. Derived from the same `TOOL` map the
+ * tools are registered with, so a renamed tool cannot survive here as a name the
+ * ledger never writes.
+ */
+const USAGE_TOOL_ORDER = [
+  TOOL.explore,
+  TOOL.node,
+  TOOL.search,
+  TOOL.impact,
+  TOOL.callers,
+  TOOL.callees,
+].map((name) => name.replace(/^codegraph_/, ""));
+
+function usageLines(usage: UsageSummary): string[] {
+  const lines = [
+    `  usage: ${usage.ok} ok, ${usage.failed} failed (last call ${fmtTime(usage.lastAt)})`,
+    `    ${USAGE_TOOL_ORDER.map((name) => `${name}: ${usage.toolCounts[name] ?? 0}`).join("  ")}`,
+  ];
+  if (usage.failed > 0) {
+    lines.push(`    last failure: ${usage.lastFailure ?? "unknown failure"}`);
+  }
+  return lines;
+}
+
+function statusLines(
+  session: CodegraphSession,
+  ctx: ExtensionContext,
+): string[] {
   try {
     const s = session.statusFor(ctx.cwd);
     const lines: string[] = [];
@@ -453,6 +581,7 @@ function statusLines(session: CodegraphSession, ctx: ExtensionContext): string[]
     }
     if (s.needsCreate) {
       lines.push("  index: none yet (built automatically on first use)");
+      lines.push(...usageLines(s.usage));
       return lines;
     }
     if (s.stats) {
@@ -477,6 +606,7 @@ function statusLines(session: CodegraphSession, ctx: ExtensionContext): string[]
       lines.push(`  watcher: ${s.watcher} (${s.watcherReason ?? "unknown"})`);
     }
     lines.push(`  auto-index: ${session.autoIndex ? "on" : "off"}`);
+    lines.push(...usageLines(s.usage));
     return lines;
   } catch (err) {
     return [`codegraph: ${reasonOf(err)}`];
@@ -501,7 +631,10 @@ function uiFromCtx(ctx: ExtensionContext): CommandUi {
   };
 }
 
-export function registerCommand(pi: ExtensionAPI, session: CodegraphSession): void {
+export function registerCommand(
+  pi: ExtensionAPI,
+  session: CodegraphSession,
+): void {
   pi.registerCommand("codegraph", {
     description:
       "Manage the codegraph index: status, init (full rebuild), seed [path], uninit, auto on|off",
@@ -570,12 +703,18 @@ export function registerCommand(pi: ExtensionAPI, session: CodegraphSession): vo
           }
           const res = await session.uninit(ctx.cwd);
           ui.setWidget?.("codegraph", undefined);
-          ui.notify(
-            "info",
-            res.removed
-              ? `codegraph: removed index at ${res.root}`
-              : `codegraph: no index at ${res.root}`,
-          );
+          if (res.removed) {
+            ui.notify("info", `codegraph: removed index at ${res.root}`);
+          } else if (res.usageOnly) {
+            // The ledger of a worktree that never got an index is disposable
+            // with it, so uninit still cleaned the directory here.
+            ui.notify(
+              "info",
+              `codegraph: removed the usage log at ${res.root} (no index there)`,
+            );
+          } else {
+            ui.notify("info", `codegraph: no index at ${res.root}`);
+          }
           return;
         }
         if (verb === "auto") {
