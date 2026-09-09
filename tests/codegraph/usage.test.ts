@@ -224,9 +224,18 @@ describe("readUsage", () => {
     appendUsage(dir, { tool: "codegraph_search", ok: false, reason: "x", duration_ms: 1, chars: 0 });
     const ignore = path.join(dir, IGNORE_NAME);
     expect(fs.existsSync(ignore)).toBe(true);
-    const rules = fs.readFileSync(ignore, "utf-8").split("\n");
+    const content = fs.readFileSync(ignore, "utf-8");
+    const rules = content.split("\n");
     expect(rules).toContain("*");
     expect(rules).toContain("!.gitignore");
+
+    // Upstream owns this file too, and only upgrades one it recognizes as its
+    // own: codegraph's `ensureGitignore` (src/directory.ts) matches a header
+    // prefix and treats a file with a bare `*` line as its current default. A
+    // header of our own would read as user-authored and freeze these rules for
+    // good, so the file must keep both properties (issue #9, spec 0007 review).
+    expect(content.startsWith("# CodeGraph data files")).toBe(true);
+    expect(rules.some((line) => line.trim() === "*")).toBe(true);
   });
 
   it("never overwrites an ignore file it did not create", () => {

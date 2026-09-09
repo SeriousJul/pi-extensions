@@ -18,7 +18,7 @@ import {
 import { createInMemoryIndexFactory } from "./inMemoryIndex";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getCodeGraphDir, getDatabasePath } from "../../extensions/codegraph/runtime";
-import { IGNORE_NAME, USAGE_NAME } from "../../extensions/codegraph/usage";
+import { appendUsage, IGNORE_NAME, USAGE_NAME } from "../../extensions/codegraph/usage";
 
 interface MockUi {
   notifications: Array<[string, string]>;
@@ -472,6 +472,33 @@ describe("/codegraph command", () => {
     const failedText = failedUi.notifications.map(([, m]) => m).join("\n");
     expect(failedText).toContain("usage: 0 ok, 1 failed (last call");
     expect(failedText).toContain("last failure: auto-index is off for this session");
+  });
+
+  it("shows every recorded call in the per-tool row, not only the six tools", async () => {
+    // The row used to print only the tool names this file lists, so a ledger
+    // line for any other name counted toward the totals and stayed invisible.
+    // A call that is recorded must be a call the display accounts for.
+    const h = makeHarness(newSession(), fixture.main);
+    await h.call("codegraph_search", { query: "helper" });
+    appendUsage(getCodeGraphDir(fixture.main), {
+      tool: "codegraph_dropped_away",
+      ok: false,
+      reason: "no such tool any more",
+      duration_ms: 7,
+      chars: 0,
+    });
+
+    const ui = freshUi();
+    await h.commands.get("codegraph")!.handler("", makeCtx(fixture.main, ui));
+    const joined = ui.notifications.map(([, m]) => m).join("\n");
+
+    // The six keep their settled order and the extra name follows them.
+    expect(joined).toContain(
+      "explore: 0  node: 0  search: 1  impact: 0  callers: 0  callees: 0  dropped_away: 1",
+    );
+    // The totals and the row now account for the same two calls.
+    expect(joined).toContain("usage: 1 ok, 1 failed (last call");
+    expect(joined).toContain("last failure: no such tool any more");
   });
 
   it("accumulates usage across sessions of the same worktree", async () => {

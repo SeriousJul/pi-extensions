@@ -308,14 +308,14 @@ export function registerTools(
       ),
     }),
     execute: makeExecute(session, TOOL.callers, (info, params) =>
-      renderRefs(
-        info.cg,
-        String(params.symbol),
-        "callers",
-        params.file !== undefined ? String(params.file) : undefined,
-        typeof params.line === "number" ? params.line : undefined,
-        typeof params.limit === "number" ? params.limit : undefined,
-      ),
+        renderRefs(
+          info.cg,
+          String(params.symbol),
+          "callers",
+          params.file !== undefined ? String(params.file) : undefined,
+          typeof params.line === "number" ? params.line : undefined,
+          typeof params.limit === "number" ? params.limit : undefined,
+        ),
     ),
   });
 
@@ -339,14 +339,14 @@ export function registerTools(
       ),
     }),
     execute: makeExecute(session, TOOL.callees, (info, params) =>
-      renderRefs(
-        info.cg,
-        String(params.symbol),
-        "callees",
-        params.file !== undefined ? String(params.file) : undefined,
-        typeof params.line === "number" ? params.line : undefined,
-        typeof params.limit === "number" ? params.limit : undefined,
-      ),
+        renderRefs(
+          info.cg,
+          String(params.symbol),
+          "callees",
+          params.file !== undefined ? String(params.file) : undefined,
+          typeof params.line === "number" ? params.line : undefined,
+          typeof params.limit === "number" ? params.limit : undefined,
+        ),
     ),
   });
 
@@ -371,13 +371,13 @@ export function registerTools(
       line: LineParam,
     }),
     execute: makeExecute(session, TOOL.impact, (info, params) =>
-      renderImpact(
-        info.cg,
-        String(params.symbol),
-        typeof params.depth === "number" ? params.depth : 2,
-        params.file !== undefined ? String(params.file) : undefined,
-        typeof params.line === "number" ? params.line : undefined,
-      ),
+        renderImpact(
+          info.cg,
+          String(params.symbol),
+          typeof params.depth === "number" ? params.depth : 2,
+          params.file !== undefined ? String(params.file) : undefined,
+          typeof params.line === "number" ? params.line : undefined,
+        ),
     ),
   });
 
@@ -557,10 +557,30 @@ const USAGE_TOOL_ORDER = [
   TOOL.callees,
 ].map((name) => name.replace(/^codegraph_/, ""));
 
+/**
+ * The tools a status row shows: the registered six in the fixed order the issue
+ * settles (so a tool with no calls still reads 0 and the row does not move),
+ * then any other name the ledger carries.
+ *
+ * The extra names are what keeps the row total. `usage.ok` and `usage.failed`
+ * count every recorded call, so a row that listed only the six names could hide
+ * calls - a tool renamed in a later version, or a line written by one. A
+ * recorded call must never disappear from the display that explains it.
+ */
+function usageToolNames(toolCounts: Record<string, number>): string[] {
+  const other = Object.keys(toolCounts)
+    .filter((name) => !USAGE_TOOL_ORDER.includes(name))
+    .sort();
+  return [...USAGE_TOOL_ORDER, ...other];
+}
+
 function usageLines(usage: UsageSummary): string[] {
+  const row = usageToolNames(usage.toolCounts)
+    .map((name) => `${name}: ${usage.toolCounts[name] ?? 0}`)
+    .join("  ");
   const lines = [
     `  usage: ${usage.ok} ok, ${usage.failed} failed (last call ${fmtTime(usage.lastAt)})`,
-    `    ${USAGE_TOOL_ORDER.map((name) => `${name}: ${usage.toolCounts[name] ?? 0}`).join("  ")}`,
+    `    ${row}`,
   ];
   if (usage.failed > 0) {
     lines.push(`    last failure: ${usage.lastFailure ?? "unknown failure"}`);
@@ -642,6 +662,35 @@ export function registerCommand(
       const ui = uiFromCtx(ctx);
       const parts = args.trim().split(/\s+/).filter(Boolean);
       const verb = parts[0] ?? "status";
+
+      /**
+       * True (and reported) when this session's own background build owns the
+       * root, so an index-mutating verb must wait. The build marker guards other
+       * processes; it says nothing about a prewarm this same session started, so
+       * `uninit` could delete the directory that build is still writing into, and
+       * `init` or `seed` could start a second build of the same root.
+       */
+      const prewarmHoldsRoot = (): string | undefined => {
+        try {
+          const { root } = session.resolveRootFor(ctx.cwd);
+          return session.isPrewarming(root) ? root : undefined;
+        } catch {
+          // Nothing resolves a root, so there is no build to fight. The verb's
+          // own path reports the resolution failure.
+          return undefined;
+        }
+      };
+
+      const refuseDuringPrewarm = (root: string | undefined): boolean => {
+        if (root === undefined) return false;
+        ui.notify(
+          "warning",
+          `codegraph: a background build is creating the first index at ${root}; ` +
+            "wait for it to finish, then run this command again",
+        );
+        return true;
+      };
+
       try {
         if (verb === "status" || verb === "") {
           const lines = statusLines(session, ctx);
@@ -650,6 +699,7 @@ export function registerCommand(
           return;
         }
         if (verb === "init") {
+          if (refuseDuringPrewarm(prewarmHoldsRoot())) return;
           session
             .rebuild(ctx.cwd)
             .then((info) => {
@@ -666,6 +716,7 @@ export function registerCommand(
           return;
         }
         if (verb === "seed") {
+          if (refuseDuringPrewarm(prewarmHoldsRoot())) return;
           session
             .reseed(ctx.cwd, parts[1])
             .then((info) => {
@@ -701,6 +752,12 @@ export function registerCommand(
             ui.notify("info", "codegraph: uninit cancelled");
             return;
           }
+          // Checked after the confirm and before the delete: the answer the user
+          // agreed to is about a directory no build is writing into.
+          if (session.isPrewarming(root)) {
+            refuseDuringPrewarm(root);
+            return;
+          }
           const res = await session.uninit(ctx.cwd);
           ui.setWidget?.("codegraph", undefined);
           if (res.removed) {
@@ -708,10 +765,10 @@ export function registerCommand(
           } else if (res.usageOnly) {
             // The ledger of a worktree that never got an index is disposable
             // with it, so uninit still cleaned the directory here.
-            ui.notify(
-              "info",
+          ui.notify(
+            "info",
               `codegraph: removed the usage log at ${res.root} (no index there)`,
-            );
+          );
           } else {
             ui.notify("info", `codegraph: no index at ${res.root}`);
           }

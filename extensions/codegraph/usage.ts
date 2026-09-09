@@ -39,10 +39,30 @@ export const USAGE_NAME = "usage.jsonl";
  */
 export const IGNORE_NAME = ".gitignore";
 
+/**
+ * The ignore rules for an index directory this module created.
+ *
+ * Upstream owns this file too: codegraph's `ensureGitignore` (`src/directory.ts`)
+ * writes its own default when it builds an index and upgrades a default it
+ * recognizes in place. It decides "this one is mine" from a header prefix
+ * (`GITIGNORE_MARKER`, `# CodeGraph data files`) and "out of date" from the
+ * absence of a bare `*` line; anything else it treats as user-authored and never
+ * touches. A file with an invented header would therefore sit outside upstream's
+ * upgrade path for good, keeping stale rules if upstream ever changes them.
+ *
+ * These rules keep both properties that put the file inside that path: the first
+ * line starts with upstream's marker, and a bare `*` line is present. Only the
+ * comment wording is ours, and it names the one file upstream does not know
+ * about: the usage ledger. A directory this module created is then the same as
+ * one upstream created as far as git is concerned, and a future upstream default
+ * replaces these rules instead of being blocked by them. The `*` already covers
+ * `usage.jsonl`, so no extra pattern is needed.
+ */
 const IGNORE_CONTENT = [
-  "# Local codegraph files: the index, the usage ledger, and their helpers.",
-  "# Nothing in here is meant to be committed, so ignore all of it except this",
-  "# file itself.",
+  "# CodeGraph data files - local to each machine, not for committing.",
+  "# Ignore everything in .codegraph/ except this file itself, so transient",
+  "# files (the database, daemon.pid, sockets, logs, and this extension's usage",
+  "# ledger) never show up in git.",
   "*",
   "!.gitignore",
   "",
@@ -97,15 +117,16 @@ function usagePath(dir: string): string {
   return path.join(dir, USAGE_NAME);
 }
 
-/** Append one complete call record. Ledger failures never fail a tool call. */
-export function appendUsage(
-  dir: string,
-  record: Omit<UsageRecord, "ts"> & { ts?: string },
-): void {
+/**
+ * Append one complete call record. The timestamp always comes from the writer's
+ * clock: a caller cannot supply one, because the ledger records what a real call
+ * cost. Ledger failures never fail a tool call.
+ */
+export function appendUsage(dir: string, record: Omit<UsageRecord, "ts">): void {
   try {
     ensureIndexDir(dir);
     const line: UsageRecord = {
-      ts: record.ts ?? new Date().toISOString(),
+      ts: new Date().toISOString(),
       tool: record.tool,
       ok: record.ok,
       ...(record.reason === undefined ? {} : { reason: record.reason }),

@@ -22,6 +22,7 @@ import codegraphExtension from "../../extensions/codegraph/index";
 import { CodegraphSession } from "../../extensions/codegraph/session";
 import type { IndexAdapterFactory } from "../../extensions/codegraph/indexAdapter";
 import {
+  IN_MEMORY_DIR_NAME,
   InMemoryIndex,
   createInMemoryIndexFactory,
   type InMemoryFactoryOptions,
@@ -440,5 +441,193 @@ describe("prewarm at the session seam", () => {
     await settle();
     expect(r.buildCount).toBe(1);
     expect(notices).toHaveLength(1);
+  });
+});
+
+/**
+ * A runtime that fails its preflight cannot serve a codegraph call at all:
+ * every public entry asserts the stack before it opens or builds anything. The
+ * note and the prewarm promise exactly what such a call delivers, so both step
+ * aside on this machine - in every index state, including a ready index on disk.
+ */
+describe("prewarm and note under a broken runtime", () => {
+  const BROKEN: InMemoryFactoryOptions["preflightResult"] = {
+    ok: false,
+    reason: "the sqlite backend is unavailable",
+  };
+
+  function brokenFactory(): IndexAdapterFactory {
+    return createInMemoryIndexFactory({ store, preflightResult: BROKEN });
+  }
+
+  it("adds no note and starts no build on a fresh worktree", async () => {
+    const e = makeEntrypoint(brokenFactory());
+    expect(e.agentTurn()).toBeUndefined();
+    await settle();
+    expect(storeRoot().buildCount).toBe(0);
+    expect(storeRoot().createCount).toBe(0);
+  });
+
+  it("adds no note over a ready index, where a call would fail all the same", async () => {
+    const r = storeRoot();
+    r.dirExists = true;
+    r.dbExists = true;
+    r.indexState = "complete";
+    r.addFile("src/alpha.ts", { exports: ["alphaThing"] });
+
+    const healthy = makeEntrypoint(createInMemoryIndexFactory({ store }));
+    expect(healthy.agentTurn()?.systemPrompt).toContain(
+      "This project has a codegraph index.",
+    );
+
+    const broken = makeEntrypoint(brokenFactory());
+    expect(broken.agentTurn()).toBeUndefined();
+  });
+
+  it("decides the note without warning, leaving the notice to the call", async () => {
+    // The runtime notice is actionable and belongs to the path a user is on: a
+    // prompt hook that warned would fire on every turn of every project.
+    const e = makeEntrypoint(brokenFactory());
+    e.agentTurn();
+    e.agentTurn();
+    await settle();
+    expect(noticesOf(e.ui, "preflight")).toHaveLength(0);
+    expect(e.ui.notifications).toHaveLength(0);
+
+    const text = await e.callTool("codegraph_search", { query: "alpha" });
+    expect(text).toContain("unavailable");
+    expect(noticesOf(e.ui, "preflight")).toHaveLength(1);
+  });
+
+  it("keeps a per-root prewarm attempt from being spent on a broken stack", async () => {
+    // The prewarm used to try the ready seam per root and swallow the failure.
+    // One attempt per root would still warn once per root; the gate costs none.
+    const s = newSession({ preflightResult: BROKEN });
+    const notices: string[] = [];
+    s.setUi({ notify: (_level, msg) => notices.push(msg) });
+    s.prewarmFor(rootDir);
+    await settle();
+    expect(storeRoot().createCount).toBe(0);
+    expect(notices).toHaveLength(0);
+  });
+});
+
+/**
+ * The turn's cost. The note decision and the prewarm need the same answer, so
+ * the hook resolves the project root once and hands that resolution to both.
+ * Each root resolution runs exactly one nearest-index lookup (`resolveRoot`
+ * calls `findNearestRoot` once), so that count is the resolution count.
+ */
+describe("one project root resolution per turn", () => {
+  /** Wrap a factory to count the nearest-root lookups it is asked for. */
+  function countingFactory(base: IndexAdapterFactory): {
+    factory: IndexAdapterFactory;
+    lookups: () => number;
+  } {
+    let n = 0;
+    const factory = {
+      ...base,
+      findNearestRoot(startPath: string): string | null {
+        n += 1;
+        return base.findNearestRoot(startPath);
+      },
+    };
+    return { factory, lookups: () => n };
+  }
+
+  it("runs one lookup for the note and the prewarm together", async () => {
+    const { factory, lookups } = countingFactory(
+      createInMemoryIndexFactory({ store }),
+    );
+    const e = makeEntrypoint(factory);
+
+    e.agentTurn();
+    // Calibration: a turn that resolved the root twice would read 2 here, and a
+    // turn that resolved it not at all would add no note and no prewarm.
+    expect(lookups()).toBe(1);
+
+    // The background build runs on the turn's resolution, not a fresh walk.
+    await waitFor("the prewarm build to start", () => storeRoot().buildCount === 1);
+    await waitFor("the prewarmed index to be open", () => storeRoot().open);
+    expect(lookups()).toBe(1);
+
+    // Each further turn pays exactly one more, never two.
+    e.agentTurn();
+    expect(lookups()).toBe(2);
+  });
+});
+
+/**
+ * A command that removes or rebuilds an index must not fight this session's own
+ * background build. The build marker guards other processes only, so the guard
+ * has to know about the prewarm the session started itself.
+ */
+describe("a command against a live prewarm", () => {
+  /** Park the prewarm inside the create, and report when it is there. */
+  async function parkedPrewarm(): Promise<{
+    e: Entrypoint;
+    r: InMemoryRoot;
+    release: () => void;
+  }> {
+    const r = storeRoot();
+    let release!: () => void;
+    r.createGate = new Promise<void>((res) => {
+      release = res;
+    });
+    const e = makeEntrypoint(createInMemoryIndexFactory({ store }));
+    e.agentTurn();
+    await waitFor("the prewarm to reach the create", () => r.createCount === 1);
+    return { e, r, release };
+  }
+
+  it("refuses uninit rather than deleting a directory the build writes into", async () => {
+    const { e, r, release } = await parkedPrewarm();
+    // A usage-only index directory on disk: exactly what an unguarded uninit
+    // would remove while the background build still owns the root.
+    const indexDir = path.join(rootDir, IN_MEMORY_DIR_NAME);
+    fs.mkdirSync(indexDir, { recursive: true });
+    fs.writeFileSync(path.join(indexDir, "usage.jsonl"), "{}\n", "utf-8");
+
+    await e.command("uninit");
+    expect(
+      noticesOf(e.ui, "background build is creating the first index"),
+    ).toHaveLength(1);
+    // The directory the guard refused to delete is still there for the build...
+    expect(fs.existsSync(indexDir)).toBe(true);
+    expect(r.createCount).toBe(1);
+
+    release();
+    await waitFor("the parked prewarm to finish", () => storeRoot().open);
+    // ...and the build still owns it afterwards: no verb deleted anything.
+    expect(fs.existsSync(indexDir)).toBe(true);
+    expect(r.buildCount).toBe(1);
+  });
+
+  it("refuses init and seed instead of queueing a second build of the root", async () => {
+    const { e, r, release } = await parkedPrewarm();
+
+    await e.command("init");
+    await e.command("seed");
+    expect(noticesOf(e.ui, "background build is creating the first index")).toHaveLength(
+      2,
+    );
+    expect(r.createCount).toBe(1);
+    expect(r.buildCount).toBe(0);
+
+    release();
+    await waitFor("the parked prewarm to finish", () => storeRoot().open);
+    expect(r.buildCount).toBe(1);
+  });
+
+  it("lets the verbs through once the prewarm is done", async () => {
+    const e = makeEntrypoint(createInMemoryIndexFactory({ store }));
+    e.agentTurn();
+    await waitFor("the prewarmed index to be open", () => storeRoot().open);
+
+    await e.command("uninit");
+    expect(noticesOf(e.ui, "background build is creating the first index")).toHaveLength(
+      0,
+    );
+    expect(noticesOf(e.ui, "removed")).toHaveLength(1);
   });
 });

@@ -41,12 +41,7 @@ import { getDefaultIndexFactory } from "./factory-registry";
 import fs from "node:fs";
 import path from "node:path";
 import { gitCommonDir, isGitWorktree, listWorktrees } from "./git";
-import {
-  clearSeedRecord,
-  readMeta,
-  recordReconcile,
-  recordSeed,
-} from "./index-meta";
+import { clearSeedRecord, readMeta, recordReconcile, recordSeed } from "./index-meta";
 import {
   BuildWaitTimeout,
   clearMarker,
@@ -60,10 +55,7 @@ import type { ResolvedRoot } from "./root";
 import { CodegraphUnavailable, resolveRoot, unsafeRootReason } from "./root";
 import { findSeedSource } from "./seed";
 import { emptyUsage, readUsage, USAGE_NAME, type UsageSummary } from "./usage";
-import {
-  startWatcher as startCodegraphWatcher,
-  type WatcherState,
-} from "./watcher";
+import { startWatcher as startCodegraphWatcher, type WatcherState } from "./watcher";
 
 export type { WatcherState };
 export type { ResolvedRoot };
@@ -421,7 +413,7 @@ export class CodegraphSession {
 
   /**
    * The index lifecycle for an already resolved root. The result reports the
-   * root `resolveRoot` chose; the file form belongs to `ready`, which is
+   * root `resolveRoot` chose; the file form belongs to `readyFrom`, which is
    * the only site that puts it on a ready result.
    */
   private async ensureReadyCore(
@@ -672,7 +664,19 @@ export class CodegraphSession {
     return resolveRoot(dir, file, this.nearest(this.syncFactory()));
   }
 
-  /** Return the index directory for a call without opening the index. */
+  /**
+   * The index directory a call would record its usage in, without opening the
+   * index.
+   *
+   * The `file` argument stays part of this signature on purpose: file anchoring
+   * moved into `resolveRoot` (spec 0006), so the same argument that decides
+   * which root serves a call also decides which ledger records it. A caller that
+   * omitted it could write a failure into another project's ledger.
+   *
+   * Only a call's failure path needs this: a successful call names its ledger
+   * from the ready result (`ReadyInfo`'s own adapter), which is the resolution
+   * the seam already did.
+   */
   usageDirFor(dir: string, file?: string): string | undefined {
     const f = this.syncFactory();
     if (!f) return undefined;

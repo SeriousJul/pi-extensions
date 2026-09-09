@@ -69,8 +69,10 @@ export default function codegraphExtension(
     if (!CODEGRAPH_TOOL_NAMES.some((name) => active.includes(name))) {
       return undefined;
     }
-    // One root resolution for the whole turn: the prewarm and the note need the
-    // same answer, and each root walk runs git.
+    // The note decision and the prewarm need the same answer, so this hook walks
+    // the project root once and hands that resolution to both (each git-root
+    // probe costs two sync git calls). A tool call resolves for itself later;
+    // nothing here runs the walk twice.
     const resolved = session.projectRootFor(ctx.cwd);
     session.prewarmFor(ctx.cwd, resolved);
     const state = session.indexStateFor(ctx.cwd, resolved);
