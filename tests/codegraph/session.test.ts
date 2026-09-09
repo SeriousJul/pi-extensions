@@ -350,6 +350,15 @@ describe("root resolution", () => {
     expect(resolved.file).toBe("src/not-yet-indexed.ts");
   });
 
+  it("reports the root itself as the file form when the argument is the root", () => {
+    // A file argument that names the root has no root-relative file form, so
+    // it is ".". The indexed-file lookup reports that as absent: a directory is
+    // never a file (covered at the tool seam in tools.test.ts).
+    for (const arg of [".", "", fixture.main]) {
+      expect(resolveRoot(fixture.main, arg).file).toBe(".");
+    }
+  });
+
   it("keeps the caller's file form when it escapes the resolved root", () => {
     const outside = path.join(fixture.base, "outside.ts");
     const relative = path.relative(fixture.main, outside);

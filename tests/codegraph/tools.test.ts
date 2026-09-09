@@ -201,6 +201,18 @@ describe("tool outputs", () => {
     expect(text).toContain("File: src/shared.ts");
   });
 
+  it("node file mode reports an argument that names the project root as absent", async () => {
+    // A `file` argument that points at the root itself (".", "", the absolute
+    // root, or the nested "./" form) names a directory, never a file. The
+    // lookup must not substring-match it against the whole index: the answer
+    // is that the file is not in the index.
+    for (const arg of [".", "", "./", fixture.main]) {
+      expect(await h.call("codegraph_node", { file: arg })).toBe(
+        'File "." not found in the index. Use the built-in read tool for files outside the index.',
+      );
+    }
+  });
+
   it("node symbol mode returns signature, body, and top callers/callees", async () => {
     const text = await h.call("codegraph_node", { symbol: "helper" });
     expect(text).toContain("helper (function)");
