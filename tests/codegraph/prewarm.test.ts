@@ -345,6 +345,35 @@ describe("prewarm at the session seam", () => {
     expect(info.cg.getNodesByName("alpha.ts")).toHaveLength(1);
   });
 
+  it("does not serve a failed build left on disk", async () => {
+    const r = storeRoot();
+    let release!: () => void;
+    r.buildGate = new Promise<void>((res) => {
+      release = res;
+    });
+    r.buildOutcome = { success: false, error: "kaboom" };
+    const s = newSession();
+    const notices: string[] = [];
+    s.setUi({ notify: (_level, msg) => notices.push(msg) });
+    s.prewarmFor(rootDir);
+    await waitFor("the prewarm build to start", () => r.buildCount === 1);
+
+    const call = s.ensureReady(rootDir);
+    await settle(20);
+    expect(r.buildCount).toBe(1);
+    release();
+
+    await expect(call).rejects.toSatisfy(
+      (err: unknown) =>
+        err instanceof Error && err.message === "index build failed: kaboom",
+    );
+    // The failed database was discarded, so the waiting call owned a fresh
+    // retry instead of opening the incomplete index as if it were ready.
+    expect(r.buildCount).toBe(2);
+    expect(r.dbExists).toBe(false);
+    expect(notices.filter((m) => m.includes("index build failed"))).toHaveLength(1);
+  });
+
   it("leaves nothing open when a prewarm outlives session shutdown", async () => {
     // Case A: the shutdown lands while the build runs, so the instance is
     // already registered and `closeAll` closes it. The watcher must not start

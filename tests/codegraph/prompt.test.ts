@@ -183,6 +183,24 @@ describe("system prompt note", () => {
     expect(result?.systemPrompt).toContain("codegraph_explore");
   });
 
+  it.skipIf(Boolean(process.versions.bun))(
+    "does not advertise an existing index at an unsafe root",
+    async () => {
+      const builder = newSession();
+      await builder.ensureReady(fixture.main);
+
+      const savedHome = process.env.HOME;
+      process.env.HOME = fixture.main;
+      try {
+        const { handlers } = makeExtension(["codegraph_search"]);
+        expect(turn(handlers, fixture.main)).toBeUndefined();
+      } finally {
+        if (savedHome === undefined) delete process.env.HOME;
+        else process.env.HOME = savedHome;
+      }
+    },
+  );
+
   it("is added for a sub-directory of an indexed worktree", async () => {
     const builder = newSession();
     await builder.ensureReady(fixture.feature);

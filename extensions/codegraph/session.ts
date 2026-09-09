@@ -422,6 +422,11 @@ export class CodegraphSession {
   ): Promise<ReadyInfo> {
     let { needsCreate, mainCheckout, isMainCheckout } = resolved;
     const { root } = resolved;
+    const unsafe = unsafeRootReason(root);
+    if (unsafe) {
+      this.notifyOnce(`unsafe-root:${root}`, "warning", `codegraph: ${unsafe}`);
+      throw new CodegraphUnavailable(unsafe, true);
+    }
 
     const cached = this.instances.get(root);
     if (cached) {
@@ -532,6 +537,9 @@ export class CodegraphSession {
     const turn = resolved ?? this.projectRootFor(dir);
     if (!turn) return undefined;
     const { root } = turn;
+    // An existing index at the home or filesystem root is unsafe too: the note
+    // must not advertise a query path that the ready lifecycle refuses.
+    if (unsafeRootReason(root)) return undefined;
     // A broken runtime makes every call fail, whatever the index looks like.
     if (!f || !f.preflight().ok) return undefined;
     if (this.prewarming.has(root) || this.inFlight.has(root)) {
@@ -1142,6 +1150,10 @@ export class CodegraphSession {
       if (!res.success) {
         const detail = res.errors?.[0]?.message ?? "unknown error";
         this.drop(root);
+        // `indexAll` may have created a partial database before reporting the
+        // failure. Remove it before the prewarm waiters re-resolve the root, or
+        // they would adopt that failed database through `openExisting`.
+        cg.discard();
         this.notifyOnce(
           `build-failed:${root}`,
           "warning",

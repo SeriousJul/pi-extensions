@@ -308,6 +308,18 @@ class InMemoryIndexAdapter implements IndexAdapterOps {
     this.r.seededFrom = undefined;
     this.r.open = true;
   }
+  discard(): void {
+    const r = this.r;
+    r.dirExists = false;
+    r.dbExists = false;
+    r.open = false;
+    r.indexState = null;
+    r.files = [];
+    r.nodes = [];
+    r.edges = [];
+    r.seededFrom = undefined;
+    fs.rmSync(this.codeGraphDir(), { recursive: true, force: true });
+  }
   async open(): Promise<void> {
     if (!this.initialized()) {
       throw new Error(`no codegraph index at ${this.rootPath}`);
