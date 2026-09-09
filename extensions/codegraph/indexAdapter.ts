@@ -323,7 +323,9 @@ class RealIndexAdapter implements IndexAdapterOps {
   }
   discard(): void {
     this.close();
-    fs.rmSync(this.codeGraphDir(), { recursive: true, force: true });
+    for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+      fs.rmSync(this.databasePath() + suffix, { force: true });
+    }
   }
   async open(): Promise<void> {
     this.instance = await CodeGraph.open(this.root, { sync: false });

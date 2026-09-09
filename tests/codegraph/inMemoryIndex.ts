@@ -318,7 +318,9 @@ class InMemoryIndexAdapter implements IndexAdapterOps {
     r.nodes = [];
     r.edges = [];
     r.seededFrom = undefined;
-    fs.rmSync(this.codeGraphDir(), { recursive: true, force: true });
+    for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+      fs.rmSync(this.databasePath() + suffix, { force: true });
+    }
   }
   async open(): Promise<void> {
     if (!this.initialized()) {
