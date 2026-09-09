@@ -183,8 +183,8 @@ codegraph is unavailable (<reason>). Use the built-in read and grep tools instea
 - `indexAdapter.ts` - the Index adapter: the only module that names the
   codegraph library's instance API, types, or schema (spec 0003). The real
   adapter wraps a library instance from `runtime.ts`; the session, the
-  renderers, and the staleness gate call the adapter's operations and never
-  see the library's shape.
+  renderers, and the source-section gate call the adapter's operations and
+  never see the library's shape.
 - `factory-registry.ts` - the default `IndexAdapterFactory` registry
   (library-free): the entrypoint and the handlers register the real factory
   at load; a session resolves it without importing the adapter module.
@@ -206,9 +206,9 @@ codegraph is unavailable (<reason>). Use the built-in read and grep tools instea
   The state machine, instance cache, in-flight dedup, and notifications live
   here; all library access goes through the adapter. The marker, watcher,
   and meta protocols live in the modules above.
-- `staleness.ts` - the point-of-emission staleness gate (size + mtime +
-  content hash against the indexed record) that keeps the renderers from
-  slicing a file that drifted after its last index sync.
+- `sourceSection.ts` - the trustworthy source-section entry (spec 0005):
+  it owns the point-of-emission drift gate, its short memo, and the whole-file
+  caps, so renderers never slice a file that drifted after its last index sync.
 - `format.ts` - rendering of query results.
 - `handlers.ts` - the six tool definitions and the `/codegraph` command.
 

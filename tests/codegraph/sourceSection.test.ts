@@ -280,6 +280,7 @@ describe("renderers on a drifted file", () => {
       "  (stale: src/big.ts changed on disk after the last index sync; the line above may have shifted)",
     );
     expect(text).toContain("The symbol body is omitted");
+    expect(text).not.toContain("export function bigFn8");
     expect(text).toContain("The change is picked up on the next index reconcile.");
     expect(text).toContain("Top callers");
     expect(text).toContain("Top callees");

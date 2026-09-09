@@ -16,9 +16,9 @@ import type {
   Subgraph,
 } from "./indexAdapter";
 import fs from "node:fs";
-import path from "node:path";
 import { CodegraphUnavailable } from "./root";
 import {
+  absFile,
   sourceSection,
   type SourceSection,
 } from "./sourceSection";
@@ -37,15 +37,6 @@ export function reasonOf(err: unknown): string {
   if (err instanceof CodegraphUnavailable) return err.reason;
   if (err instanceof Error) return err.message;
   return String(err);
-}
-
-/** Absolute path of a result file, guarded to stay inside the index root. */
-function absFile(root: string, filePath: string): string {
-  const abs = path.resolve(root, filePath);
-  if (abs !== root && !abs.startsWith(root + path.sep)) {
-    throw new CodegraphUnavailable(`index entry escapes the project root: ${filePath}`);
-  }
-  return abs;
 }
 
 interface Cluster {
