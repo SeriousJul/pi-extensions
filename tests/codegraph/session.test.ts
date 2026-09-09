@@ -269,6 +269,13 @@ describe("ensureReady (primary seam)", () => {
     expect(info.cg.getProjectRoot()).toBe(fixture.main);
   });
 
+  it("carries the root-relative file through the ready result", async () => {
+    const s = newSession();
+    const info = await s.ensureReady(fixture.main, "src/shared.ts");
+    expect(info.root).toBe(fixture.main);
+    expect(info.file).toBe("src/shared.ts");
+  });
+
   it("throws CodegraphUnavailable with a reason when auto-index is off", async () => {
     const s = newSession({ autoIndex: false });
     await expect(s.ensureReady(fixture.feature)).rejects.toSatisfy(
@@ -291,6 +298,39 @@ describe("root resolution", () => {
     const resolved = resolveRoot(fixture.feature);
     expect(resolved.isMainCheckout).toBe(false);
     expect(resolved.mainCheckout).toBe(fixture.main);
+  });
+
+  it("returns a sibling worktree root and root-relative file", () => {
+    const file = path.relative(
+      fixture.main,
+      path.join(fixture.feature, "src", "feature.ts"),
+    );
+    const resolved = resolveRoot(fixture.main, file);
+    expect(resolved.root).toBe(fixture.feature);
+    expect(resolved.file).toBe("src/feature.ts");
+  });
+
+  it("returns a worktree root and root-relative file for a sub-directory file", () => {
+    const resolved = resolveRoot(fixture.main, "src/shared.ts");
+    expect(resolved.root).toBe(fixture.main);
+    expect(resolved.file).toBe("src/shared.ts");
+  });
+
+  it("anchors on a file that does not exist yet", () => {
+    const resolved = resolveRoot(fixture.main, "src/not-yet-indexed.ts");
+    expect(resolved.root).toBe(fixture.main);
+    expect(resolved.file).toBe("src/not-yet-indexed.ts");
+  });
+
+  it("keeps the original file when it escapes the resolved root", () => {
+    const file = path.relative(fixture.main, path.join(fixture.base, "outside.ts"));
+    const resolved = resolveRoot(fixture.main, file, () => fixture.main);
+    expect(resolved.root).toBe(fixture.main);
+    expect(resolved.file).toBe(file);
+  });
+
+  it("leaves the file form empty when no file argument is given", () => {
+    expect(resolveRoot(fixture.main).file).toBeUndefined();
   });
 
   it("falls back to the nearest build manifest outside git", () => {

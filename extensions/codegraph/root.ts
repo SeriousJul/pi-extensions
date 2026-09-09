@@ -26,6 +26,8 @@ export class CodegraphUnavailable extends Error {
 export interface ResolvedRoot {
   /** The project root the call must be served from. */
   root: string;
+  /** The file argument expressed relative to `root`, when one was given. */
+  file?: string;
   /** True when no index exists at `root` and one must be created. */
   needsCreate: boolean;
   /** Top-level path of the main checkout, when the root is a git worktree. */
@@ -131,12 +133,40 @@ export function nearestManifestDir(dir: string): string | undefined {
  *
  * @throws CodegraphUnavailable when no project can be resolved.
  */
+function rootRelativeFile(
+  root: string,
+  startDir: string,
+  fileArg: string,
+): string {
+  const absolute = path.resolve(startDir, fileArg);
+  const relative = path.relative(root, absolute);
+  const escapesRoot =
+    path.isAbsolute(relative) ||
+    relative === ".." ||
+    relative.startsWith(`..${path.sep}`);
+  return escapesRoot ? fileArg : relative || ".";
+}
+
+/** Attach the root-relative file form without changing the root policy. */
+function withRootRelativeFile(
+  resolved: ResolvedRoot,
+  startDir: string,
+  fileArg: string | undefined,
+): ResolvedRoot {
+  if (fileArg === undefined) return resolved;
+  return {
+    ...resolved,
+    file: rootRelativeFile(resolved.root, startDir, fileArg),
+  };
+}
+
 export function resolveRoot(
   startDir: string,
   fileArg?: string,
   findNearest?: (startPath: string) => string | null | undefined,
 ): ResolvedRoot {
-  const anchor = fileArg ? path.resolve(startDir, fileArg) : path.resolve(startDir);
+  const anchor =
+    fileArg === undefined ? path.resolve(startDir) : path.resolve(startDir, fileArg);
   let base: string;
   try {
     base = fs.statSync(anchor).isDirectory() ? anchor : path.dirname(anchor);
@@ -152,24 +182,36 @@ export function resolveRoot(
       typeof nearest === "string" &&
       (nearest === worktree || nearest.startsWith(worktree + path.sep));
     if (insideOwnWorktree) {
-      return {
-        root: nearest,
-        needsCreate: false,
-        mainCheckout,
-        isMainCheckout: mainCheckout === nearest,
-      };
+      return withRootRelativeFile(
+        {
+          root: nearest,
+          needsCreate: false,
+          mainCheckout,
+          isMainCheckout: mainCheckout === nearest,
+        },
+        startDir,
+        fileArg,
+      );
     }
-    return {
-      root: worktree,
-      needsCreate: true,
-      mainCheckout,
-      isMainCheckout: mainCheckout === worktree,
-    };
+    return withRootRelativeFile(
+      {
+        root: worktree,
+        needsCreate: true,
+        mainCheckout,
+        isMainCheckout: mainCheckout === worktree,
+      },
+      startDir,
+      fileArg,
+    );
   }
 
   const nearest = findNearest?.(base) ?? null;
   if (nearest) {
-    return { root: nearest, needsCreate: false, isMainCheckout: false };
+    return withRootRelativeFile(
+      { root: nearest, needsCreate: false, isMainCheckout: false },
+      startDir,
+      fileArg,
+    );
   }
 
   const manifest = nearestManifestDir(base);
@@ -178,5 +220,9 @@ export function resolveRoot(
       `no git repository or build manifest found at or above ${base}`,
     );
   }
-  return { root: manifest, needsCreate: true, isMainCheckout: false };
+  return withRootRelativeFile(
+    { root: manifest, needsCreate: true, isMainCheckout: false },
+    startDir,
+    fileArg,
+  );
 }

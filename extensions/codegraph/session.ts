@@ -73,6 +73,8 @@ interface InstanceEntry {
 export interface ReadyInfo {
   cg: IndexAdapter;
   root: string;
+  /** The file argument expressed relative to `root`, when one was given. */
+  file?: string;
   mainCheckout?: string;
   isMainCheckout: boolean;
   justSeeded?: { source: string; changedFiles: number };
@@ -333,7 +335,7 @@ export class CodegraphSession {
   ): Promise<ReadyInfo> {
     const resolved = resolveRoot(startDir, file, this.nearest(f));
     let { needsCreate, mainCheckout, isMainCheckout } = resolved;
-    const { root } = resolved;
+    const { root, file: rootRelativeFile } = resolved;
 
     const cached = this.instances.get(root);
     if (cached) {
@@ -349,14 +351,23 @@ export class CodegraphSession {
           reopened ? "replaced index file" : undefined,
           reopened,
         );
-        return { cg: cached.cg, root, mainCheckout, isMainCheckout };
+        return {
+          cg: cached.cg,
+          root,
+          file: rootRelativeFile,
+          mainCheckout,
+          isMainCheckout,
+        };
       }
       this.drop(root);
       if (!f.create(root).initialized()) needsCreate = true;
     }
 
     const pending = this.inFlight.get(root);
-    if (pending) return pending;
+    if (pending) {
+      const ready = await pending;
+      return { ...ready, file: rootRelativeFile };
+    }
     const promise = (async (): Promise<ReadyInfo> => {
       try {
         return await this.createOrOpen(
@@ -371,7 +382,8 @@ export class CodegraphSession {
       }
     })();
     this.inFlight.set(root, promise);
-    return promise;
+    const ready = await promise;
+    return { ...ready, file: rootRelativeFile };
   }
 
   /**

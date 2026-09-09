@@ -281,6 +281,21 @@ describe("tool outputs", () => {
     expect(text).not.toContain("return x * 2");
   });
 
+  it("does not anchor node symbol mode on its file parameter", async () => {
+    const rel = path.relative(
+      fixture.main,
+      path.join(fixture.feature, "src", "feature.ts"),
+    );
+    const text = await h.call(
+      "codegraph_node",
+      { symbol: "featureOnlySymbol", file: rel },
+      fixture.main,
+    );
+    expect(text).toBe('Symbol "featureOnlySymbol" not found');
+    expect(h.session.statusFor(fixture.main).root).toBe(fixture.main);
+    expect(h.session.statusFor(fixture.feature).needsCreate).toBe(true);
+  });
+
   it("serves each worktree from its own index", async () => {
     await h.call("codegraph_search", { query: "helper" }, fixture.main);
     const text = await h.call(

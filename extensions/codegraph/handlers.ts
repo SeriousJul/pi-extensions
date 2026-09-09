@@ -3,7 +3,6 @@
  * upstream MCP tools, minus the projectPath parameter: the index is always
  * the one for the call's own worktree), plus the /codegraph command.
  */
-import path from "node:path";
 import { Type } from "typebox";
 import type { NodeKind } from "./indexAdapter";
 import { realIndexFactory } from "./indexAdapter";
@@ -129,33 +128,16 @@ function makeExecute(
   run: (
     info: ReadyInfo,
     params: Record<string, unknown>,
+    file?: string,
   ) => string | Promise<string>,
-  anchorFile = false,
+  anchorFile?: (params: Record<string, unknown>) => string | undefined,
 ): Execute {
   return async (_toolCallId, params, _signal, _onUpdate, ctx) => {
     try {
-      let effective = params;
-      const anchor = anchorFile && params.file !== undefined;
-      const info = await session.queryReady(
-        ctx.cwd,
-        anchor ? String(params.file) : undefined,
-      );
-      if (anchor) {
-        // The file argument was resolved against the call's cwd, but index
-        // paths are relative to the resolved root. When the anchor put the
-        // root somewhere else (a file in a sibling worktree), re-express the
-        // file relative to that root for the lookup.
-        const abs = path.resolve(ctx.cwd, String(params.file));
-        const rel = path.relative(info.root, abs);
-        if (
-          !path.isAbsolute(rel) &&
-          !rel.startsWith("..") &&
-          rel !== String(params.file)
-        ) {
-          effective = { ...params, file: rel };
-        }
-      }
-      return ok(await run(info, effective));
+      const anchor = anchorFile?.(params);
+      const info = await session.queryReady(ctx.cwd, anchor);
+      const file = info.file ?? (params.file !== undefined ? String(params.file) : undefined);
+      return ok(await run(info, params, file));
     } catch (err) {
       return fail(err);
     }
@@ -346,32 +328,39 @@ export function registerTools(pi: ExtensionAPI, session: CodegraphSession): void
         }),
       ),
     }),
-    execute: makeExecute(session, (info, params) => {
-      // Symbol mode wins when both are given: `file` then narrows the symbol
-      // to the definition in that file (the spec's file+symbol priority).
-      // File mode only when `symbol` is absent.
-      if (params.symbol !== undefined) {
-        return renderSymbol(
-          info.cg,
-          info.root,
-          String(params.symbol),
-          params.includeCode !== false,
-          params.file !== undefined ? String(params.file) : undefined,
-          typeof params.line === "number" ? params.line : undefined,
-        );
-      }
-      if (params.file !== undefined) {
-        return renderFileView(
-          info.cg,
-          info.root,
-          String(params.file),
-          typeof params.offset === "number" ? params.offset : 1,
-          typeof params.limit === "number" ? params.limit : 2000,
-          params.symbolsOnly === true,
-        );
-      }
-      return "Either `file` or `symbol` must be provided.";
-    }, true),
+    execute: makeExecute(
+      session,
+      (info, params, file) => {
+        // Symbol mode wins when both are given: `file` then narrows the symbol
+        // to the definition in that file (the spec's file+symbol priority).
+        // File mode only when `symbol` is absent.
+        if (params.symbol !== undefined) {
+          return renderSymbol(
+            info.cg,
+            info.root,
+            String(params.symbol),
+            params.includeCode !== false,
+            params.file !== undefined ? String(params.file) : undefined,
+            typeof params.line === "number" ? params.line : undefined,
+          );
+        }
+        if (params.file !== undefined) {
+          return renderFileView(
+            info.cg,
+            info.root,
+            file ?? String(params.file),
+            typeof params.offset === "number" ? params.offset : 1,
+            typeof params.limit === "number" ? params.limit : 2000,
+            params.symbolsOnly === true,
+          );
+        }
+        return "Either `file` or `symbol` must be provided.";
+      },
+      (params) =>
+        params.symbol === undefined && params.file !== undefined
+          ? String(params.file)
+          : undefined,
+    ),
   });
 
   pi.registerTool({
