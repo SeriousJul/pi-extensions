@@ -6,6 +6,12 @@
  * A borrowed index is never served: inside a git worktree the root is always
  * the worktree itself, so an index that belongs to another worktree is
  * treated as absent and a local index is created (seeded from a sibling).
+ *
+ * This module also decides what a file argument means once the root is known:
+ * `resolveRoot` returns the file's root-relative form beside the root, so no
+ * caller re-derives it. The root policy (`resolveRootPolicy`) and the file
+ * form (`rootRelativeFile`) are computed apart and joined once, in
+ * `resolveRoot`.
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -26,7 +32,12 @@ export class CodegraphUnavailable extends Error {
 export interface ResolvedRoot {
   /** The project root the call must be served from. */
   root: string;
-  /** The file argument expressed relative to `root`, when one was given. */
+  /**
+   * The file argument expressed relative to `root`, when a file argument was
+   * given. A form that would escape `root` is refused: the caller's original
+   * argument is kept instead, so an indexed-file lookup reports the file as
+   * absent rather than reading across the project boundary.
+   */
   file?: string;
   /** True when no index exists at `root` and one must be created. */
   needsCreate: boolean;
@@ -114,7 +125,35 @@ export function nearestManifestDir(dir: string): string | undefined {
 }
 
 /**
- * Resolve the project root a call must be served from.
+ * Express `fileArg` (a path relative to the call's `startDir`, or absolute)
+ * as a path relative to `root`. The one rule behind `ResolvedRoot.file`.
+ *
+ * When the relative form would escape `root` the original argument is kept,
+ * so a file the root does not contain is reported as absent by the index
+ * lookup instead of pointing outside the project. The escape is real for a
+ * path outside the project, and only apparent when `startDir` and `root`
+ * reach the same directory by different paths (a symlinked working
+ * directory, where git reports the physical toplevel while the file argument
+ * stays logical): there the caller's own relative form is still the right
+ * one for the index.
+ */
+export function rootRelativeFile(
+  root: string,
+  startDir: string,
+  fileArg: string,
+): string {
+  const absolute = path.resolve(startDir, fileArg);
+  const relative = path.relative(root, absolute);
+  const escapesRoot =
+    path.isAbsolute(relative) ||
+    relative === ".." ||
+    relative.startsWith(`..${path.sep}`);
+  return escapesRoot ? fileArg : relative || ".";
+}
+
+/**
+ * The root policy alone: which root serves the call, and what its index
+ * needs. The file form is attached once, by `resolveRoot`.
  *
  * - A file argument anchors the lookup to that file's directory, so a file
  *   in a monorepo sub-project resolves to that sub-project's index.
@@ -133,40 +172,15 @@ export function nearestManifestDir(dir: string): string | undefined {
  *
  * @throws CodegraphUnavailable when no project can be resolved.
  */
-function rootRelativeFile(
-  root: string,
-  startDir: string,
-  fileArg: string,
-): string {
-  const absolute = path.resolve(startDir, fileArg);
-  const relative = path.relative(root, absolute);
-  const escapesRoot =
-    path.isAbsolute(relative) ||
-    relative === ".." ||
-    relative.startsWith(`..${path.sep}`);
-  return escapesRoot ? fileArg : relative || ".";
-}
-
-/** Attach the root-relative file form without changing the root policy. */
-function withRootRelativeFile(
-  resolved: ResolvedRoot,
-  startDir: string,
-  fileArg: string | undefined,
-): ResolvedRoot {
-  if (fileArg === undefined) return resolved;
-  return {
-    ...resolved,
-    file: rootRelativeFile(resolved.root, startDir, fileArg),
-  };
-}
-
-export function resolveRoot(
+function resolveRootPolicy(
   startDir: string,
   fileArg?: string,
   findNearest?: (startPath: string) => string | null | undefined,
 ): ResolvedRoot {
   const anchor =
-    fileArg === undefined ? path.resolve(startDir) : path.resolve(startDir, fileArg);
+    fileArg === undefined
+      ? path.resolve(startDir)
+      : path.resolve(startDir, fileArg);
   let base: string;
   try {
     base = fs.statSync(anchor).isDirectory() ? anchor : path.dirname(anchor);
@@ -182,36 +196,24 @@ export function resolveRoot(
       typeof nearest === "string" &&
       (nearest === worktree || nearest.startsWith(worktree + path.sep));
     if (insideOwnWorktree) {
-      return withRootRelativeFile(
-        {
-          root: nearest,
-          needsCreate: false,
-          mainCheckout,
-          isMainCheckout: mainCheckout === nearest,
-        },
-        startDir,
-        fileArg,
-      );
-    }
-    return withRootRelativeFile(
-      {
-        root: worktree,
-        needsCreate: true,
+      return {
+        root: nearest,
+        needsCreate: false,
         mainCheckout,
-        isMainCheckout: mainCheckout === worktree,
-      },
-      startDir,
-      fileArg,
-    );
+        isMainCheckout: mainCheckout === nearest,
+      };
+    }
+    return {
+      root: worktree,
+      needsCreate: true,
+      mainCheckout,
+      isMainCheckout: mainCheckout === worktree,
+    };
   }
 
   const nearest = findNearest?.(base) ?? null;
   if (nearest) {
-    return withRootRelativeFile(
-      { root: nearest, needsCreate: false, isMainCheckout: false },
-      startDir,
-      fileArg,
-    );
+    return { root: nearest, needsCreate: false, isMainCheckout: false };
   }
 
   const manifest = nearestManifestDir(base);
@@ -220,9 +222,29 @@ export function resolveRoot(
       `no git repository or build manifest found at or above ${base}`,
     );
   }
-  return withRootRelativeFile(
-    { root: manifest, needsCreate: true, isMainCheckout: false },
-    startDir,
-    fileArg,
-  );
+  return { root: manifest, needsCreate: true, isMainCheckout: false };
+}
+
+/**
+ * Resolve the project root a call must be served from, plus what its file
+ * argument means inside that root.
+ *
+ * The root comes from the root policy above. When a file argument is given,
+ * the result carries its root-relative form (`ResolvedRoot.file`); with no
+ * file argument the result is the root policy's alone. See
+ * `rootRelativeFile` for the escape rule.
+ *
+ * @throws CodegraphUnavailable when no project can be resolved.
+ */
+export function resolveRoot(
+  startDir: string,
+  fileArg?: string,
+  findNearest?: (startPath: string) => string | null | undefined,
+): ResolvedRoot {
+  const resolved = resolveRootPolicy(startDir, fileArg, findNearest);
+  if (fileArg === undefined) return resolved;
+  return {
+    ...resolved,
+    file: rootRelativeFile(resolved.root, startDir, fileArg),
+  };
 }

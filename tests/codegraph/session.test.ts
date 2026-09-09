@@ -296,6 +296,12 @@ describe("ensureReady (primary seam)", () => {
     const info = await s.ensureReady(fixture.main, "src/shared.ts");
     expect(info.root).toBe(fixture.main);
     expect(info.file).toBe("src/shared.ts");
+
+    // A second call is served from the cached instance, which is another
+    // return in the core path: the file form is attached the same way.
+    const again = await s.ensureReady(fixture.main, "src/shared.ts");
+    expect(again.root).toBe(fixture.main);
+    expect(again.file).toBe("src/shared.ts");
   });
 
   it("throws CodegraphUnavailable with a reason when auto-index is off", async () => {
@@ -344,11 +350,36 @@ describe("root resolution", () => {
     expect(resolved.file).toBe("src/not-yet-indexed.ts");
   });
 
-  it("keeps the original file when it escapes the resolved root", () => {
-    const file = path.relative(fixture.main, path.join(fixture.base, "outside.ts"));
-    const resolved = resolveRoot(fixture.main, file, () => fixture.main);
-    expect(resolved.root).toBe(fixture.main);
-    expect(resolved.file).toBe(file);
+  it("keeps the caller's file form when it escapes the resolved root", () => {
+    const outside = path.join(fixture.base, "outside.ts");
+    const relative = path.relative(fixture.main, outside);
+    // The injected nearest root is not an ancestor of the queried path: no
+    // real nearest-root lookup does that, because both the real factory and
+    // the in-memory one walk ancestors. This pins the escape rule at the
+    // seam; the symlinked worktree below pins the setup where the guard fires
+    // for real (git reports the physical toplevel while the file argument
+    // stays logical).
+    for (const arg of [outside, relative]) {
+      // Expressing the path relative to the root would leave it, so the
+      // argument is kept as the caller wrote it.
+      const resolved = resolveRoot(fixture.main, arg, () => fixture.main);
+      expect(resolved.root).toBe(fixture.main);
+      expect(resolved.file).toBe(arg);
+    }
+  });
+
+  it("keeps the caller's file form when a symlinked worktree looks like an escape", () => {
+    // The reachable trigger of the escape guard: the call works through a
+    // symlink to the worktree, so git resolves the root to the physical path
+    // while the file argument stays under the logical one.
+    const link = path.join(fixture.base, "feature-link");
+    fs.symlinkSync(fixture.feature, link, "dir");
+
+    const resolved = resolveRoot(link, "src/feature.ts");
+
+    expect(resolved.root).toBe(fixture.feature);
+    // The original relative form is kept, and it is the form the index knows.
+    expect(resolved.file).toBe("src/feature.ts");
   });
 
   it("leaves the file form empty when no file argument is given", () => {

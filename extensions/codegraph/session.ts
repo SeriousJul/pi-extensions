@@ -48,7 +48,12 @@ import {
   writeMarker,
 } from "./marker";
 import type { ResolvedRoot } from "./root";
-import { CodegraphUnavailable, resolveRoot, unsafeRootReason } from "./root";
+import {
+  CodegraphUnavailable,
+  resolveRoot,
+  rootRelativeFile,
+  unsafeRootReason,
+} from "./root";
 import { findSeedSource } from "./seed";
 import { startWatcher as startCodegraphWatcher, type WatcherState } from "./watcher";
 
@@ -73,7 +78,13 @@ interface InstanceEntry {
 export interface ReadyInfo {
   cg: IndexAdapter;
   root: string;
-  /** The file argument expressed relative to `root`, when one was given. */
+  /**
+   * The file argument expressed relative to `root`, when the call gave one
+   * (the session asks root resolution for the form, spec 0006). A form that
+   * would escape `root` keeps the caller's original argument instead, so an
+   * indexed-file lookup never reads across the project boundary. Consumers
+   * use this instead of rewriting parameters.
+   */
   file?: string;
   mainCheckout?: string;
   isMainCheckout: boolean;
@@ -284,20 +295,34 @@ export class CodegraphSession {
    * The single boundary every tool call and every test crosses. Resolves
    * the root of `startDir` (or of the `file` argument's location),
    * creates/seedes/builds/opens the index for that worktree when needed,
-   * reconciles it, and returns the ready adapter. The recovery for a
-   * removed-then-re-added worktree lives in the cached-instance branch of
-   * the core path below.
+   * reconciles it, and returns the ready adapter.
+   *
+   * This is also the one place the ready result gains its file form: the
+   * core path never threads it, so a new early return there cannot drop it.
+   * Callers that share one in-flight preparation still each get their own
+   * form, because it is derived from that caller's argument and the shared
+   * root.
+   *
+   * The recovery for a removed-then-re-added worktree lives in the
+   * cached-instance branch of the core path below.
    */
   async ensureReady(startDir: string, file?: string): Promise<ReadyInfo> {
     const f = await this.factory();
     this.assertRuntime(f);
     try {
-      return await this.ensureReadyCore(f, startDir, file);
+      const ready = await this.ensureReadyCore(f, startDir, file);
+      if (file === undefined) return ready;
+      return { ...ready, file: rootRelativeFile(ready.root, startDir, file) };
     } catch (err) {
       throw this.classifyError(f, err);
     }
   }
 
+  /**
+   * The index lifecycle for the call's root: it reports the root that
+   * `resolveRoot` chose (the same root the file form will be expressed
+   * against) and never threads the file itself.
+   */
   private async ensureReadyCore(
     f: IndexAdapterFactory,
     startDir: string,
@@ -305,7 +330,7 @@ export class CodegraphSession {
   ): Promise<ReadyInfo> {
     const resolved = resolveRoot(startDir, file, this.nearest(f));
     let { needsCreate, mainCheckout, isMainCheckout } = resolved;
-    const { root, file: rootRelativeFile } = resolved;
+    const { root } = resolved;
 
     const cached = this.instances.get(root);
     if (cached) {
@@ -329,7 +354,6 @@ export class CodegraphSession {
         return {
           cg: cached.cg,
           root,
-          file: rootRelativeFile,
           mainCheckout,
           isMainCheckout,
         };
@@ -344,8 +368,9 @@ export class CodegraphSession {
 
     const pending = this.inFlight.get(root);
     if (pending) {
-      const ready = await pending;
-      return { ...ready, file: rootRelativeFile };
+      // The shared preparation belongs to another caller. Its result is
+      // returned as it is: no file form, because that is this caller's own.
+      return await pending;
     }
     const promise = (async (): Promise<ReadyInfo> => {
       try {
@@ -361,8 +386,7 @@ export class CodegraphSession {
       }
     })();
     this.inFlight.set(root, promise);
-    const ready = await promise;
-    return { ...ready, file: rootRelativeFile };
+    return await promise;
   }
 
   /**

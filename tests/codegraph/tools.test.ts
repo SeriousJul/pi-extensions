@@ -303,7 +303,11 @@ describe("tool outputs", () => {
       ...baseFactory,
       findNearestRoot(startPath: string): string | null {
         // Model a nearest-root lookup that resolves an existing project while
-        // the requested path itself is outside that root.
+        // the requested path itself is outside that root. That result is not
+        // an ancestor walk a real lookup can produce (both the real factory
+        // and the in-memory one walk ancestors); the escape rule is pinned
+        // here for its behavior and by a reachable setup (a symlinked
+        // worktree path) in session.test.ts.
         if (path.resolve(startPath) === fixture.base) return fixture.main;
         return baseFactory.findNearestRoot(startPath);
       },
@@ -311,12 +315,20 @@ describe("tool outputs", () => {
     const outsideHarness = makeHarness(newSession({ factory }), fixture.main);
 
     await outsideHarness.call("codegraph_search", { query: "helper" });
-    const text = await outsideHarness.call("codegraph_node", {
-      file: "../outside.ts",
-    });
+    const outside = path.join(fixture.base, "outside.ts");
+    const relative = path.relative(fixture.main, outside);
 
-    expect(text).toBe(
-      'File "../outside.ts" not found in the index. Use the built-in read tool for files outside the index.',
+    // The root-relative form would leave the root, so each argument is
+    // looked up as written: never a path outside the project root.
+    expect(
+      await outsideHarness.call("codegraph_node", { file: outside }),
+    ).toBe(
+      `File "${outside}" not found in the index. Use the built-in read tool for files outside the index.`,
+    );
+    expect(
+      await outsideHarness.call("codegraph_node", { file: relative }),
+    ).toBe(
+      `File "${relative}" not found in the index. Use the built-in read tool for files outside the index.`,
     );
   });
 
