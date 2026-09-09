@@ -1,0 +1,67 @@
+# CI for pi-extensions.
+#
+# Gate design
+#   - PRs to main and pushes to main must pass all four required checks:
+#     node 22, node 24, node 26, and bun.
+#   - The node matrix covers pi's engine floor (>=22.19) plus the current
+#     LTS and current lines.
+#   - The bun job runs the two Bun-only test files that exercise the
+#     bun:sqlite backend - the exact code path pi runs inside its Bun
+#     binary. Dependencies are installed with `npm ci` so the bun job
+#     tests the locked tree, not bun's own resolution.
+#   - No publish step: this package is consumed via `pi install` from
+#     git, not from npm.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: node ${{ matrix.node-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      # One red leg should not cancel the others; every leg is an
+      # independently required check, so a run always shows the full picture.
+      fail-fast: false
+      matrix:
+        node-version: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  bun:
+    name: bun
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # Node is only the vehicle for `npm ci` and the npm cache.
+          # The tests themselves run under bun.
+          node-version: 26
+          cache: npm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: npm ci
+      - run: bun test tests/codegraph/runtime-bun.test.cts tests/codegraph/shim-bun.test.cts
