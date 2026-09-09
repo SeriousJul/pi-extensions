@@ -166,6 +166,29 @@ describe("ensureReady (primary seam)", () => {
     expect(a.justBuilt).toBe(true);
   });
 
+  it("preserves each caller's file form during concurrent preparation", async () => {
+    const s = newSession();
+    const featureFile = path.relative(
+      fixture.main,
+      path.join(fixture.feature, "src", "feature.ts"),
+    );
+    const mainFile = path.relative(
+      fixture.main,
+      path.join(fixture.feature, "src", "main.ts"),
+    );
+
+    const [featureInfo, mainInfo] = await Promise.all([
+      s.ensureReady(fixture.main, featureFile),
+      s.ensureReady(fixture.main, mainFile),
+    ]);
+
+    expect(featureInfo.cg).toBe(mainInfo.cg);
+    expect(featureInfo.root).toBe(fixture.feature);
+    expect(featureInfo.file).toBe("src/feature.ts");
+    expect(mainInfo.root).toBe(fixture.feature);
+    expect(mainInfo.file).toBe("src/main.ts");
+  });
+
   it("waits for another live process's build before adopting", async () => {
     const builder = newSession();
     await builder.ensureReady(fixture.main);

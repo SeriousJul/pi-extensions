@@ -12,6 +12,7 @@ import {
   registerCommand,
   registerTools,
 } from "../../extensions/codegraph/handlers";
+import { createInMemoryIndexFactory } from "./inMemoryIndex";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 interface MockUi {
@@ -294,6 +295,29 @@ describe("tool outputs", () => {
     expect(text).toBe('Symbol "featureOnlySymbol" not found');
     expect(h.session.statusFor(fixture.main).root).toBe(fixture.main);
     expect(h.session.statusFor(fixture.feature).needsCreate).toBe(true);
+  });
+
+  it("reports an out-of-root file as not found", async () => {
+    const baseFactory = createInMemoryIndexFactory();
+    const factory = {
+      ...baseFactory,
+      findNearestRoot(startPath: string): string | null {
+        // Model a nearest-root lookup that resolves an existing project while
+        // the requested path itself is outside that root.
+        if (path.resolve(startPath) === fixture.base) return fixture.main;
+        return baseFactory.findNearestRoot(startPath);
+      },
+    };
+    const outsideHarness = makeHarness(newSession({ factory }), fixture.main);
+
+    await outsideHarness.call("codegraph_search", { query: "helper" });
+    const text = await outsideHarness.call("codegraph_node", {
+      file: "../outside.ts",
+    });
+
+    expect(text).toBe(
+      'File "../outside.ts" not found in the index. Use the built-in read tool for files outside the index.',
+    );
   });
 
   it("serves each worktree from its own index", async () => {
