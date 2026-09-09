@@ -128,11 +128,15 @@ Every git worktree gets its own index under `<worktree>/.codegraph/`:
 ## Project root
 
 The root for a call is the nearest initialized ancestor of the call's
-working directory. A `file` argument to `codegraph_node` anchors the
-lookup to that file, so a file in a monorepo sub-project resolves to that
-sub-project's index. Outside git, the root falls back to the nearest
-ancestor that contains a build manifest. The home directory and the
-filesystem root are never indexed.
+working directory. A `codegraph_node` call that reads a file (a `file`
+argument with no `symbol`) anchors on that file instead: the root is the
+nearest initialized ancestor of the named file, so a file in a monorepo
+sub-project resolves to that sub-project's index. A `file` argument used only
+to disambiguate a symbol never moves the root: it stays the call's working
+directory. The root-relative form of an anchored file is carried by the ready
+index result, so the tool never rewrites its own parameters. Outside git, the
+root falls back to the nearest ancestor that contains a build manifest. The
+home directory and the filesystem root are never indexed.
 
 ## /codegraph
 
