@@ -14,20 +14,12 @@
 #     only after every required check passes. A red gate leaves the PR open.
 #   - Runs on pull_request_target so it never executes code from the PR head.
 #     It only reads PR metadata and calls the merge API.
-#   - workflow_dispatch with a pr_number input re-runs the decision on demand
-#     (for backfill or after a policy change).
 
 name: Dependabot auto-merge
 
 on:
   pull_request_target:
     types: [opened, synchronize, reopened]
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: Pull request number to run the auto-merge decision on
-        required: false
-        type: number
 
 permissions:
   contents: write
@@ -35,13 +27,13 @@ permissions:
   checks: read
 
 concurrency:
-  group: dependabot-auto-merge-${{ github.event.pull_request.number || github.event.inputs.pr_number }}
+  group: dependabot-auto-merge-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
 jobs:
   auto-merge:
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.pull_request.user.login == 'dependabot[bot]' }}
+    if: ${{ github.event.pull_request.user.login == 'dependabot[bot]' }}
     steps:
       - name: Fetch Dependabot PR metadata
         uses: dependabot/fetch-metadata@v3
@@ -50,16 +42,11 @@ jobs:
       - name: Decide and request auto-merge
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           DEPS_JSON: ${{ steps.metadata.outputs.updated-dependencies-json }}
         run: |
           set -euo pipefail
-
-          if [ -z "${PR_NUMBER:-}" ]; then
-            echo "No PR number. For workflow_dispatch, provide pr_number."
-            exit 1
-          fi
 
           # fetch-metadata emits nothing it can parse for non-Dependabot PRs.
           if [ -z "${DEPS_JSON:-}" ] || [ "${DEPS_JSON:-}" = "null" ]; then
