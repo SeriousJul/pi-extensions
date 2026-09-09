@@ -17,7 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { CodegraphSession } from "../../extensions/codegraph/session";
 import { CodegraphUnavailable } from "../../extensions/codegraph/root";
-import { writeMarker } from "../../extensions/codegraph/marker";
+import { MARKER_NAME, writeMarker } from "../../extensions/codegraph/marker";
 import {
   IN_MEMORY_DIR_NAME,
   InMemoryIndex,
@@ -96,7 +96,7 @@ describe("build and readiness", () => {
     const info = await s.ensureReady(root);
     expect(info.justBuilt).toBeUndefined(); // adopted, not built
     expect(r.buildCount).toBe(0);
-    expect(fs.existsSync(path.join(dir, "pi-codegraph-build.json"))).toBe(false);
+    expect(fs.existsSync(path.join(dir, MARKER_NAME))).toBe(false);
     // adopted data is queryable through the adapter
     expect(info.cg.getNodesByName("alpha")).toHaveLength(1);
   });
@@ -133,10 +133,10 @@ describe("build and readiness", () => {
         `codegraph: timed out waiting for the index build at ${root}`,
       );
       // a live build's marker survives the timeout
-      expect(fs.existsSync(path.join(dir, "pi-codegraph-build.json"))).toBe(true);
+      expect(fs.existsSync(path.join(dir, MARKER_NAME))).toBe(true);
     } finally {
       peer.kill();
-      fs.rmSync(path.join(dir, "pi-codegraph-build.json"), { force: true });
+      fs.rmSync(path.join(dir, MARKER_NAME), { force: true });
     }
   });
 
@@ -156,7 +156,7 @@ describe("build and readiness", () => {
     const info = await s.ensureReady(root);
     expect(info.justBuilt).toBeUndefined();
     expect(r.buildCount).toBe(0);
-    expect(fs.existsSync(path.join(dir, "pi-codegraph-build.json"))).toBe(false);
+    expect(fs.existsSync(path.join(dir, MARKER_NAME))).toBe(false);
     expect(info.cg.getFiles()).toHaveLength(1);
   });
 
@@ -180,7 +180,7 @@ describe("build and readiness", () => {
     const first = await s.ensureReady(root);
     expect(first.justBuilt).toBe(true);
     r.dbExists = false; // the database file is gone from under the instance
-    const second = await s.queryReady(root);
+    const second = await s.ensureReady(root);
     expect(second.justBuilt).toBe(true);
     expect(r.buildCount).toBe(2);
   });
@@ -229,8 +229,8 @@ describe("reconcile", () => {
     const notices: string[] = [];
     s.setUi({ notify: (_level, msg) => notices.push(msg) });
     await s.ensureReady(root); // first-use sync
-    await s.queryReady(root); // second sync
-    await s.queryReady(root); // third sync
+    await s.ensureReady(root); // second sync
+    await s.ensureReady(root); // third sync
     expect(r.syncCount).toBe(3);
     expect(notices).toContain(
       "codegraph: file watcher unavailable (in-memory test); the index is reconciled before every query",
@@ -245,8 +245,8 @@ describe("reconcile", () => {
     r.addFile("src/a.ts");
     const s = newSession();
     await s.ensureReady(root); // first-use sync
-    await s.queryReady(root); // skipped: active watcher
-    await s.queryReady(root); // skipped
+    await s.ensureReady(root); // skipped: active watcher
+    await s.ensureReady(root); // skipped
     expect(r.syncCount).toBe(1);
   });
 });
