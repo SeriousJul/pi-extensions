@@ -1,0 +1,44 @@
+# Dependabot configuration for pi-extensions.
+#
+# Ecosystems
+#   - npm: this package (single manifest at the repo root).
+#   - github-actions: inert until a workflow exists under .github/workflows.
+#
+# Update behavior
+#   - Weekly checks. Dependabot also applies a default 3-day release cooldown.
+#   - versioning-strategy: increase bumps the manifest lower bound to the new
+#     version (predictable). We do not use the default "auto", which can widen
+#     a range for a library.
+#   - package.json uses caret ranges so Dependabot has room to update:
+#       * 0.x pi packages only auto-track within their minor (e.g. 0.84.x).
+#         You bump to a new pi minor (0.85) on purpose.
+#       * patch and minor updates land as PRs you merge. Major updates also
+#         land as PRs, but you review them first. Nothing is auto-merged for
+#         version updates.
+#
+# Grouping
+#   - Only the @earendil-works/* pi family is grouped into a single PR. Every
+#     other dependency gets its own PR.
+#
+# Held for manual review
+#   - @colbymchenry/codegraph is intentionally not grouped. Its compat patch
+#     (scripts/patch-codegraph.mjs) is hand-written against a specific version,
+#     so review its PRs before merging.
+
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    versioning-strategy: "increase"
+    open-pull-requests-limit: 3
+    groups:
+      pi-packages:
+        patterns:
+          - "@earendil-works/*"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
