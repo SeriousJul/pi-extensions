@@ -139,7 +139,7 @@ function newSession(
 }
 
 describe("tool registration", () => {
-  it("registers the six codegraph tools, none with a projectPath parameter", () => {
+  it("registers the six codegraph tools, every one with an optional projectRoot and none with a projectPath", () => {
     const { tools } = makeHarness(newSession(), fixture.main);
     expect([...tools.keys()].sort()).toEqual([
       "codegraph_callees",
@@ -150,6 +150,9 @@ describe("tool registration", () => {
       "codegraph_search",
     ]);
     for (const t of tools.values()) {
+      const schema = t.parameters as { properties?: Record<string, unknown> };
+      // Spec 0009: every tool can be served from a named project root.
+      expect(schema.properties).toHaveProperty("projectRoot");
       expect(JSON.stringify(t.parameters)).not.toContain("projectPath");
     }
   });

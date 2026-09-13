@@ -18,6 +18,7 @@ import {
   renderExplore,
 } from "./format";
 import type { CodegraphSession, IndexPromptState, ReadyInfo } from "./session";
+import { CodegraphUnavailable } from "./root";
 import { appendUsage, type UsageSummary } from "./usage";
 
 // This module is loaded when the tools are registered (production entry
@@ -126,6 +127,20 @@ const LineParam = Type.Optional(
   }),
 );
 
+/**
+ * The named-project-root parameter (spec 0009), carried by every tool:
+ * the call is served from the project root the argument names instead of
+ * the one resolved from the working directory.
+ */
+const ProjectRootParam = Type.Optional(
+  Type.String({
+    description:
+      "Serve this call from another project root: a dependency's source " +
+      "directory (from `opensrc path <pkg>`) or a second repository. File " +
+      "arguments are relative to it. Omit for the current project.",
+  }),
+);
+
 type ToolResult = AgentToolResult<unknown>;
 
 function ok(text: string): ToolResult {
@@ -177,10 +192,16 @@ function makeExecute(
 ): Execute {
   return async (_toolCallId, params, _signal, _onUpdate, ctx) => {
     const startedAt = Date.now();
-    const anchor = fileAnchor?.(params);
+    // A call that named its own project root (spec 0009) anchors on it: the
+    // root is the anchor, so a file argument never moves it.
+    const projectRoot =
+      typeof params.projectRoot === "string"
+        ? params.projectRoot
+        : undefined;
+    const anchor = projectRoot === undefined ? fileAnchor?.(params) : undefined;
     let usageDir: string | undefined;
     try {
-      const info = await session.ensureReady(ctx.cwd, anchor);
+      const info = await session.ensureReady(ctx.cwd, anchor, projectRoot);
       // The ledger of the index that served this call. Naming it from the ready
       // result reuses the resolution the seam already did, so a call resolves
       // its project root once.
@@ -192,14 +213,26 @@ function makeExecute(
         duration_ms: Date.now() - startedAt,
         chars: text.length,
       });
-      return ok(text);
+      // A named call serves a different project than the session root, so its
+      // result names the root it was served from (spec 0009).
+      return ok(
+        info.named
+          ? `Project: ${info.root}\n\n${text}`
+          : text,
+      );
     } catch (err) {
+      // A refusal that writes nothing (spec 0009) records no usage line:
+      // recording one would create the very directory the refusal refuses
+      // to create.
+      if (err instanceof CodegraphUnavailable && err.noLedger) {
+        return fail(err);
+      }
       // A failure is recorded where its index directory is knowable: the one
       // the call reached, or the root resolved without opening an index. A call
       // with no resolvable root has no ledger and is not recorded.
       if (!usageDir) {
         try {
-          usageDir = session.usageDirFor(ctx.cwd, anchor);
+          usageDir = session.usageDirFor(ctx.cwd, anchor, projectRoot);
         } catch {
           // No resolved root means there is no index directory for the ledger.
         }
@@ -276,6 +309,7 @@ export function registerTools(
           default: 0,
         }),
       ),
+      projectRoot: ProjectRootParam,
     }),
     execute: makeExecute(session, TOOL.search, (info, params) =>
       renderSearch(
@@ -306,6 +340,7 @@ export function registerTools(
           default: 20,
         }),
       ),
+      projectRoot: ProjectRootParam,
     }),
     execute: makeExecute(session, TOOL.callers, (info, params) =>
         renderRefs(
@@ -337,6 +372,7 @@ export function registerTools(
           default: 20,
         }),
       ),
+      projectRoot: ProjectRootParam,
     }),
     execute: makeExecute(session, TOOL.callees, (info, params) =>
         renderRefs(
@@ -369,6 +405,7 @@ export function registerTools(
       ),
       file: FileParam,
       line: LineParam,
+      projectRoot: ProjectRootParam,
     }),
     execute: makeExecute(session, TOOL.impact, (info, params) =>
         renderImpact(
@@ -447,6 +484,7 @@ export function registerTools(
             "Symbol mode only: disambiguate to the definition at/around this line (use with the file:line a trail showed you).",
         }),
       ),
+      projectRoot: ProjectRootParam,
     }),
     execute: makeExecute(
       session,
@@ -518,6 +556,7 @@ export function registerTools(
           minimum: 1,
         }),
       ),
+      projectRoot: ProjectRootParam,
     }),
     execute: makeExecute(session, TOOL.explore, (info, params) =>
       renderExplore(

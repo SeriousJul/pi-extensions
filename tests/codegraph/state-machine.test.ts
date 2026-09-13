@@ -17,6 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { CodegraphSession } from "../../extensions/codegraph/session";
 import { CodegraphUnavailable } from "../../extensions/codegraph/root";
+import { createOpenSrc } from "../../extensions/codegraph/opensrc";
 import { MARKER_NAME, writeMarker } from "../../extensions/codegraph/marker";
 import {
   IN_MEMORY_DIR_NAME,
@@ -331,5 +332,188 @@ describe("runtime compatibility", () => {
     await expect(s.ensureReady(root)).rejects.toSatisfy((e) =>
       unavailable(e) && e.reason === "the runtime sqlite gap reason",
     );
+  });
+});
+
+describe("named roots (spec 0009)", () => {
+  // The named trees live OUTSIDE the session root's manifest tree, so the
+  // normal root policy never snaps them up to the session root.
+  let outside: string;
+  let trusted: string;
+
+  beforeEach(() => {
+    outside = fs.mkdtempSync(path.join(os.tmpdir(), "codegraph-named-"));
+    trusted = path.join(outside, "trusted");
+    fs.mkdirSync(trusted, { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(outside, { recursive: true, force: true });
+  });
+
+  /** A manifest-carrying dependency tree with one indexable file. */
+  function makeDep(name: string, parent: string = trusted): string {
+    const dep = path.join(parent, name);
+    fs.mkdirSync(path.join(dep, "src"), { recursive: true });
+    fs.writeFileSync(path.join(dep, "package.json"), "{}");
+    fs.writeFileSync(path.join(dep, "src", "a.ts"), "export const a = 1;\n");
+    return dep;
+  }
+
+  function withTrusted(
+    extra: Partial<ConstructorParameters<typeof CodegraphSession>[0]> = {},
+  ): CodegraphSession {
+    const s = new CodegraphSession({
+      factory: createInMemoryIndexFactory({ store }),
+      trustedRoots: [{ root: trusted, origin: "CODEGRAPH_PI_TRUSTED_ROOTS" }],
+      ...extra,
+    });
+    sessions.push(s);
+    return s;
+  }
+
+  it("builds an index for a named root under a trusted root", async () => {
+    const dep = makeDep("depA");
+    const depReal = fs.realpathSync(dep);
+    const s = withTrusted();
+    const info = await s.ensureReady(root, undefined, dep);
+    expect(info.root).toBe(depReal);
+    expect(info.justBuilt).toBe(true);
+    expect(info.named).toBe(true);
+    expect(store.root(depReal).buildCount).toBe(1);
+  });
+
+  it("caches the named root's instance across calls", async () => {
+    const dep = makeDep("depA");
+    const depReal = fs.realpathSync(dep);
+    const s = withTrusted();
+    const a = await s.ensureReady(root, undefined, dep);
+    const b = await s.ensureReady(root, undefined, dep);
+    expect(b.cg).toBe(a.cg);
+    expect(b.justBuilt).toBeUndefined();
+    expect(store.root(depReal).buildCount).toBe(1);
+  });
+
+  it("refuses a build outside every trusted root, writing nothing", async () => {
+    const dep = makeDep("depB", outside);
+    const depReal = fs.realpathSync(dep);
+    const s = withTrusted();
+    await expect(s.ensureReady(root, undefined, dep)).rejects.toSatisfy((e) =>
+      unavailable(e) &&
+        e.noLedger &&
+        e.reason ===
+          `refusing to build an index outside a trusted root (${depReal}) ` +
+            `- ask the user to run /codegraph add ${depReal}`,
+    );
+    // The refusal writes nothing: no index directory, no build, no instance.
+    expect(fs.existsSync(path.join(dep, IN_MEMORY_DIR_NAME))).toBe(false);
+    expect(store.root(depReal).dirExists).toBe(false);
+    expect(store.root(depReal).buildCount).toBe(0);
+  });
+
+  it("serves an existing index outside every trusted root without a build", async () => {
+    const dep = makeDep("depC", outside);
+    const depReal = fs.realpathSync(dep);
+    const r = store.root(depReal);
+    r.dirExists = true;
+    r.dbExists = true;
+    r.indexState = "complete";
+    r.addFile("src/a.ts", { exports: ["alpha"] });
+    const s = withTrusted();
+    const info = await s.ensureReady(root, undefined, dep);
+    expect(info.root).toBe(depReal);
+    expect(info.justBuilt).toBeUndefined();
+    expect(r.buildCount).toBe(0);
+    expect(info.cg.getNodesByName("alpha")).toHaveLength(1);
+  });
+
+  it("starts no watcher on a named root and reconciles before every query", async () => {
+    const dep = makeDep("depD");
+    const depReal = fs.realpathSync(dep);
+    const s = withTrusted();
+    await s.ensureReady(root, undefined, dep); // build; the build is current
+    const r = store.root(depReal);
+    expect(r.watchOptions).toBeUndefined(); // no watcher on a dependency source
+    expect(r.syncCount).toBe(0);
+    await s.ensureReady(root, undefined, dep); // reconciled: no watcher
+    await s.ensureReady(root, undefined, dep); // and again: before every query
+    expect(r.syncCount).toBe(2);
+  });
+
+  it("serves a file argument relative to the named root and refuses an escape", async () => {
+    const dep = makeDep("depE");
+    const depReal = fs.realpathSync(dep);
+    const s = withTrusted();
+    const info = await s.ensureReady(root, "src/a.ts", dep);
+    expect(info.root).toBe(depReal);
+    expect(info.file).toBe("src/a.ts");
+    const outsideFile = path.join(root, "src", "a.ts");
+    await expect(
+      s.ensureReady(root, outsideFile, dep),
+    ).rejects.toSatisfy((e) =>
+      unavailable(e) &&
+        e.noLedger &&
+        e.reason ===
+          `file ${outsideFile} is outside the named project root (${depReal})`,
+    );
+  });
+
+  it("fails with the exact message for a missing directory", async () => {
+    const s = withTrusted();
+    const missing = path.join(outside, "missing");
+    await expect(
+      s.ensureReady(root, undefined, missing),
+    ).rejects.toSatisfy((e) =>
+      unavailable(e) && e.noLedger && e.reason === `no such directory (${missing})`,
+    );
+  });
+
+  it("lets auto off block a named build", async () => {
+    const dep = makeDep("depF");
+    const s = withTrusted({ autoIndex: false });
+    await expect(s.ensureReady(root, undefined, dep)).rejects.toSatisfy((e) =>
+      unavailable(e) &&
+        e.reason ===
+          "auto-index is off for this session (enable it with /codegraph auto on)",
+    );
+    expect(fs.existsSync(path.join(dep, IN_MEMORY_DIR_NAME))).toBe(false);
+  });
+
+  it("snaps a named directory inside a cache entry to the entry's tree", async () => {
+    const home = path.join(outside, "cache");
+    const entry = path.join(home, "packages", "alpha", "1.0.0");
+    fs.mkdirSync(path.join(entry, "src"), { recursive: true });
+    fs.writeFileSync(path.join(entry, "package.json"), "{}");
+    fs.writeFileSync(path.join(entry, "src", "lib.ts"), "export const lib = 1;\n");
+    const homeReal = fs.realpathSync(home);
+    const entryReal = fs.realpathSync(entry);
+    const s = new CodegraphSession({
+      factory: createInMemoryIndexFactory({ store }),
+      trustedRoots: [{ root: homeReal, origin: "OPENSRC_HOME" }],
+      opensrc: createOpenSrc(home, {
+        list: () => ({
+          packages: [
+            { name: "alpha", version: "1.0.0", path: "packages/alpha/1.0.0" },
+          ],
+        }),
+        manifestStat: () => undefined,
+      }),
+    });
+    sessions.push(s);
+    const info = await s.ensureReady(root, undefined, path.join(entry, "src"));
+    expect(info.root).toBe(entryReal); // snapped up to the entry's tree
+    expect(info.justBuilt).toBe(true);
+    expect(info.named).toBe(true);
+    expect(store.root(entryReal).buildCount).toBe(1);
+  });
+
+  it("closes a named root's instance on shutdown", async () => {
+    const dep = makeDep("depG");
+    const depReal = fs.realpathSync(dep);
+    const s = withTrusted();
+    await s.ensureReady(root, undefined, dep);
+    expect(store.root(depReal).open).toBe(true);
+    s.closeAll();
+    expect(store.root(depReal).open).toBe(false);
   });
 });
