@@ -2,11 +2,10 @@
  * Quota source module: the one module that owns all data logic for reading
  * the OpenAI ChatGPT plan's quota windows (issue #28 design, ADR 0005).
  *
- * It is a library module, not an extension: there is no index.ts, so pi's
- * loader never runs it as an extension. The Quota extension's UI (footer,
- * /quota, polling) will sit on top of it, and the Model router (#29) already
- * reuses it for every usage read and token refresh, so neither duplicates
- * endpoint parsing or OAuth plumbing.
+ * It is a library module loaded by two extensions, each with its own
+ * entry point: the Quota extension's UI (index.ts: footer, /quota, polling)
+ * and the Model router, which reuses it for every usage read and token
+ * refresh. Neither duplicates endpoint parsing or OAuth plumbing.
  *
  * Credentials come from pi's own auth store (~/.pi/agent/auth.json, or
  * $PI_CODING_AGENT_DIR/auth.json). When the access token is expired, or a
@@ -64,10 +63,11 @@ export const OPENAI_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 /** The client id pi's bundled OpenAI Codex OAuth uses for token exchange. */
 export const OPENAI_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 
-/** The 5-hour window is identified by length, not by position. */
+/** Window lengths, for the label. The 5-hour window is identified by
+ * length, not by position. */
 export const FIVE_HOUR_MS = 5 * 60 * 60 * 1000;
-const FIVE_HOUR_TOLERANCE_MS = 15 * 60 * 1000;
-/** Endpoints that answer in seconds (resets_at, window_seconds). */
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+/** reset_at answers in seconds on the live endpoint; accept ms too. */
 const SECONDS_CUTOFF = 1e12;
 const FETCH_TIMEOUT_MS = 15_000;
 
@@ -301,24 +301,28 @@ async function fetchUsage(credential: OAuthCredentialLike, ctx: ReadContext): Pr
 
 /**
  * Parse the usage endpoint's answer into a snapshot. Returns undefined on
- * shape drift; the caller reports a supported "parse" failure. The 5-hour
- * window is identified by its length (5 hours, with tolerance), never by
- * position in the array.
+ * shape drift; the caller reports a supported "parse" failure, not a crash.
+ * Live shape: plan_type and email at the top level, and the windows as
+ * rate_limit.primary_window and rate_limit.secondary_window, each
+ * { used_percent, limit_window_seconds, reset_after_seconds, reset_at } or
+ * null. A window's label comes from its length (5h and 7d are recognized;
+ * anything else is stated by its length, for example 30d on the free plan),
+ * never from its position.
  */
 export function parseUsageResponse(raw: unknown, fetchedAtMs: number): UsageSnapshot | undefined {
 	if (typeof raw !== "object" || raw === null) return undefined;
 	const obj = raw as Record<string, unknown>;
-	const rawWindows = Array.isArray(obj.windows) ? obj.windows : [];
+	const rateLimit =
+		typeof obj.rate_limit === "object" && obj.rate_limit !== null ? (obj.rate_limit as Record<string, unknown>) : {};
 	const windows: QuotaWindow[] = [];
-	for (const entry of rawWindows) {
-		const window = parseQuotaWindow(entry);
+	for (const key of ["primary_window", "secondary_window"]) {
+		const window = parseQuotaWindow(rateLimit[key]);
 		if (window) windows.push(window);
 	}
 	if (windows.length === 0) return undefined;
-	const account = typeof obj.account === "object" && obj.account !== null ? (obj.account as Record<string, unknown>) : undefined;
 	return {
-		planType: pickString(obj.primary_plan ?? obj.plan_type ?? obj.plan),
-		accountEmail: pickString(obj.email ?? account?.email),
+		planType: pickString(obj.plan_type),
+		accountEmail: pickString(obj.email),
 		windows,
 		fetchedAtMs,
 	};
@@ -327,22 +331,14 @@ export function parseUsageResponse(raw: unknown, fetchedAtMs: number): UsageSnap
 function parseQuotaWindow(raw: unknown): QuotaWindow | undefined {
 	if (typeof raw !== "object" || raw === null) return undefined;
 	const obj = raw as Record<string, unknown>;
-	const resetsAtMs = pickEpochMs(obj.resets_at_ms ?? obj.resets_at ?? obj.reset_time);
-	// window_ms / window_seconds are durations, not epochs: use them directly,
-	// no seconds heuristic. window_start is an epoch, so it is converted.
+	const resetsAtMs = pickEpochMs(obj.reset_at);
 	const windowLengthMs =
-		(typeof obj.window_ms === "number" && Number.isFinite(obj.window_ms)
-			? obj.window_ms
-			: undefined) ??
-		(typeof obj.window_seconds === "number" && Number.isFinite(obj.window_seconds)
-			? obj.window_seconds * 1000
-			: undefined) ??
-		(typeof obj.window_start === "number" && resetsAtMs !== undefined ? resetsAtMs - toEpochMs(obj.window_start) : undefined);
-	const usedPercent = pickUsedPercent(obj);
+		typeof obj.limit_window_seconds === "number" && Number.isFinite(obj.limit_window_seconds)
+			? obj.limit_window_seconds * 1000
+			: undefined;
+	const usedPercent = typeof obj.used_percent === "number" && Number.isFinite(obj.used_percent) ? obj.used_percent : undefined;
 	if (resetsAtMs === undefined || usedPercent === undefined) return undefined;
-	const label =
-		windowLengthMs !== undefined && Math.abs(windowLengthMs - FIVE_HOUR_MS) <= FIVE_HOUR_TOLERANCE_MS ? "5h" : "7d";
-	return { label, usedPercent, resetsAtMs, windowLengthMs: windowLengthMs ?? 0 };
+	return { label: labelForLength(windowLengthMs), usedPercent, resetsAtMs, windowLengthMs: windowLengthMs ?? 0 };
 }
 
 function pickString(value: unknown): string | undefined {
@@ -358,15 +354,14 @@ function toEpochMs(value: number): number {
 	return value < SECONDS_CUTOFF ? value * 1000 : value;
 }
 
-/**
- * Accept the endpoint's used-ratio under its known field names. `used_percent`
- * and `percent` are already percentages; `used` is a 0-1 fraction when at or
- * below 1 and a percentage above that.
- */
-function pickUsedPercent(obj: Record<string, unknown>): number | undefined {
-	const percent = obj.used_percent ?? obj.percent;
-	if (typeof percent === "number" && Number.isFinite(percent)) return percent;
-	const fraction = obj.used_fraction ?? obj.used;
-	if (typeof fraction === "number" && Number.isFinite(fraction)) return fraction <= 1 ? fraction * 100 : fraction;
-	return undefined;
+/** "5h" and "7d" for the standard windows, the length stated otherwise. */
+function labelForLength(ms: number | undefined): string {
+	if (ms === undefined) return "?";
+	if (Math.abs(ms - FIVE_HOUR_MS) / FIVE_HOUR_MS <= 0.1) return "5h";
+	if (Math.abs(ms - WEEK_MS) / WEEK_MS <= 0.1) return "7d";
+	const days = ms / 86_400_000;
+	const hours = ms / 3_600_000;
+	if (days >= 1 && Math.abs(days - Math.round(days)) <= 0.02) return `${Math.round(days)}d`;
+	if (hours >= 1) return `${Math.round(hours)}h`;
+	return `${Math.max(1, Math.round(ms / 60_000))}m`;
 }
