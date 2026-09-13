@@ -207,13 +207,16 @@ function makeExecute(
 ): Execute {
   return async (_toolCallId, params, _signal, _onUpdate, ctx) => {
     const startedAt = Date.now();
-    // A call that named its own project root (spec 0009) anchors on it: the
-    // root is the anchor, so a file argument never moves it.
+    // The file argument rides the same carrier on a named call (spec 0009)
+    // as on an unanchored one, only the named root is the anchor and the
+    // file never moves it: the named rule turns the argument into its form
+    // relative to the root (carried on `ReadyInfo.file`), or refuses it
+    // when it leaves the root.
     const projectRoot =
       typeof params.projectRoot === "string"
         ? params.projectRoot
         : undefined;
-    const anchor = projectRoot === undefined ? fileAnchor?.(params) : undefined;
+    const anchor = fileAnchor?.(params);
     let usageDir: string | undefined;
     try {
       const info = await session.ensureReady(ctx.cwd, anchor, projectRoot);

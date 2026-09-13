@@ -140,6 +140,32 @@ function newSession(
   return s;
 }
 
+/** A session that trusts the fixture base, with a cache that names the feature worktree. */
+function namedSession(): { h: Harness; opensrcHome: string } {
+  // A dependency cache that names the feature worktree.
+  const opensrcHome = fs.realpathSync(
+    fs.mkdtempSync(path.join(os.tmpdir(), "codegraph-preamble-")),
+  );
+  fs.symlinkSync(
+    fixture.feature,
+    path.join(opensrcHome, "feature"),
+  );
+  const s = new CodegraphSession({
+    trustedRoots: [
+      { root: fixture.base, origin: "CODEGRAPH_PI_TRUSTED_ROOTS" },
+    ],
+    opensrc: createOpenSrc(opensrcHome, {
+      list: () => ({
+        repos: [
+          { name: "featurelib", version: "9.9.9", path: "feature" },
+        ],
+      }),
+    }),
+  });
+  sessions.push(s);
+  return { h: makeHarness(s, fixture.main), opensrcHome };
+}
+
 describe("tool registration", () => {
   it("registers the six codegraph tools, every one with an optional projectRoot and none with a projectPath", () => {
     const { tools } = makeHarness(newSession(), fixture.main);
@@ -669,31 +695,6 @@ describe("/codegraph command", () => {
 });
 
 describe("the project preamble (spec 0009)", () => {
-  function namedSession(): { h: Harness; opensrcHome: string } {
-    // A dependency cache that names the feature worktree.
-    const opensrcHome = fs.realpathSync(
-      fs.mkdtempSync(path.join(os.tmpdir(), "codegraph-preamble-")),
-    );
-    fs.symlinkSync(
-      fixture.feature,
-      path.join(opensrcHome, "feature"),
-    );
-    const s = new CodegraphSession({
-      trustedRoots: [
-        { root: fixture.base, origin: "CODEGRAPH_PI_TRUSTED_ROOTS" },
-      ],
-      opensrc: createOpenSrc(opensrcHome, {
-        list: () => ({
-          repos: [
-            { name: "featurelib", version: "9.9.9", path: "feature" },
-          ],
-        }),
-      }),
-    });
-    sessions.push(s);
-    return { h: makeHarness(s, fixture.main), opensrcHome };
-  }
-
   it("prefaces a named result with the label and the absolute root", async () => {
     const { h, opensrcHome } = namedSession();
     const text = await h.call("codegraph_search", {
@@ -713,6 +714,52 @@ describe("the project preamble (spec 0009)", () => {
     const text = await h.call("codegraph_search", { query: "mainEntry" });
     expect(text.startsWith("Project:")).toBe(false);
     expect(text).toContain("mainEntry");
+    fs.rmSync(opensrcHome, { recursive: true, force: true });
+  });
+});
+
+describe("the named-root file rule (spec 0009)", () => {
+  it("reads a file relative to the named root", async () => {
+    const { h, opensrcHome } = namedSession();
+    const featureReal = fs.realpathSync(fixture.feature);
+    const text = await h.call("codegraph_node", {
+      file: "src/feature.ts",
+      projectRoot: fixture.feature,
+    });
+    expect(
+      text.startsWith(`Project: featurelib @9.9.9 - ${featureReal}\n\n`),
+    ).toBe(true);
+    expect(text).toContain("File: src/feature.ts");
+    expect(text).toContain("featureOnlySymbol");
+    fs.rmSync(opensrcHome, { recursive: true, force: true });
+  });
+
+  it("refuses a file that leaves the named root, naming both paths", async () => {
+    const { h, opensrcHome } = namedSession();
+    const featureReal = fs.realpathSync(fixture.feature);
+
+    // A relative form resolves against the named root and leaves it.
+    const escape = path.resolve(featureReal, "..", "main", "src", "shared.ts");
+    const rel = await h.call("codegraph_node", {
+      file: "../main/src/shared.ts",
+      projectRoot: fixture.feature,
+    });
+    expect(rel).toBe(
+      `codegraph is unavailable (file ${escape} is outside the named project root (${featureReal})). Use the built-in read and grep tools instead.`,
+    );
+
+    // An absolute form escapes by definition.
+    const abs = path.join(fixture.base, "main", "src", "shared.ts");
+    const absText = await h.call("codegraph_node", {
+      file: abs,
+      projectRoot: fixture.feature,
+    });
+    expect(absText).toBe(
+      `codegraph is unavailable (file ${abs} is outside the named project root (${featureReal})). Use the built-in read and grep tools instead.`,
+    );
+
+    // A refusal writes nothing: the failed calls created no index directory.
+    expect(fs.existsSync(getCodeGraphDir(featureReal))).toBe(false);
     fs.rmSync(opensrcHome, { recursive: true, force: true });
   });
 });
