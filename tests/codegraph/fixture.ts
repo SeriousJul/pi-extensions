@@ -8,6 +8,11 @@
  *                     feature branch was cut, so it exists only in the
  *                     main worktree)
  *
+ *   pkg/src/x.ts    - overloaded() (main only)
+ *   lib/src/x.ts    - overloaded() (main only; same-named symbol in a
+ *                     different sub-project, for sub-directory
+ *                     disambiguation)
+ *
  * feature worktree (branch `feature`), placed under a nested foreign
  * directory (`<base>/elsewhere/feature`) to prove placement irrelevance:
  *   src/feature.ts - featureOnlySymbol(), helper()  (exists only on the
@@ -53,6 +58,16 @@ export function helper(x: number): number {
 
 export const MAIN_ONLY = `export function mainOnlySymbol(): number {
   return 43;
+}
+`;
+
+export const PKG_X = `export function overloaded(x: number): number {
+  return x * 3;
+}
+`;
+
+export const LIB_X = `export function overloaded(x: number): number {
+  return x + 10;
 }
 `;
 
@@ -102,6 +117,18 @@ export function buildFixture(): Fixture {
   fs.writeFileSync(path.join(main, "src/mainonly.ts"), MAIN_ONLY);
   git(main, ["add", "-A"]);
   git(main, ["commit", "-q", "-m", "mainonly"]);
+
+  // Two same-named symbols in two sub-projects of the main worktree,
+  // committed on main after the feature branch was cut. From a call in
+  // <main>/pkg, `src/x.ts` is pkg/src/x.ts in the root's form: it must
+  // select that definition, not the same-named file elsewhere in the
+  // index.
+  fs.mkdirSync(path.join(main, "pkg", "src"), { recursive: true });
+  fs.mkdirSync(path.join(main, "lib", "src"), { recursive: true });
+  fs.writeFileSync(path.join(main, "pkg", "src", "x.ts"), PKG_X);
+  fs.writeFileSync(path.join(main, "lib", "src", "x.ts"), LIB_X);
+  git(main, ["add", "-A"]);
+  git(main, ["commit", "-q", "-m", "overloaded"]);
 
   const cleanup = (): void => {
     try {
