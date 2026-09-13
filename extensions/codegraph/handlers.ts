@@ -18,6 +18,7 @@ import {
   renderExplore,
 } from "./format";
 import type { CodegraphSession, IndexPromptState, ReadyInfo } from "./session";
+import { CodegraphUnavailable } from "./root";
 import { appendUsage, type UsageSummary } from "./usage";
 
 // This module is loaded when the tools are registered (production entry
@@ -69,8 +70,23 @@ const PROMPT_FIRST_LINE: Record<IndexPromptState, string> = {
   none: "The codegraph index is not built yet; your first codegraph call builds it and may wait a while.",
 };
 
-export function promptNoteFor(state: IndexPromptState): string {
-  return `${PROMPT_FIRST_LINE[state]}\n${PROMPT_POLICY}`;
+/**
+ * The seventh policy line (spec 0009): dependency sources are queryable
+ * through `projectRoot`. Added to the fixed block only when at least one
+ * trusted root exists on disk, so the note never advertises a query form
+ * every call would refuse.
+ */
+const PROMPT_NAMED_ROOTS =
+  "- To query a dependency's source, pass its directory as projectRoot (`opensrc path <pkg>` prints it). One projectRoot serves one call; its results are labeled with the project's name and version.";
+
+export function promptNoteFor(
+  state: IndexPromptState,
+  namedRootsAvailable = false,
+): string {
+  const policy = namedRootsAvailable
+    ? `${PROMPT_POLICY}\n${PROMPT_NAMED_ROOTS}`
+    : PROMPT_POLICY;
+  return `${PROMPT_FIRST_LINE[state]}\n${policy}`;
 }
 
 const NodeKindUnion = Type.Union([
@@ -126,6 +142,20 @@ const LineParam = Type.Optional(
   }),
 );
 
+/**
+ * The named-project-root parameter (spec 0009), carried by every tool:
+ * the call is served from the project root the argument names instead of
+ * the one resolved from the working directory.
+ */
+const ProjectRootParam = Type.Optional(
+  Type.String({
+    description:
+      "Serve this call from another project root: a dependency's source " +
+      "directory (from `opensrc path <pkg>`) or a second repository. File " +
+      "arguments are relative to it. Omit for the current project.",
+  }),
+);
+
 type ToolResult = AgentToolResult<unknown>;
 
 function ok(text: string): ToolResult {
@@ -177,10 +207,19 @@ function makeExecute(
 ): Execute {
   return async (_toolCallId, params, _signal, _onUpdate, ctx) => {
     const startedAt = Date.now();
+    // The file argument rides the same carrier on a named call (spec 0009)
+    // as on an unanchored one, only the named root is the anchor and the
+    // file never moves it: the named rule turns the argument into its form
+    // relative to the root (carried on `ReadyInfo.file`), or refuses it
+    // when it leaves the root.
+    const projectRoot =
+      typeof params.projectRoot === "string"
+        ? params.projectRoot
+        : undefined;
     const anchor = fileAnchor?.(params);
     let usageDir: string | undefined;
     try {
-      const info = await session.ensureReady(ctx.cwd, anchor);
+      const info = await session.ensureReady(ctx.cwd, anchor, projectRoot);
       // The ledger of the index that served this call. Naming it from the ready
       // result reuses the resolution the seam already did, so a call resolves
       // its project root once.
@@ -192,14 +231,28 @@ function makeExecute(
         duration_ms: Date.now() - startedAt,
         chars: text.length,
       });
-      return ok(text);
+      // A named call serves a different project than the session root, so its
+      // result names the project it was served from (spec 0009): the label
+      // the dependency cache gives the root (or the path form), then the
+      // absolute root path. Results from the session root carry no preamble.
+      return ok(
+        info.named
+          ? `Project: ${session.projectLabel(info.root)} - ${info.root}\n\n${text}`
+          : text,
+      );
     } catch (err) {
+      // A refusal that writes nothing (spec 0009) records no usage line:
+      // recording one would create the very directory the refusal refuses
+      // to create.
+      if (err instanceof CodegraphUnavailable && err.noLedger) {
+        return fail(err);
+      }
       // A failure is recorded where its index directory is knowable: the one
       // the call reached, or the root resolved without opening an index. A call
       // with no resolvable root has no ledger and is not recorded.
       if (!usageDir) {
         try {
-          usageDir = session.usageDirFor(ctx.cwd, anchor);
+          usageDir = session.usageDirFor(ctx.cwd, anchor, projectRoot);
         } catch {
           // No resolved root means there is no index directory for the ledger.
         }
@@ -276,6 +329,7 @@ export function registerTools(
           default: 0,
         }),
       ),
+      projectRoot: ProjectRootParam,
     }),
     execute: makeExecute(session, TOOL.search, (info, params) =>
       renderSearch(
@@ -306,6 +360,7 @@ export function registerTools(
           default: 20,
         }),
       ),
+      projectRoot: ProjectRootParam,
     }),
     execute: makeExecute(session, TOOL.callers, (info, params) =>
         renderRefs(
@@ -337,6 +392,7 @@ export function registerTools(
           default: 20,
         }),
       ),
+      projectRoot: ProjectRootParam,
     }),
     execute: makeExecute(session, TOOL.callees, (info, params) =>
         renderRefs(
@@ -369,6 +425,7 @@ export function registerTools(
       ),
       file: FileParam,
       line: LineParam,
+      projectRoot: ProjectRootParam,
     }),
     execute: makeExecute(session, TOOL.impact, (info, params) =>
         renderImpact(
@@ -447,6 +504,7 @@ export function registerTools(
             "Symbol mode only: disambiguate to the definition at/around this line (use with the file:line a trail showed you).",
         }),
       ),
+      projectRoot: ProjectRootParam,
     }),
     execute: makeExecute(
       session,
@@ -518,6 +576,7 @@ export function registerTools(
           minimum: 1,
         }),
       ),
+      projectRoot: ProjectRootParam,
     }),
     execute: makeExecute(session, TOOL.explore, (info, params) =>
       renderExplore(
@@ -591,9 +650,10 @@ function usageLines(usage: UsageSummary): string[] {
 function statusLines(
   session: CodegraphSession,
   ctx: ExtensionContext,
+  projectRoot?: string,
 ): string[] {
   try {
-    const s = session.statusFor(ctx.cwd);
+    const s = session.statusFor(ctx.cwd, projectRoot);
     const lines: string[] = [];
     lines.push(`codegraph: ${s.root}`);
     if (s.mainCheckout && !s.isMainCheckout) {
@@ -633,6 +693,45 @@ function statusLines(
   }
 }
 
+/**
+ * The named-roots listing of the bare /codegraph command (spec 0009): one
+ * line per root this session opened - label, state, counts, last call -
+ * then the trusted roots with the origin they came from.
+ */
+function namedRootLines(session: CodegraphSession): string[] {
+  const lines: string[] = [];
+  const opened = session.openedNamedRoots();
+  if (opened.length > 0) {
+    lines.push("  named roots opened this session:");
+    for (const { root, lastCallAt } of opened) {
+      let state: string;
+      try {
+        // The root is the root a named call was served from, already
+        // resolved, so it is read as-is and never walked again.
+        const s = session.rootStatusFor(root);
+        state = s.needsCreate
+          ? "none yet"
+          : s.stats
+            ? `${s.stats.fileCount} files, ${s.stats.nodeCount} nodes`
+            : "on disk";
+      } catch {
+        state = "unavailable";
+      }
+      lines.push(
+        `    ${session.projectLabel(root)} - ${root} - ${state} - last call ${fmtTime(lastCallAt)}`,
+      );
+    }
+  }
+  const trusted = session.trustedRoots();
+  if (trusted.length > 0) {
+    lines.push("  trusted roots:");
+    for (const { root, origin } of trusted) {
+      lines.push(`    ${root} (${origin})`);
+    }
+  }
+  return lines;
+}
+
 export interface CommandUi {
   notify(type: "info" | "warning" | "error", message: string): void;
   confirm?(title: string, message: string): Promise<boolean>;
@@ -657,10 +756,12 @@ export function registerCommand(
 ): void {
   pi.registerCommand("codegraph", {
     description:
-      "Manage the codegraph index: status, init (full rebuild), seed [path], uninit, auto on|off",
+      "Manage the codegraph index and the named project roots: status [path], init [path], seed [path], uninit [path], add <path>, auto on|off",
     handler: async (args: string, ctx: ExtensionContext) => {
       const ui = uiFromCtx(ctx);
       const parts = args.trim().split(/\s+/).filter(Boolean);
+      // The bare command is `status` plus the named-roots listing.
+      const bare = parts.length === 0;
       const verb = parts[0] ?? "status";
 
       /**
@@ -693,15 +794,30 @@ export function registerCommand(
 
       try {
         if (verb === "status" || verb === "") {
-          const lines = statusLines(session, ctx);
+          // `status <path>` selects a named root by the parameter's path
+          // rule (spec 0009); no argument is the session root.
+          const target = bare ? undefined : parts.slice(1).join(" ") || undefined;
+          const lines = statusLines(session, ctx, target);
+          if (bare) lines.push(...namedRootLines(session));
           ui.setWidget?.("codegraph", lines);
           ui.notify("info", lines.join("\n"));
           return;
         }
+        if (verb === "add") {
+          const target = parts.slice(1).join(" ");
+          if (target === "") {
+            ui.notify("warning", "codegraph: usage: /codegraph add <path>");
+            return;
+          }
+          const root = session.addTrustedRoot(target, ctx.cwd);
+          ui.notify("info", `codegraph: trusted root added: ${root}`);
+          return;
+        }
         if (verb === "init") {
           if (refuseDuringPrewarm(prewarmHoldsRoot())) return;
+          const target = parts.slice(1).join(" ") || undefined;
           session
-            .rebuild(ctx.cwd)
+            .rebuild(target ?? ctx.cwd, target)
             .then((info) => {
               ui.setWidget?.("codegraph", undefined);
               ui.notify(
@@ -716,28 +832,48 @@ export function registerCommand(
           return;
         }
         if (verb === "seed") {
-          if (refuseDuringPrewarm(prewarmHoldsRoot())) return;
-          session
-            .reseed(ctx.cwd, parts[1])
-            .then((info) => {
-              ui.setWidget?.("codegraph", undefined);
-              const changed = info.justSeeded?.changedFiles ?? 0;
-              ui.notify(
-                "info",
-                `codegraph: index at ${info.root} seeded from ${info.justSeeded?.source}; reconcile changed ${changed} file${changed === 1 ? "" : "s"}`,
-              );
-            })
-            .catch((err) => {
-              ui.setWidget?.("codegraph", undefined);
-              ui.notify("warning", reasonOf(err));
-            });
+          const target = parts.slice(1).join(" ");
+          // Zero args keep the legacy form: seed from an indexed sibling
+          // worktree. A path is either a source like that (a sibling worktree
+          // with an index) or a target named root (spec 0009).
+          const run = (sourceDir?: string, projectRoot?: string) =>
+            session
+              .reseed(ctx.cwd, sourceDir, projectRoot)
+              .then((info) => {
+                ui.setWidget?.("codegraph", undefined);
+                const changed = info.justSeeded?.changedFiles ?? 0;
+                ui.notify(
+                  "info",
+                  `codegraph: index at ${info.root} seeded from ${info.justSeeded?.source}; reconcile changed ${changed} file${changed === 1 ? "" : "s"}`,
+                );
+              })
+              .catch((err) => {
+                ui.setWidget?.("codegraph", undefined);
+                ui.notify("warning", reasonOf(err));
+              });
+          if (target === "") {
+            if (refuseDuringPrewarm(prewarmHoldsRoot())) return;
+            run();
+            return;
+          }
+          const form = await session.seedTargetFor(ctx.cwd, target);
+          if (form.sourceDir !== undefined) {
+            if (refuseDuringPrewarm(prewarmHoldsRoot())) return;
+            run(form.sourceDir);
+          } else {
+            // A named target is never prewarmed, so no build to fight.
+            run(undefined, form.projectRoot);
+          }
           return;
         }
         if (verb === "uninit") {
           // Confirm first; nothing is deleted until the user agrees.
+          const target = parts.slice(1).join(" ") || undefined;
           let root: string;
           try {
-            root = session.resolveRootFor(ctx.cwd).root;
+            // statusFor resolves the root without building, so the confirm
+            // asks about the exact directory the delete will touch.
+            root = session.statusFor(ctx.cwd, target).root;
           } catch (err) {
             ui.notify("warning", reasonOf(err));
             return;
@@ -758,7 +894,7 @@ export function registerCommand(
             refuseDuringPrewarm(root);
             return;
           }
-          const res = await session.uninit(ctx.cwd);
+          const res = await session.uninit(ctx.cwd, target);
           ui.setWidget?.("codegraph", undefined);
           if (res.removed) {
             ui.notify("info", `codegraph: removed index at ${res.root}`);
@@ -786,7 +922,7 @@ export function registerCommand(
         }
         ui.notify(
           "warning",
-          `codegraph: unknown verb "${verb}". Use: status, init, seed [path], uninit, auto on|off`,
+          `codegraph: unknown verb "${verb}". Use: status [path], init [path], seed [path], uninit [path], add <path>, auto on|off`,
         );
       } catch (err) {
         ui.notify("warning", reasonOf(err));

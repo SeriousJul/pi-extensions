@@ -201,6 +201,40 @@ describe("system prompt note", () => {
     },
   );
 
+  it("adds the seventh line only when a trusted root exists on disk", async () => {
+    const NAMED_LINE =
+      "To query a dependency's source, pass its directory as projectRoot";
+    const savedHome = process.env.HOME;
+    const savedTrusted = process.env.CODEGRAPH_PI_TRUSTED_ROOTS;
+    const savedPrewarm = process.env.CODEGRAPH_PI_PREWARM;
+    const emptyHome = fs.mkdtempSync(
+      path.join(os.tmpdir(), "codegraph-notrust-"),
+    );
+    process.env.CODEGRAPH_PI_PREWARM = "0";
+    try {
+      // No trusted root: no environment list, and no cache home on disk.
+      process.env.HOME = emptyHome;
+      delete process.env.CODEGRAPH_PI_TRUSTED_ROOTS;
+      let handlers = makeExtension(["codegraph_search"]).handlers;
+      const sp = turn(handlers, fixture.feature);
+      expect(sp).toContain("not built yet");
+      expect(sp).not.toContain(NAMED_LINE);
+
+      // A trusted root from the environment: the line joins the block.
+      process.env.CODEGRAPH_PI_TRUSTED_ROOTS = fixture.base;
+      handlers = makeExtension(["codegraph_search"]).handlers;
+      expect(turn(handlers, fixture.feature)).toContain(NAMED_LINE);
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      if (savedTrusted === undefined) delete process.env.CODEGRAPH_PI_TRUSTED_ROOTS;
+      else process.env.CODEGRAPH_PI_TRUSTED_ROOTS = savedTrusted;
+      if (savedPrewarm === undefined) delete process.env.CODEGRAPH_PI_PREWARM;
+      else process.env.CODEGRAPH_PI_PREWARM = savedPrewarm;
+      fs.rmSync(emptyHome, { recursive: true, force: true });
+    }
+  });
+
   it("is added for a sub-directory of an indexed worktree", async () => {
     const builder = newSession();
     await builder.ensureReady(fixture.feature);

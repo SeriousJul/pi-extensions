@@ -25,6 +25,11 @@ import {
   registerTools,
 } from "./handlers";
 import { realIndexFactory, type IndexAdapterFactory } from "./indexAdapter";
+import {
+  cacheHome,
+  createOpenSrc,
+  trustedRootsFromEnv,
+} from "./opensrc";
 import { CodegraphSession } from "./session";
 
 export interface CodegraphExtensionOptions {
@@ -40,8 +45,15 @@ export default function codegraphExtension(
   pi: ExtensionAPI,
   opts: CodegraphExtensionOptions = {},
 ): void {
+  // Dependency-source discovery (spec 0009): the cache home gives the trusted
+  // roots, the labels, the snapping, and the fetch hint. Without a cache the
+  // session simply has no trusted roots and no labels; a named root outside
+  // the cache is still honored through the normal root policy.
+  const cacheHomeDir = cacheHome();
   const session = new CodegraphSession({
     factory: opts.factory ?? realIndexFactory,
+    trustedRoots: trustedRootsFromEnv(),
+    opensrc: cacheHomeDir ? createOpenSrc(cacheHomeDir) : undefined,
   });
 
   const bindUi = (ctx: ExtensionContext): void => {
@@ -78,7 +90,10 @@ export default function codegraphExtension(
     const state = session.indexStateFor(ctx.cwd, resolved);
     if (!state) return undefined;
     return {
-      systemPrompt: `${event.systemPrompt}\n\n${promptNoteFor(state)}`,
+      systemPrompt: `${event.systemPrompt}\n\n${promptNoteFor(
+        state,
+        session.hasTrustedRoot(),
+      )}`,
     };
   });
 

@@ -52,7 +52,14 @@ import {
   writeMarker,
 } from "./marker";
 import type { ResolvedRoot } from "./root";
-import { CodegraphUnavailable, resolveRoot, unsafeRootReason } from "./root";
+import {
+  CodegraphUnavailable,
+  expandPathArg,
+  resolveNamedRoot,
+  resolveRoot,
+  unsafeRootReason,
+} from "./root";
+import { pathLabel, type OpenSrc } from "./opensrc";
 import { findSeedSource } from "./seed";
 import { emptyUsage, readUsage, USAGE_NAME, type UsageSummary } from "./usage";
 import { startWatcher as startCodegraphWatcher, type WatcherState } from "./watcher";
@@ -90,6 +97,12 @@ export interface ReadyInfo {
   isMainCheckout: boolean;
   justSeeded?: { source: string; changedFiles: number };
   justBuilt?: boolean;
+  /**
+   * True when the call named its own project root (spec 0009) instead of
+   * resolving one from its working directory. The result of such a call is
+   * prefaced with the root it was served from.
+   */
+  named?: boolean;
 }
 
 export type IndexPromptState = "ready" | "building" | "none";
@@ -125,6 +138,34 @@ export interface SessionUi {
 
 const sleep = (ms: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** The real path of an existing directory, or undefined when there is none. */
+function realDir(p: string): string | undefined {
+  try {
+    const real = fs.realpathSync(p);
+    return fs.statSync(real).isDirectory() ? real : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The real path of the deepest existing ancestor of `p`, or undefined when
+ * none exists. The form a missing path compares on: a refusal's argument
+ * does not exist yet, so its trust is judged where it will live.
+ */
+function realAncestor(p: string): string | undefined {
+  let current = path.resolve(p);
+  for (;;) {
+    try {
+      return fs.realpathSync(current);
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return undefined;
+      current = parent;
+    }
+  }
+}
 
 function envSwitch(name: string, fallback: boolean): boolean {
   const value = process.env[name];
@@ -165,6 +206,14 @@ export class CodegraphSession {
   /** True from `closeAll` on: work in flight must leave nothing open behind. */
   private closed = false;
   private factoryPromise: Promise<IndexAdapterFactory> | undefined;
+  /** The dependency-source cache (spec 0009); absent when no cache exists. */
+  private readonly opensrc: OpenSrc | undefined;
+  /** The trusted roots the environment provided (spec 0009). */
+  private readonly envTrustedRoots: Array<{ root: string; origin: string }>;
+  /** Trusted roots added with /codegraph add this session (spec 0009). */
+  private addedTrusted: Array<{ root: string; origin: string }> = [];
+  /** The named roots opened this session, with the last call's time. */
+  private readonly namedOpened = new Map<string, number>();
 
   constructor(
     opts: {
@@ -181,6 +230,17 @@ export class CodegraphSession {
       buildWaitTimeoutMs?: number;
       /** Test seam for disabling the background first-turn build. */
       prewarm?: boolean;
+      /**
+       * The trusted roots (spec 0009): the directories a named root's index
+       * may be built at. The entrypoint discovers them from the environment;
+       * tests inject them. Omitted means none.
+       */
+      trustedRoots?: Array<{ root: string; origin: string }>;
+      /**
+       * The dependency-source cache (spec 0009): labels, snapping, and the
+       * fetch hint. Omitted when no cache home exists.
+       */
+      opensrc?: OpenSrc;
     } = {},
   ) {
     this.autoOn = envSwitch("CODEGRAPH_PI_AUTO_INDEX", true);
@@ -190,6 +250,12 @@ export class CodegraphSession {
     if (opts.seeding !== undefined) this.seedingOn = opts.seeding;
     this.factoryOpt = opts.factory;
     this.buildWaitTimeoutMs = opts.buildWaitTimeoutMs ?? BUILD_WAIT_TIMEOUT_MS;
+    this.opensrc = opts.opensrc;
+    this.envTrustedRoots = (opts.trustedRoots ?? [])
+      .map((t) => ({ root: realDir(t.root), origin: t.origin }))
+      .filter(
+        (t): t is { root: string; origin: string } => t.root !== undefined,
+      );
   }
 
   /** Bind the TUI sink for notifications and status line updates. */
@@ -345,8 +411,18 @@ export class CodegraphSession {
    * The recovery for a removed-then-re-added worktree lives in the
    * cached-instance branch of the core path below.
    */
-  async ensureReady(startDir: string, file?: string): Promise<ReadyInfo> {
-    return this.ready(startDir, file, true);
+  /**
+   * `projectRoot` names the project root the call is served from (spec
+   * 0009): the directory it names (through the path rule) is the call's
+   * anchor, a `file` argument is relative to it, and the file never moves
+   * the named root.
+   */
+  async ensureReady(
+    startDir: string,
+    file?: string,
+    projectRoot?: string,
+  ): Promise<ReadyInfo> {
+    return this.ready(startDir, file, true, projectRoot);
   }
 
   /**
@@ -357,9 +433,10 @@ export class CodegraphSession {
     startDir: string,
     file: string | undefined,
     waitForPrewarm: boolean,
+    projectRoot: string | undefined,
   ): Promise<ReadyInfo> {
     const f = await this.factory();
-    return this.readyFrom(f, { startDir, file }, waitForPrewarm);
+    return this.readyFrom(f, { startDir, file, projectRoot }, waitForPrewarm);
   }
 
   /**
@@ -385,14 +462,30 @@ export class CodegraphSession {
    */
   private async readyFrom(
     f: IndexAdapterFactory,
-    origin: { startDir: string; file?: string; resolved?: ResolvedRoot },
+    origin: {
+      startDir: string;
+      file?: string;
+      projectRoot?: string;
+      resolved?: ResolvedRoot;
+    },
     waitForPrewarm: boolean,
   ): Promise<ReadyInfo> {
     this.assertRuntime(f);
     try {
       const nearest = this.nearest(f);
-      let resolved =
-        origin.resolved ?? resolveRoot(origin.startDir, origin.file, nearest);
+      // A call that named its own root re-resolves it the same way after a
+      // prewarm wait, so the wait never loses the named form.
+      const resolveFor = (): ResolvedRoot =>
+        origin.projectRoot !== undefined
+          ? this.resolveNamed(
+              origin.projectRoot,
+              origin.file,
+              origin.startDir,
+              nearest,
+              f,
+            )
+          : resolveRoot(origin.startDir, origin.file, nearest);
+      let resolved = origin.resolved ?? resolveFor();
       const background = waitForPrewarm
         ? this.prewarming.get(resolved.root)
         : undefined;
@@ -401,11 +494,18 @@ export class CodegraphSession {
         // is one wait and one fresh resolution, never a loop. The re-resolution
         // is what lets a successful prewarm serve from its cached instance.
         await background;
-        resolved = resolveRoot(origin.startDir, origin.file, nearest);
+        resolved = resolveFor();
       }
       const ready = await this.ensureReadyCore(f, resolved);
-      if (resolved.file === undefined) return ready;
-      return { ...ready, file: resolved.file };
+      if (resolved.named === true) this.noteNamedOpened(resolved.root);
+      if (resolved.file === undefined && resolved.named !== true) {
+        return ready;
+      }
+      return {
+        ...ready,
+        ...(resolved.file !== undefined ? { file: resolved.file } : {}),
+        ...(resolved.named === true ? { named: true } : {}),
+      };
     } catch (err) {
       throw this.classifyError(f, err);
     }
@@ -477,6 +577,7 @@ export class CodegraphSession {
           needsCreate,
           mainCheckout,
           isMainCheckout,
+          resolved.named === true,
         );
       } finally {
         this.inFlight.delete(root);
@@ -668,7 +769,20 @@ export class CodegraphSession {
    * /codegraph command and the tool ledger, which must name the root before
    * they act.
    */
-  resolveRootFor(dir: string, file?: string): ResolvedRoot {
+  resolveRootFor(
+    dir: string,
+    file?: string,
+    projectRoot?: string,
+  ): ResolvedRoot {
+    if (projectRoot !== undefined) {
+      return this.resolveNamed(
+        projectRoot,
+        file,
+        dir,
+        this.nearest(this.syncFactory()),
+        this.syncFactory(),
+      );
+    }
     return resolveRoot(dir, file, this.nearest(this.syncFactory()));
   }
 
@@ -685,19 +799,60 @@ export class CodegraphSession {
    * from the ready result (`ReadyInfo`'s own adapter), which is the resolution
    * the seam already did.
    */
-  usageDirFor(dir: string, file?: string): string | undefined {
+  usageDirFor(
+    dir: string,
+    file?: string,
+    projectRoot?: string,
+  ): string | undefined {
     const f = this.syncFactory();
     if (!f) return undefined;
-    const resolved = resolveRoot(dir, file, this.nearest(f));
+    const resolved =
+      projectRoot !== undefined
+        ? this.resolveNamed(projectRoot, file, dir, this.nearest(f), f)
+        : resolveRoot(dir, file, this.nearest(f));
     return f.create(resolved.root).codeGraphDir();
   }
 
   /** A status snapshot for the /codegraph command. */
-  statusFor(dir: string): RootStatus {
+  statusFor(dir: string, projectRoot?: string): RootStatus {
     const f = this.syncFactory();
-    const resolved = resolveRoot(dir, undefined, this.nearest(f));
-    const entry = this.instances.get(resolved.root);
-    const adapter = f ? f.create(resolved.root) : undefined;
+    const resolved =
+      projectRoot !== undefined
+        ? this.resolveNamed(projectRoot, undefined, dir, this.nearest(f), f)
+        : resolveRoot(dir, undefined, this.nearest(f));
+    return this.statusForResolved(f, resolved, resolved.needsCreate);
+  }
+
+  /**
+   * The status snapshot for a root that is already resolved (spec 0009):
+   * the bare /codegraph reads it for each named root this session opened,
+   * where the root was named and must not be re-resolved.
+   */
+  rootStatusFor(root: string): RootStatus {
+    const f = this.syncFactory();
+    let needsCreate = true;
+    if (f) {
+      try {
+        needsCreate = !f.create(root).initialized();
+      } catch {
+        needsCreate = true;
+      }
+    }
+    return this.statusForResolved(
+      f,
+      { root, needsCreate, isMainCheckout: false },
+      needsCreate,
+    );
+  }
+
+  private statusForResolved(
+    f: IndexAdapterFactory | undefined,
+    resolved: ResolvedRoot,
+    needsCreate: boolean,
+  ): RootStatus {
+    const { root } = resolved;
+    const entry = this.instances.get(root);
+    const adapter = f ? f.create(root) : undefined;
     const meta =
       adapter && adapter.initialized() ? readMeta(adapter.codeGraphDir()) : {};
     // An index that exists on disk but is not open in this session still
@@ -707,8 +862,8 @@ export class CodegraphSession {
     const disk = entry ? undefined : adapter?.diskStats();
     const usageDir = entry?.cg.codeGraphDir() ?? adapter?.codeGraphDir();
     return {
-      root: resolved.root,
-      needsCreate: resolved.needsCreate,
+      root,
+      needsCreate,
       mainCheckout: resolved.mainCheckout,
       isMainCheckout: resolved.isMainCheckout,
       stats: entry ? entry.cg.getStats() : disk,
@@ -725,12 +880,42 @@ export class CodegraphSession {
     };
   }
 
-  /** Force a full rebuild of the index for `dir`'s root. */
-  async rebuild(dir: string): Promise<ReadyInfo> {
+  /**
+   * Force a full rebuild of the index for `dir`'s root, or for the named
+   * root `projectRoot` (spec 0009): a rebuild is a build, so a named root
+   * is trust-gated and never starts a watcher.
+   */
+  async rebuild(dir: string, projectRoot?: string): Promise<ReadyInfo> {
     const f = await this.factory();
     this.assertRuntime(f);
     try {
-      return await this.rebuildCore(f, dir);
+      if (projectRoot !== undefined) {
+        const resolved = this.resolveNamed(
+          projectRoot,
+          undefined,
+          dir,
+          this.nearest(f),
+          f,
+        );
+        if (!this.autoOn) {
+          throw new CodegraphUnavailable(
+            "auto-index is off for this session (enable it with /codegraph auto on)",
+          );
+        }
+        const unsafe = unsafeRootReason(resolved.root);
+        if (unsafe) {
+          this.notifyOnce(
+            `unsafe-root:${resolved.root}`,
+            "warning",
+            `codegraph: ${unsafe}`,
+          );
+          throw new CodegraphUnavailable(unsafe, true);
+        }
+        if (!this.isTrustedRoot(resolved.root)) {
+          throw this.refuseUntrusted(resolved.root);
+        }
+      }
+      return await this.rebuildCore(f, dir, projectRoot);
     } catch (err) {
       throw this.classifyError(f, err);
     }
@@ -739,18 +924,24 @@ export class CodegraphSession {
   private async rebuildCore(
     f: IndexAdapterFactory,
     dir: string,
+    projectRoot?: string,
   ): Promise<ReadyInfo> {
-    const resolved = resolveRoot(dir, undefined, this.nearest(f));
-    if (resolved.needsCreate) return this.ensureReady(dir);
+    const resolved =
+      projectRoot !== undefined
+        ? this.resolveNamed(projectRoot, undefined, dir, this.nearest(f), f)
+        : resolveRoot(dir, undefined, this.nearest(f));
+    if (resolved.needsCreate) {
+      return this.ensureReady(dir, undefined, projectRoot);
+    }
     const { root, mainCheckout, isMainCheckout } = resolved;
     this.drop(root);
     const cg = f.create(root);
     writeMarker(cg.codeGraphDir(), "build");
     try {
       await cg.recreate();
-      this.status(`codegraph: rebuilding index at ${root}`);
+      this.status(`codegraph: rebuilding index at ${this.rootName(root)}`);
       const res = await cg.indexAll({
-        onProgress: (p) => this.status(formatProgress(p, root)),
+        onProgress: (p) => this.status(formatProgress(p, this.rootName(root))),
       });
       this.status(undefined);
       if (!res.success) {
@@ -766,8 +957,17 @@ export class CodegraphSession {
       clearSeedRecord(cg.codeGraphDir());
       const entry = this.register(cg, root);
       entry.firstSyncDone = true;
-      this.startWatcher(entry);
-      return { cg, root, mainCheckout, isMainCheckout, justBuilt: true };
+      // A named root is never watched (spec 0009): nothing in this session
+      // watches a shared dependency source.
+      if (projectRoot === undefined) this.startWatcher(entry);
+      return {
+        cg,
+        root,
+        mainCheckout,
+        isMainCheckout,
+        justBuilt: true,
+        ...(projectRoot !== undefined ? { named: true } : {}),
+      };
     } finally {
       clearMarker(cg.codeGraphDir());
     }
@@ -775,13 +975,38 @@ export class CodegraphSession {
 
   /**
    * Re-seed the index for `dir`'s root from a named sibling worktree
-   * (`sourceDir`), or from the default seed source.
+   * (`sourceDir`), or from the default seed source. With `projectRoot`
+   * (spec 0009) the named root's index is re-seeded from its own default
+   * seed source: it must be a git worktree and sit under a trusted root.
    */
-  async reseed(dir: string, sourceDir?: string): Promise<ReadyInfo> {
+  async reseed(
+    dir: string,
+    sourceDir?: string,
+    projectRoot?: string,
+  ): Promise<ReadyInfo> {
     const f = await this.factory();
     this.assertRuntime(f);
     try {
-      return await this.reseedCore(f, dir, sourceDir);
+      if (projectRoot !== undefined) {
+        const resolved = this.resolveNamed(
+          projectRoot,
+          undefined,
+          dir,
+          this.nearest(f),
+          f,
+        );
+        if (!isGitWorktree(resolved.root)) {
+          throw new CodegraphUnavailable(
+            `seed needs a git worktree; ${resolved.root} has none`,
+            true,
+            true,
+          );
+        }
+        if (!this.isTrustedRoot(resolved.root)) {
+          throw this.refuseUntrusted(resolved.root);
+        }
+      }
+      return await this.reseedCore(f, dir, sourceDir, projectRoot);
     } catch (err) {
       throw this.classifyError(f, err);
     }
@@ -791,8 +1016,12 @@ export class CodegraphSession {
     f: IndexAdapterFactory,
     dir: string,
     sourceDir?: string,
+    projectRoot?: string,
   ): Promise<ReadyInfo> {
-    const resolved = resolveRoot(dir, undefined, this.nearest(f));
+    const resolved =
+      projectRoot !== undefined
+        ? this.resolveNamed(projectRoot, undefined, dir, this.nearest(f), f)
+        : resolveRoot(dir, undefined, this.nearest(f));
     const { root } = resolved;
     // The same guard the auto path applies: a manual seed must not create
     // an index at a refused root (the home directory, the filesystem root).
@@ -838,6 +1067,7 @@ export class CodegraphSession {
         source,
         resolved.mainCheckout,
         resolved.isMainCheckout,
+        projectRoot !== undefined,
       );
     } finally {
       clearMarker(cg.codeGraphDir());
@@ -854,13 +1084,17 @@ export class CodegraphSession {
    * `removed` is true when an index was deleted; `usageOnly` is true when no
    * index existed and only the ledger was deleted.
    */
-  async uninit(dir: string): Promise<{
+  async uninit(dir: string, projectRoot?: string): Promise<{
     root: string;
     removed: boolean;
     usageOnly: boolean;
   }> {
     const f = await this.factory();
-    const { root } = resolveRoot(dir, undefined, this.nearest(f));
+    const resolved =
+      projectRoot !== undefined
+        ? this.resolveNamed(projectRoot, undefined, dir, this.nearest(f), f)
+        : resolveRoot(dir, undefined, this.nearest(f));
+    const { root } = resolved;
     this.drop(root);
     const cg = f.create(root);
     const indexDir = cg.codeGraphDir();
@@ -904,11 +1138,12 @@ export class CodegraphSession {
     f: IndexAdapterFactory,
     root: string,
     needsCreate: boolean,
-    mainCheckout?: string,
-    isMainCheckout = false,
+    mainCheckout: string | undefined,
+    isMainCheckout: boolean,
+    named: boolean,
   ): Promise<ReadyInfo> {
     if (!needsCreate) {
-      return this.openExisting(f, root, mainCheckout, isMainCheckout);
+      return this.openExisting(f, root, mainCheckout, isMainCheckout, named);
     }
     if (!this.autoOn) {
       throw new CodegraphUnavailable(
@@ -920,15 +1155,22 @@ export class CodegraphSession {
       this.notifyOnce(`unsafe-root:${root}`, "warning", `codegraph: ${unsafe}`);
       throw new CodegraphUnavailable(unsafe, true);
     }
+    // The trust bound (spec 0009): a named root's index is built only under
+    // a trusted root. Checked before the lock, so the refusal writes nothing
+    // - no index directory, no ledger line. Serving an existing index (the
+    // !needsCreate branch above) is not gated by trust.
+    if (named && !this.isTrustedRoot(root)) {
+      throw this.refuseUntrusted(root);
+    }
 
     for (;;) {
-      const prepared = await this.prepareUnderLock(f, root);
+      const prepared = await this.prepareUnderLock(f, root, named);
       if (prepared.mode === "wait") {
         await this.waitForBuild(f, root);
         continue;
       }
       if (prepared.mode === "adopt") {
-        return this.openExisting(f, root, mainCheckout, isMainCheckout);
+        return this.openExisting(f, root, mainCheckout, isMainCheckout, named);
       }
       return this.runBuildOrSeed(
         f,
@@ -936,16 +1178,21 @@ export class CodegraphSession {
         prepared.mode === "seed" ? prepared.seedSource : undefined,
         mainCheckout,
         isMainCheckout,
+        named,
       );
     }
   }
 
-  /** Open an existing index, run the first-use reconcile, and start the watcher. */
+  /**
+   * Open an existing index, run the first-use reconcile, and start the
+   * watcher (never for a named root: reconcile-on-use keeps it current).
+   */
   private async openExisting(
     f: IndexAdapterFactory,
     root: string,
-    mainCheckout?: string,
-    isMainCheckout = false,
+    mainCheckout: string | undefined,
+    isMainCheckout: boolean,
+    named: boolean,
   ): Promise<ReadyInfo> {
     await this.awaitBuildMarker(f, root);
     const cg = f.create(root);
@@ -956,7 +1203,7 @@ export class CodegraphSession {
       // already closed the adapter, so nothing may query it, watch it, or hand
       // it to a session that no longer exists.
       if (this.closed) throw new CodegraphUnavailable(SESSION_CLOSED, true);
-      this.startWatcher(entry);
+      if (!named) this.startWatcher(entry);
       await this.syncForQuery(entry);
       return { cg, root, mainCheckout, isMainCheckout };
     } catch (err) {
@@ -975,6 +1222,7 @@ export class CodegraphSession {
   private async prepareUnderLock(
     f: IndexAdapterFactory,
     root: string,
+    named: boolean,
   ): Promise<
     | { mode: "wait" }
     | { mode: "adopt" }
@@ -1014,11 +1262,15 @@ export class CodegraphSession {
       }
       // No index yet. Create the index directory via codegraph's own
       // directory setup (this also creates an empty database), then seed
-      // it from a sibling when one is available.
+      // it from a sibling when one is available. A named root is never
+      // implicitly seeded (spec 0009): it is a shared dependency source,
+      // not a worktree of the session's repository.
       await cg.createEmpty();
-      const source = this.seedingOn
-        ? findSeedSource(root, (p) => f.create(p).initialized())
-        : undefined;
+      const source = named
+        ? undefined
+        : this.seedingOn
+          ? findSeedSource(root, (p) => f.create(p).initialized())
+          : undefined;
       if (source) {
         await cg.seedFrom(source.path);
         writeMarker(cg.codeGraphDir(), "seed");
@@ -1084,10 +1336,11 @@ export class CodegraphSession {
   private async finishSeed(
     entry: InstanceEntry,
     seedSource: string,
-    mainCheckout?: string,
-    isMainCheckout = false,
+    mainCheckout: string | undefined,
+    isMainCheckout: boolean,
+    named: boolean,
   ): Promise<ReadyInfo> {
-    this.status(`codegraph: reconciling seeded index at ${entry.root}`);
+    this.status(`codegraph: reconciling seeded index at ${this.rootName(entry.root)}`);
     const res = await this.runSync(entry);
     const changed = res.filesAdded + res.filesModified + res.filesRemoved;
     recordSeed(entry.cg.codeGraphDir(), seedSource);
@@ -1097,7 +1350,7 @@ export class CodegraphSession {
       `codegraph: seeded index for ${entry.root} from ${seedSource}; reconcile changed ${changed} file${changed === 1 ? "" : "s"}`,
     );
     entry.firstSyncDone = true;
-    this.startWatcher(entry);
+    if (!named) this.startWatcher(entry);
     return {
       cg: entry.cg,
       root: entry.root,
@@ -1112,8 +1365,9 @@ export class CodegraphSession {
     f: IndexAdapterFactory,
     root: string,
     seedSource: string | undefined,
-    mainCheckout?: string,
-    isMainCheckout = false,
+    mainCheckout: string | undefined,
+    isMainCheckout: boolean,
+    named: boolean,
   ): Promise<ReadyInfo> {
     const cg = f.create(root);
     try {
@@ -1140,11 +1394,17 @@ export class CodegraphSession {
         throw new CodegraphUnavailable(SESSION_CLOSED, true);
       }
       if (seedSource) {
-        return this.finishSeed(entry, seedSource, mainCheckout, isMainCheckout);
+        return this.finishSeed(
+          entry,
+          seedSource,
+          mainCheckout,
+          isMainCheckout,
+          named,
+        );
       }
-      this.status(`codegraph: building index at ${root}`);
+      this.status(`codegraph: building index at ${this.rootName(root)}`);
       const res = await cg.indexAll({
-        onProgress: (p) => this.status(formatProgress(p, root)),
+        onProgress: (p) => this.status(formatProgress(p, this.rootName(root))),
       });
       this.status(undefined);
       if (!res.success) {
@@ -1162,7 +1422,7 @@ export class CodegraphSession {
         throw new CodegraphUnavailable(`index build failed: ${detail}`, true);
       }
       entry.firstSyncDone = true;
-      this.startWatcher(entry);
+      if (!named) this.startWatcher(entry);
       return { cg, root, mainCheckout, isMainCheckout, justBuilt: true };
     } finally {
       clearMarker(cg.codeGraphDir());
@@ -1183,7 +1443,9 @@ export class CodegraphSession {
   ): Promise<void> {
     if (!force && entry.firstSyncDone && entry.watcher === "active") return;
     this.status(
-      `codegraph: reconciling index at ${entry.root}${label ? ` (${label})` : ""}`,
+      `codegraph: reconciling index at ${this.rootName(entry.root)}${
+        label ? ` (${label})` : ""
+      }`,
     );
     await this.runSync(entry);
     entry.firstSyncDone = true;
@@ -1244,6 +1506,175 @@ export class CodegraphSession {
         `codegraph: file watcher unavailable (${reason}); the index is reconciled before every query`,
       );
     }
+  }
+
+  // ------------------------------------------------------------------
+  // named roots (spec 0009)
+  // ------------------------------------------------------------------
+
+  /**
+   * Resolve a call that named its own project root (spec 0009), with the
+   * session's options: snapping against the dependency cache, the
+   * nearest-initialized-ancestor lookup, the index check, and the fetch
+   * hint for a missing directory.
+   */
+  private resolveNamed(
+    projectRoot: string,
+    file: string | undefined,
+    dir: string,
+    nearest: ((startPath: string) => string | null | undefined) | undefined,
+    f: IndexAdapterFactory | undefined,
+  ): ResolvedRoot {
+    return resolveNamedRoot(projectRoot, file, dir, {
+      snap: (r) => this.opensrc?.cacheRootFor(r),
+      findNearest: nearest,
+      hasIndex: f
+        ? (r) => {
+            try {
+              return f.create(r).initialized();
+            } catch {
+              return false;
+            }
+          }
+        : undefined,
+      fetchHint: (abs) => this.fetchHintFor(abs),
+    });
+  }
+
+  /**
+   * The name of a root in a status line (spec 0009): the project's label
+   * when the dependency cache names it, the raw path otherwise.
+   */
+  private rootName(root: string): string {
+    return this.opensrc?.labelFor(root) ?? root;
+  }
+
+  /**
+   * The project label for a named root (spec 0009): the dependency cache's
+   * label ("name, name @version") when one matches, the path-form label
+   * otherwise. A missing label never fails a call.
+   */
+  projectLabel(root: string): string {
+    return this.opensrc?.labelFor(root) ?? pathLabel(root);
+  }
+
+  /** All trusted roots: the environment's, plus the ones added this session. */
+  trustedRoots(): Array<{ root: string; origin: string }> {
+    return [...this.envTrustedRoots, ...this.addedTrusted];
+  }
+
+  /** True when at least one trusted root exists: the prompt-note gate. */
+  hasTrustedRoot(): boolean {
+    return this.trustedRoots().length > 0;
+  }
+
+  /** True when an index at `root` may be built: at or under a trusted root. */
+  isTrustedRoot(root: string): boolean {
+    let real: string;
+    try {
+      real = fs.realpathSync(root);
+    } catch {
+      return false;
+    }
+    return this.trustedRoots().some(
+      (t) => real === t.root || real.startsWith(t.root + path.sep),
+    );
+  }
+
+  /**
+   * Add a trusted root through the path rule (spec 0009), returning the
+   * real path it resolved to. Validated: the directory must exist.
+   *
+   * @throws CodegraphUnavailable when the directory does not exist.
+   */
+  addTrustedRoot(arg: string, baseDir: string): string {
+    const abs = expandPathArg(arg, baseDir);
+    const real = realDir(abs);
+    if (real === undefined) {
+      throw new CodegraphUnavailable(`no such directory (${abs})`, true, true);
+    }
+    if (!this.trustedRoots().some((t) => t.root === real)) {
+      this.addedTrusted.push({ root: real, origin: "add" });
+    }
+    return real;
+  }
+
+
+  /** The trust refusal, shared by every build-gating site. */
+  private refuseUntrusted(root: string): CodegraphUnavailable {
+    return new CodegraphUnavailable(
+      `refusing to build an index outside a trusted root (${root}) ` +
+        `- ask the user to run /codegraph add ${root}`,
+      true,
+      true,
+    );
+  }
+
+  /**
+   * The extra text a `no such directory` failure for a named root reports
+   * (spec 0009). Only a path under a trusted root names a fetch: the hint
+   * carries the dependency's fetch name. A path outside every trusted root
+   * gets no hint (there is no cache it belongs to).
+   */
+  private fetchHintFor(abs: string): string {
+    // The directory is missing (that is why a hint is wanted), so the
+    // argument is compared where it will live: the real path of its deepest
+    // existing ancestor - the same realpath form trustedRoots and
+    // isTrustedRoot compare on (spec 0009).
+    const real = realAncestor(abs);
+    const under =
+      real !== undefined &&
+      this.trustedRoots().some(
+        (t) => real === t.root || real.startsWith(t.root + path.sep),
+      );
+    if (!under) return "";
+    const name = this.opensrc?.fetchNameFor(abs);
+    if (!name) return "";
+    return ` - the source is not cached; ask the user to run: opensrc fetch ${name}`;
+  }
+
+  /**
+   * The seed verb's path argument (spec 0009): a directory that is a
+   * sibling worktree of the session root AND has an index is a source for
+   * the session root (the original form); any other path is a target named
+   * root.
+   */
+  async seedTargetFor(
+    cwd: string,
+    arg: string | undefined,
+  ): Promise<{ sourceDir?: string; projectRoot?: string }> {
+    if (arg === undefined) return {};
+    const f = await this.factory();
+    const nearest = this.nearest(f);
+    const { root } = resolveRoot(cwd, undefined, nearest);
+    const abs = expandPathArg(arg, cwd);
+    let isSource = false;
+    try {
+      isSource =
+        fs.statSync(abs).isDirectory() &&
+        (f ? f.create(abs).initialized() : false) &&
+        isSiblingOf(root, abs);
+    } catch {
+      // Not a directory: the target form below reports it.
+    }
+    if (isSource) return { sourceDir: abs };
+    return { projectRoot: arg };
+  }
+
+  /**
+   * The named roots this session opened, with the time of the last call
+   * to each (spec 0009): the bare /codegraph lists them after the session
+   * root.
+   */
+  openedNamedRoots(): Array<{ root: string; lastCallAt: number }> {
+    return [...this.namedOpened.entries()].map(([root, lastCallAt]) => ({
+      root,
+      lastCallAt,
+    }));
+  }
+
+  private noteNamedOpened(root: string): void {
+    this.namedOpened.set(root, Date.now());
   }
 }
 

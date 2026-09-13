@@ -19,6 +19,7 @@ import { createJiti } from "jiti/static";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -48,6 +49,33 @@ const commands = new Map();
 const handlers = new Map();
 const notifications = [];
 let toolCalls = 0;
+
+// Spec 0009, end to end on the jiti load path: a second fixture directory
+// outside the fixture worktree, trusted through CODEGRAPH_PI_TRUSTED_ROOTS.
+// It proves a real external build, a real label, and a real refusal.
+const depHome = fs.realpathSync(
+  fs.mkdtempSync(path.join(os.tmpdir(), "codegraph-smoke-dep-")),
+);
+const trustedHome = path.join(depHome, "trusted");
+const external = path.join(trustedHome, "widgets", "1.2.3");
+fs.mkdirSync(path.join(external, "src"), { recursive: true });
+fs.writeFileSync(
+  path.join(external, "package.json"),
+  JSON.stringify({ name: "widgets", version: "1.2.3" }),
+);
+fs.writeFileSync(
+  path.join(external, "src", "external.ts"),
+  "export function externalSymbol(): string { return 'external'; }\n",
+);
+const outside = path.join(depHome, "outside");
+fs.mkdirSync(path.join(outside, "src"), { recursive: true });
+fs.writeFileSync(path.join(outside, "package.json"), "{}");
+fs.writeFileSync(
+  path.join(outside, "src", "nope.ts"),
+  "export function nope(): number { return 0; }\n",
+);
+const savedTrusted = process.env.CODEGRAPH_PI_TRUSTED_ROOTS;
+process.env.CODEGRAPH_PI_TRUSTED_ROOTS = trustedHome;
 
 extension({
   registerTool: (t) => tools.set(t.name, t),
@@ -129,6 +157,17 @@ try {
     throw new Error(`first prompt did not carry the building-state note: ${JSON.stringify(promptResult)}`);
   }
   if (toolCalls !== 0) throw new Error("prewarm made a tool call");
+  // The trusted root reached the session, so the note carries the
+  // dependency-source line.
+  if (
+    !promptResult.systemPrompt.includes(
+      "pass its directory as projectRoot",
+    )
+  ) {
+    throw new Error(
+      `the trusted root did not reach the prompt note: ${JSON.stringify(promptResult)}`,
+    );
+  }
   await waitForReadyIndex();
   if (toolCalls !== 0) {
     throw new Error("the index only became ready because a tool call built it");
@@ -148,6 +187,41 @@ try {
   const node = await callTool("codegraph_node", { file: "src/shared.ts" });
   if (!node.includes("File: src/shared.ts")) {
     throw new Error(`codegraph_node did not serve the file:\n${node}`);
+  }
+
+  // A named root outside the session (spec 0009): a real external build,
+  // prefaced with the project's label and absolute root.
+  const externalReal = fs.realpathSync(external);
+  const named = await callTool("codegraph_search", {
+    query: "externalSymbol",
+    projectRoot: external,
+  });
+  if (!named.startsWith(`Project: widgets/1.2.3 - ${externalReal}\n\n`)) {
+    throw new Error(`the named result did not carry the project line:\n${named}`);
+  }
+  if (!named.includes("externalSymbol")) {
+    throw new Error(`the named build did not answer from its own index:\n${named}`);
+  }
+
+  // The trust bound, end to end: outside the trusted roots a named build is
+  // refused, and the refusal writes nothing.
+  const outsideReal = fs.realpathSync(outside);
+  const untrusted = await callTool("codegraph_search", {
+    query: "nope",
+    projectRoot: outside,
+  });
+  if (
+    !untrusted.includes(
+      `refusing to build an index outside a trusted root (${outsideReal})`,
+    )
+  ) {
+    throw new Error(`the untrusted named build was not refused:\n${untrusted}`);
+  }
+  if (!untrusted.includes("/codegraph add")) {
+    throw new Error(`the refusal did not name the fix:\n${untrusted}`);
+  }
+  if (fs.existsSync(path.join(outside, ".codegraph"))) {
+    throw new Error("the refused build wrote an index directory");
   }
 
   // The /codegraph command must report the index counts and the recorded usage
@@ -223,5 +297,8 @@ try {
     // a closing failure must not mask the real result
   }
   fixture.cleanup();
+  fs.rmSync(depHome, { recursive: true, force: true });
+  if (savedTrusted === undefined) delete process.env.CODEGRAPH_PI_TRUSTED_ROOTS;
+  else process.env.CODEGRAPH_PI_TRUSTED_ROOTS = savedTrusted;
 }
 process.exit(failed ? 1 : 0);

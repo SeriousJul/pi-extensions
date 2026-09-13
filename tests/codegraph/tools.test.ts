@@ -4,6 +4,7 @@ import {
   describe,
   expect,
   it,
+  vi,
 } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -16,6 +17,7 @@ import {
   registerTools,
 } from "../../extensions/codegraph/handlers";
 import { createInMemoryIndexFactory } from "./inMemoryIndex";
+import { createOpenSrc } from "../../extensions/codegraph/opensrc";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getCodeGraphDir, getDatabasePath } from "../../extensions/codegraph/runtime";
 import { appendUsage, IGNORE_NAME, USAGE_NAME } from "../../extensions/codegraph/usage";
@@ -138,8 +140,34 @@ function newSession(
   return s;
 }
 
+/** A session that trusts the fixture base, with a cache that names the feature worktree. */
+function namedSession(): { h: Harness; opensrcHome: string } {
+  // A dependency cache that names the feature worktree.
+  const opensrcHome = fs.realpathSync(
+    fs.mkdtempSync(path.join(os.tmpdir(), "codegraph-preamble-")),
+  );
+  fs.symlinkSync(
+    fixture.feature,
+    path.join(opensrcHome, "feature"),
+  );
+  const s = new CodegraphSession({
+    trustedRoots: [
+      { root: fixture.base, origin: "CODEGRAPH_PI_TRUSTED_ROOTS" },
+    ],
+    opensrc: createOpenSrc(opensrcHome, {
+      list: () => ({
+        repos: [
+          { name: "featurelib", version: "9.9.9", path: "feature" },
+        ],
+      }),
+    }),
+  });
+  sessions.push(s);
+  return { h: makeHarness(s, fixture.main), opensrcHome };
+}
+
 describe("tool registration", () => {
-  it("registers the six codegraph tools, none with a projectPath parameter", () => {
+  it("registers the six codegraph tools, every one with an optional projectRoot and none with a projectPath", () => {
     const { tools } = makeHarness(newSession(), fixture.main);
     expect([...tools.keys()].sort()).toEqual([
       "codegraph_callees",
@@ -150,6 +178,9 @@ describe("tool registration", () => {
       "codegraph_search",
     ]);
     for (const t of tools.values()) {
+      const schema = t.parameters as { properties?: Record<string, unknown> };
+      // Spec 0009: every tool can be served from a named project root.
+      expect(schema.properties).toHaveProperty("projectRoot");
       expect(JSON.stringify(t.parameters)).not.toContain("projectPath");
     }
   });
@@ -660,5 +691,204 @@ describe("/codegraph command", () => {
     const ui = freshUi();
     await h.commands.get("codegraph")!.handler("frobnicate", makeCtx(fixture.main, ui));
     expect(ui.notifications.some(([, m]) => m.includes("unknown verb"))).toBe(true);
+  });
+});
+
+describe("the project preamble (spec 0009)", () => {
+  it("prefaces a named result with the label and the absolute root", async () => {
+    const { h, opensrcHome } = namedSession();
+    const text = await h.call("codegraph_search", {
+      query: "featureOnlySymbol",
+      projectRoot: fixture.feature,
+    });
+    const featureReal = fs.realpathSync(fixture.feature);
+    expect(text.startsWith(`Project: featurelib @9.9.9 - ${featureReal}\n\n`)).toBe(
+      true,
+    );
+    expect(text).toContain("featureOnlySymbol");
+    fs.rmSync(opensrcHome, { recursive: true, force: true });
+  });
+
+  it("carries no preamble for a result from the session root", async () => {
+    const { h, opensrcHome } = namedSession();
+    const text = await h.call("codegraph_search", { query: "mainEntry" });
+    expect(text.startsWith("Project:")).toBe(false);
+    expect(text).toContain("mainEntry");
+    fs.rmSync(opensrcHome, { recursive: true, force: true });
+  });
+});
+
+describe("the named-root file rule (spec 0009)", () => {
+  it("reads a file relative to the named root", async () => {
+    const { h, opensrcHome } = namedSession();
+    const featureReal = fs.realpathSync(fixture.feature);
+    const text = await h.call("codegraph_node", {
+      file: "src/feature.ts",
+      projectRoot: fixture.feature,
+    });
+    expect(
+      text.startsWith(`Project: featurelib @9.9.9 - ${featureReal}\n\n`),
+    ).toBe(true);
+    expect(text).toContain("File: src/feature.ts");
+    expect(text).toContain("featureOnlySymbol");
+    fs.rmSync(opensrcHome, { recursive: true, force: true });
+  });
+
+  it("refuses a file that leaves the named root, naming both paths", async () => {
+    const { h, opensrcHome } = namedSession();
+    const featureReal = fs.realpathSync(fixture.feature);
+
+    // A relative form resolves against the named root and leaves it.
+    const escape = path.resolve(featureReal, "..", "main", "src", "shared.ts");
+    const rel = await h.call("codegraph_node", {
+      file: "../main/src/shared.ts",
+      projectRoot: fixture.feature,
+    });
+    expect(rel).toBe(
+      `codegraph is unavailable (file ${escape} is outside the named project root (${featureReal})). Use the built-in read and grep tools instead.`,
+    );
+
+    // An absolute form escapes by definition.
+    const abs = path.join(fixture.base, "main", "src", "shared.ts");
+    const absText = await h.call("codegraph_node", {
+      file: abs,
+      projectRoot: fixture.feature,
+    });
+    expect(absText).toBe(
+      `codegraph is unavailable (file ${abs} is outside the named project root (${featureReal})). Use the built-in read and grep tools instead.`,
+    );
+
+    // A refusal writes nothing: the failed calls created no index directory.
+    expect(fs.existsSync(getCodeGraphDir(featureReal))).toBe(false);
+    fs.rmSync(opensrcHome, { recursive: true, force: true });
+  });
+});
+
+describe("/codegraph named-root surface (spec 0009)", () => {
+  /** A session whose trusted roots include the whole fixture base. */
+  function trustedHarness(): Harness {
+    return makeHarness(
+      newSession({
+        trustedRoots: [
+          { root: fixture.base, origin: "CODEGRAPH_PI_TRUSTED_ROOTS" },
+        ],
+      }),
+      fixture.main,
+    );
+  }
+
+  it("add trusts an existing directory and reports a missing one", async () => {
+    const h = trustedHarness();
+    const ui = freshUi();
+    await h.commands.get("codegraph")!.handler(
+      `add ${fixture.main}`,
+      makeCtx(fixture.main, ui),
+    );
+    expect(
+      ui.notifications.some(([, m]) => m.includes("trusted root added")),
+    ).toBe(true);
+
+    const ui2 = freshUi();
+    await h.commands.get("codegraph")!.handler(
+      "add no/such/dir",
+      makeCtx(fixture.main, ui2),
+    );
+    expect(
+      ui2.notifications.some(([, m]) => m.includes("no such directory")),
+    ).toBe(true);
+  });
+
+
+  it("a bare command lists the opened and the trusted named roots", async () => {
+    const h = trustedHarness();
+    await h.call("codegraph_search", {
+      query: "featureOnlySymbol",
+      projectRoot: fixture.feature,
+    });
+
+    const ui = freshUi();
+    await h.commands.get("codegraph")!.handler(
+      "",
+      makeCtx(fixture.main, ui),
+    );
+    const text = ui.notifications.map(([, m]) => m).join("\n");
+    expect(text).toContain("named roots opened this session");
+    expect(text).toContain(`elsewhere/feature - ${fs.realpathSync(fixture.feature)} - `);
+    // The line names label, root, state, and the last call (spec 0009).
+    expect(text).toContain("- last call ");
+    expect(text).toContain("trusted roots");
+    expect(text).toContain(`${fixture.base} (CODEGRAPH_PI_TRUSTED_ROOTS)`);
+  });
+
+  it("status takes a path and reports that named root", async () => {
+    const h = trustedHarness();
+    // Open the named root once: its index exists when status reads it.
+    await h.call("codegraph_search", {
+      query: "featureOnlySymbol",
+      projectRoot: fixture.feature,
+    });
+
+    const ui = freshUi();
+    await h.commands.get("codegraph")!.handler(
+      `status ${fixture.feature}`,
+      makeCtx(fixture.main, ui),
+    );
+    const text = ui.notifications.map(([, m]) => m).join("\n");
+    expect(text).toContain("codegraph: " + fs.realpathSync(fixture.feature));
+    expect(text).toMatch(/index: \d+ files, \d+ nodes, \d+ edges/);
+
+    // A missing directory reports the reason, like every other verb.
+    const ui2 = freshUi();
+    await h.commands.get("codegraph")!.handler(
+      "status no/such/dir",
+      makeCtx(fixture.main, ui2),
+    );
+    expect(
+      ui2.notifications.map(([, m]) => m).join("\n"),
+    ).toContain("no such directory");
+  });
+
+  it("init and uninit take a path argument", async () => {
+    const h = trustedHarness();
+    const ui = freshUi();
+    await h.commands.get("codegraph")!.handler(
+      `init ${fixture.feature}`,
+      makeCtx(fixture.main, ui),
+    );
+    await vi.waitFor(
+      () =>
+        expect(
+          ui.notifications.some(([, m]) => m.includes("index rebuilt")),
+        ).toBe(true),
+      { timeout: 120_000 },
+    );
+
+    const ui2 = freshUi();
+    await h.commands.get("codegraph")!.handler(
+      `uninit ${fixture.feature}`,
+      makeCtx(fixture.main, ui2),
+    );
+    expect(
+      ui2.notifications.some(([, m]) => m.includes("removed index")),
+    ).toBe(true);
+  });
+
+  it("seed takes a named target and seeds it from the session's sibling", async () => {
+    const h = trustedHarness();
+    // The session root needs an index: it is the seed source.
+    await h.call("codegraph_search", { query: "mainEntry" });
+
+    const ui = freshUi();
+    await h.commands.get("codegraph")!.handler(
+      `seed ${fixture.feature}`,
+      makeCtx(fixture.main, ui),
+    );
+    await vi.waitFor(
+      () =>
+        expect(
+          ui.notifications.some(([, m]) => m.includes("seeded from")),
+        ).toBe(true),
+      { timeout: 120_000 },
+    );
   });
 });

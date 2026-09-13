@@ -21,11 +21,21 @@ import os from "node:os";
 import path from "node:path";
 import { gitWorktreeRoot, listWorktrees } from "./git";
 
-/** Error whose `reason` becomes the parenthesized reason in the standard fallback line. */
+/**
+ * Error whose `reason` becomes the parenthesized reason in the standard
+ * fallback line.
+ *
+ * `noLedger` marks the refusal that writes nothing: the named-root
+ * failures of spec 0009 (no such directory, the trust bound, a file
+ * outside the named root, and a seed without a worktree) record no usage
+ * line, because recording one would create the very directory the refusal
+ * refuses to create.
+ */
 export class CodegraphUnavailable extends Error {
   constructor(
     readonly reason: string,
     readonly structural = false,
+    readonly noLedger = false,
   ) {
     super(reason);
     this.name = "CodegraphUnavailable";
@@ -55,6 +65,8 @@ export interface ResolvedRoot {
   mainCheckout?: string;
   /** True when the root is the main checkout of its repository. */
   isMainCheckout: boolean;
+  /** True when the call named its own root (spec 0009) instead of resolving one. */
+  named?: boolean;
 }
 
 /** Files that mark a directory as a project (non-git roots only). */
@@ -135,6 +147,22 @@ export function nearestManifestDir(dir: string): string | undefined {
 }
 
 /**
+ * The path rule for an argument that names a location (a `projectRoot`, and
+ * a `file` argument once it is resolved): an absolute path stays as it is,
+ * `~` and `~/x` expand against the home directory, and everything else
+ * resolves against `baseDir`. One place, so `projectRoot` and `file` cannot
+ * drift; applying it to `file` also closes a pre-existing gap, because Node
+ * does not expand `~`.
+ */
+export function expandPathArg(arg: string, baseDir: string): string {
+  if (path.isAbsolute(arg)) return arg;
+  const home = os.homedir();
+  if (arg === "~") return home;
+  if (arg.startsWith("~/")) return path.join(home, arg.slice(2));
+  return path.resolve(baseDir, arg);
+}
+
+/**
  * Express `fileArg` (a path relative to the call's `startDir`, or absolute)
  * as a path relative to `root`. The one rule behind `ResolvedRoot.file`, and
  * the rule a caller must not re-implement: root resolution applies it, and the
@@ -154,7 +182,7 @@ export function rootRelativeFile(
   startDir: string,
   fileArg: string,
 ): string {
-  const absolute = path.resolve(startDir, fileArg);
+  const absolute = expandPathArg(fileArg, startDir);
   const relative = path.relative(root, absolute);
   const escapesRoot =
     path.isAbsolute(relative) ||
@@ -192,7 +220,7 @@ function resolveRootPolicy(
   const anchor =
     fileArg === undefined
       ? path.resolve(startDir)
-      : path.resolve(startDir, fileArg);
+      : expandPathArg(fileArg, startDir);
   let base: string;
   try {
     base = fs.statSync(anchor).isDirectory() ? anchor : path.dirname(anchor);
@@ -259,4 +287,119 @@ export function resolveRoot(
     ...resolved,
     file: rootRelativeFile(resolved.root, startDir, fileArg),
   };
+}
+
+/**
+ * The options a named root resolves against (spec 0009). The session hands
+ * them in; this module stays free of the Index adapter.
+ */
+export interface NamedRootOptions {
+  /**
+   * Snapping: the cache entry containing the named directory, or undefined
+   * when it sits outside any entry (the directory is then honored as-is).
+   */
+  snap?: (root: string) => string | undefined;
+  /** The nearest-initialized-ancestor lookup, as in `resolveRoot`. */
+  findNearest?: (startPath: string) => string | null | undefined;
+  /** True when an index already exists at `root`. */
+  hasIndex?: (root: string) => boolean;
+  /** The extra text a missing directory reports (the fetch hint), or undefined. */
+  fetchHint?: (abs: string) => string | undefined;
+}
+
+/**
+ * Express a `file` argument of a named-root call as a path relative to the
+ * named root: the argument applies the path rule with the named root as its
+ * base, so a relative form names a file inside the named project (the
+ * working directory plays no part). The named root is a hard boundary: a
+ * form that escapes it is refused, because outside it there is no index
+ * that could answer - unlike `rootRelativeFile`, which keeps the caller's
+ * form and lets the index report the file absent.
+ *
+ * @throws CodegraphUnavailable when the form leaves the named root.
+ */
+export function namedRootFile(root: string, fileArg: string): string {
+  const absolute = expandPathArg(fileArg, root);
+  const relative = path.relative(root, absolute);
+  const escapes =
+    path.isAbsolute(relative) ||
+    relative === ".." ||
+    relative.startsWith(`..${path.sep}`);
+  if (escapes) {
+    throw new CodegraphUnavailable(
+      `file ${absolute} is outside the named project root (${root})`,
+      true,
+      true,
+    );
+  }
+  return relative || ".";
+}
+
+/**
+ * Resolve a call that named its own project root (spec 0009): the directory
+ * the argument names (through the path rule) is the call's anchor, a file
+ * argument is relative to it, and the file never moves the named root.
+ *
+ * - A named path that is a file resolves to its directory.
+ * - A missing directory fails with `no such directory (<abs>)` and the fetch
+   * hint when one can be given. The failure writes nothing (`noLedger`).
+ * - A named directory inside a cache entry snaps to that entry's tree
+ *   (longest path prefix); the entry's index is the one served, and its
+ *   presence decides whether one must be created.
+ * - A named directory outside any entry is honored as-is and runs the normal
+ *   root policy (nearest initialized ancestor, else the manifest directory),
+ *   so a sub-project of a second repository serves that repository's index.
+ *   The file argument is then relative to the finally resolved root.
+ *
+ * @throws CodegraphUnavailable when the directory is missing or the file
+ *   argument escapes the named root.
+ */
+export function resolveNamedRoot(
+  projectRootArg: string,
+  fileArg: string | undefined,
+  startDir: string,
+  opts: NamedRootOptions = {},
+): ResolvedRoot {
+  const abs = expandPathArg(projectRootArg, startDir);
+  let base: string;
+  try {
+    base = fs.statSync(abs).isDirectory() ? abs : path.dirname(abs);
+  } catch {
+    const hint = opts.fetchHint?.(abs) ?? "";
+    throw new CodegraphUnavailable(
+      `no such directory (${abs})${hint}`,
+      true,
+      true,
+    );
+  }
+  const real = safeRealpath(base);
+  const snapped = opts.snap?.(real);
+  let root: string;
+  let needsCreate: boolean;
+  if (snapped !== undefined) {
+    root = safeRealpath(snapped);
+    needsCreate = !opts.hasIndex?.(root);
+  } else {
+    const resolved = resolveRootPolicy(abs, undefined, opts.findNearest);
+    root = resolved.root;
+    needsCreate = resolved.needsCreate;
+  }
+  if (fileArg === undefined) {
+    return { root, needsCreate, isMainCheckout: false, named: true };
+  }
+  return {
+    root,
+    file: namedRootFile(root, fileArg),
+    needsCreate,
+    isMainCheckout: false,
+    named: true,
+  };
+}
+
+function safeRealpath(p: string): string {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return path.resolve(p);
+  }
 }

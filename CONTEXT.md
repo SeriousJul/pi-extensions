@@ -23,6 +23,34 @@ The directory that holds an index. For a git worktree, this is the worktree
 itself, not the main checkout.
 _Avoid_: repo root, workspace
 
+**Session root**:
+The project root the session's own working directory resolves to. One per
+session. Every other root a call is served from is a Named root.
+_Avoid_: workspace, current project, main root
+
+**Dependency source**:
+The source tree of one version of one dependency, fetched into a cache outside
+the Session root. Read-only in practice: nothing the agent does edits it.
+Its index lives inside it, so removing the cache removes the index.
+_Avoid_: external project (implies a project you edit), third-party code,
+vendored code, opensrc project (names a tool, not the concept)
+
+**Named root**:
+A project root a call names itself, instead of the one the working directory
+chose. Served like any other root, and always labeled in its results, so a
+symbol can never be mistaken for one from the Session root.
+_Avoid_: external root (says where it lives, not what it is), guest root,
+projectPath (upstream's word for the same parameter)
+
+**Trusted root**:
+A directory the extension may build an index in without asking first: the
+source cache home, plus any root the user adds for the session or by an
+environment variable. The bound gates building only. An index that already
+exists is served wherever it lives.
+_Avoid_: allowlist (generic), source root, cache root (a Trusted root need not
+be a cache), safe root (unsafe has a different meaning here: home and the
+filesystem root)
+
 **Anchor**:
 The directory a call's root resolution starts from: the call's working
 directory, or the location of the named file when the tool reads a file
@@ -89,3 +117,11 @@ own wording and layout only; the drift gate, the whole-file caps, and the
 short-TTL memo live with the section, so a new source renderer inherits the
 never-a-drifted-slice guarantee by construction.
 _Avoid_: code block, snippet, file view
+
+**Project label**:
+The one line above a result from a Named root: the project's name and version,
+and the absolute path of its root. It makes a wrong version visible instead of
+trying to detect one, and it gives the agent the path to hand to its next read
+or grep.
+_Avoid_: header (the file headers stay root-relative and unchanged), banner,
+project line
