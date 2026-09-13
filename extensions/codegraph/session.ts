@@ -149,6 +149,24 @@ function realDir(p: string): string | undefined {
   }
 }
 
+/**
+ * The real path of the deepest existing ancestor of `p`, or undefined when
+ * none exists. The form a missing path compares on: a refusal's argument
+ * does not exist yet, so its trust is judged where it will live.
+ */
+function realAncestor(p: string): string | undefined {
+  let current = path.resolve(p);
+  for (;;) {
+    try {
+      return fs.realpathSync(current);
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return undefined;
+      current = parent;
+    }
+  }
+}
+
 function envSwitch(name: string, fallback: boolean): boolean {
   const value = process.env[name];
   if (value === undefined || value === "") return fallback;
@@ -1599,9 +1617,16 @@ export class CodegraphSession {
    * gets no hint (there is no cache it belongs to).
    */
   private fetchHintFor(abs: string): string {
-    const under = this.trustedRoots().some(
-      (t) => abs === t.root || abs.startsWith(t.root + path.sep),
-    );
+    // The directory is missing (that is why a hint is wanted), so the
+    // argument is compared where it will live: the real path of its deepest
+    // existing ancestor - the same realpath form trustedRoots and
+    // isTrustedRoot compare on (spec 0009).
+    const real = realAncestor(abs);
+    const under =
+      real !== undefined &&
+      this.trustedRoots().some(
+        (t) => real === t.root || real.startsWith(t.root + path.sep),
+      );
     if (!under) return "";
     const name = this.opensrc?.fetchNameFor(abs);
     if (!name) return "";

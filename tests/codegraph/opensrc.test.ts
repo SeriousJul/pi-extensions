@@ -133,6 +133,23 @@ describe("the project label", () => {
     expect(calls).toBe(2);
   });
 
+  it("costs one read while the manifest is absent and the reader works", () => {
+    const e = entry("packages/a/1.0.0");
+    let calls = 0;
+    const o = createOpenSrc(home, {
+      list: () => {
+        calls += 1;
+        return {
+          packages: [{ name: "a", version: "1.0.0", path: "packages/a/1.0.0" }],
+        };
+      },
+      manifestStat: () => undefined, // no sources.json on disk
+    });
+    expect(o.labelFor(e)).toBe("a @1.0.0");
+    expect(o.labelFor(e)).toBe("a @1.0.0");
+    expect(calls).toBe(1); // the absent manifest is a stable state
+  });
+
   it("degrades to no label when the reader is missing or fails", () => {
     const e = entry("packages/a/1.0.0");
     const absent = createOpenSrc(home, {
@@ -181,6 +198,34 @@ describe("the fetch name", () => {
         path.join(home, "repos", "github.com", "emilk", "egui", "0.36.1"),
       ),
     ).toBe("egui");
+  });
+
+  it("names a missing path under a symlinked home", () => {
+    entry("packages/a/1.0.0");
+    const linkDir = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "codegraph-opensrc-link-")),
+    );
+    fs.symlinkSync(home, path.join(linkDir, "home"));
+    try {
+      const o = createOpenSrc(home, {
+        list: () => ({
+          packages: [
+            { name: "a", version: "1.0.0", path: "packages/a/1.0.0" },
+          ],
+        }),
+      });
+      const missing = path.join(
+        linkDir,
+        "home",
+        "packages",
+        "a",
+        "1.0.0",
+        "src",
+      );
+      expect(o.fetchNameFor(missing)).toBe("a");
+    } finally {
+      fs.rmSync(linkDir, { recursive: true, force: true });
+    }
   });
 
   it("names nothing for a path outside the home", () => {

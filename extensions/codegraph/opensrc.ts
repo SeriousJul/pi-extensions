@@ -83,11 +83,25 @@ interface Entry {
 
 const LIST_TIMEOUT_MS = 10_000;
 
+/**
+ * The real path of `p`, anchored when `p` is missing: the deepest existing
+ * ancestor is realpath'd and the missing tail re-attached, so a path under
+ * a symlinked home matches its real entries and still earns its fetch hint.
+ */
 function realpath(p: string): string {
-  try {
-    return fs.realpathSync(p);
-  } catch {
-    return path.resolve(p);
+  let current = path.resolve(p);
+  let tail = "";
+  for (;;) {
+    try {
+      const real = fs.realpathSync(current);
+      return tail === "" ? real : path.join(real, tail);
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return path.resolve(p);
+      tail =
+        tail === "" ? path.basename(current) : path.join(path.basename(current), tail);
+      current = parent;
+    }
   }
 }
 
@@ -185,18 +199,25 @@ export function createOpenSrc(
     }
   });
 
-  let cacheKey: number | undefined;
+  /**
+   * The memo's key: the manifest file's mtime, or the manifest being
+   * absent, which is its own stable state - a working CLI costs one read
+   * per absent manifest, not one per lookup.
+   */
+  const ABSENT_MANIFEST = "absent";
+  let cacheKey: number | string | undefined;
   let entries: Entry[] | undefined;
 
   /**
-   * The manifest's entries, memoized against the manifest file's mtime. A
-   * changed mtime forces a re-read; a failed read keeps the last good
-   * entries (nothing when the first read fails), so the CLI staying down
-   * costs one call per lookup, not a broken extension.
+   * The manifest's entries, memoized against the key. A changed key forces
+   * a re-read; a failed read keeps the last good entries (nothing when the
+   * first read fails) and is retried on the next lookup, so the CLI staying
+   * down costs one call per lookup, not a broken extension.
    */
   function readEntries(): Entry[] {
-    const key = statManifest()?.mtimeMs;
-    if (entries !== undefined && key !== undefined && key === cacheKey) {
+    const key: number | string =
+      statManifest()?.mtimeMs ?? ABSENT_MANIFEST;
+    if (entries !== undefined && key === cacheKey) {
       return entries;
     }
     try {
@@ -216,11 +237,12 @@ export function createOpenSrc(
         byPath.set(abs, entry);
       }
       entries = [...byPath.values()];
+      cacheKey = key;
     } catch {
-      // The CLI is missing or failed: the labels degrade to paths.
+      // The CLI is missing or failed: the labels degrade to paths. The key
+      // is not updated, so the next lookup retries the read.
       if (entries === undefined) entries = [];
     }
-    cacheKey = key;
     return entries;
   }
 

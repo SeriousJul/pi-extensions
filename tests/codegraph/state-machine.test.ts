@@ -468,6 +468,33 @@ describe("named roots (spec 0009)", () => {
     );
   });
 
+  it("names a fetch hint for a missing directory under a symlinked trusted root", async () => {
+    // The trusted root is stored on its real path; the argument arrives
+    // through a symlink. The hint's trust check must compare where the
+    // directory will live, not the logical form it arrived in.
+    const link = path.join(outside, "link");
+    fs.symlinkSync(trusted, link);
+    const s = withTrusted({
+      opensrc: createOpenSrc(trusted, {
+        list: () => ({
+          packages: [
+            { name: "zeta", version: "1.0.0", path: "zeta/1.0.0" },
+          ],
+        }),
+      }),
+    });
+    const missing = path.join(link, "zeta", "1.0.0");
+    await expect(
+      s.ensureReady(root, undefined, missing),
+    ).rejects.toSatisfy((e) =>
+      unavailable(e) &&
+        e.noLedger &&
+        e.reason ===
+          `no such directory (${missing}) - the source is not cached; ` +
+            "ask the user to run: opensrc fetch zeta",
+    );
+  });
+
   it("lets auto off block a named build", async () => {
     const dep = makeDep("depF");
     const s = withTrusted({ autoIndex: false });
