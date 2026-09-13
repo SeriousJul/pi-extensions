@@ -9,6 +9,12 @@
  * the worktree itself, so an index that belongs to another worktree is
  * treated as absent and a local index is created (seeded from a sibling).
  *
+ * The session root is the anchor of record for a call: it is resolved from
+ * the call's working directory first, and an anchored root may be the session
+ * root or a descendant of it (a monorepo sub-project with its own index),
+ * never another project (spec 0008). The refusal writes nothing: no index,
+ * no ledger, no directory in a tree the user did not ask about.
+ *
  * This module also decides what a file argument means once the root is known:
  * `resolveRoot` returns the file's root-relative form beside the root, so no
  * caller re-derives it. The root policy (`resolveRootPolicy`) and the file
@@ -32,6 +38,15 @@ import { gitWorktreeRoot, listWorktrees } from "./git";
  * refuses to create.
  */
 export class CodegraphUnavailable extends Error {
+  /**
+   * A key for the one warning per session the ready seam emits on the
+   * error's behalf. Set only by structural failures raised where no UI is
+   * reachable (the session-root refusal in `resolveRoot`, spec 0008); every
+   * other structural failure warns at its own site and leaves this
+   * undefined.
+   */
+  warnKey?: string;
+
   constructor(
     readonly reason: string,
     readonly structural = false,
@@ -192,6 +207,73 @@ export function rootRelativeFile(
 }
 
 /**
+ * The directory root resolution starts from for a call: the call's own
+ * directory, or the directory that holds its file argument (the anchor; see
+ * "Anchor" in the repository CONTEXT.md). A file argument runs through the
+ * path rule (`expandPathArg`), so `~` forms expand here too.
+ */
+function anchorBaseDir(startDir: string, fileArg?: string): string {
+  const anchor =
+    fileArg === undefined
+      ? path.resolve(startDir)
+      : expandPathArg(fileArg, startDir);
+  try {
+    return fs.statSync(anchor).isDirectory() ? anchor : path.dirname(anchor);
+  } catch {
+    return path.dirname(anchor);
+  }
+}
+
+/**
+ * The containment rule (spec 0008): an anchored root must be the session's
+ * own root or a descendant of it, never another project. It is expressed
+ * against the resolved session root, not the raw working directory, and
+ * compared on realpaths, so a symlinked working directory and the directory
+ * it points at do not look like two projects.
+ *
+ * Returns the refusal reason, or undefined when the root stays inside.
+ * The reason carries the caller's own forms, not canonicalized paths, so
+ * the agent recognizes the argument it passed and the project the call came
+ * from.
+ */
+function outsideSessionRootReason(
+  sessionRoot: string,
+  anchoredRoot: string,
+  fileArg: string,
+): string | undefined {
+  const outer = safeRealpath(sessionRoot);
+  const inner = safeRealpath(anchoredRoot);
+  let contained: boolean;
+  if (outer !== undefined && inner !== undefined) {
+    contained = inner === outer || inner.startsWith(outer + path.sep);
+  } else {
+    // One side could not be realpathed; compare the resolved logical forms.
+    const o = path.resolve(sessionRoot);
+    const i = path.resolve(anchoredRoot);
+    contained = i === o || i.startsWith(o + path.sep);
+  }
+  if (contained) return undefined;
+  return `file ${fileArg} is outside this project (${sessionRoot})`;
+}
+
+function safeRealpath(p: string): string | undefined {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return undefined;
+  }
+}
+
+/** The structural refusal of a file that points outside the session root. */
+function outsideProjectRefusal(reason: string): CodegraphUnavailable {
+  // The refusal is raised where no UI is reachable, so it carries its
+  // warning key: the ready seam emits the one warning per session.
+  const refusal = new CodegraphUnavailable(reason, true);
+  refusal.warnKey = "outside-session-root";
+  return refusal;
+}
+
+/**
  * The root policy alone: which root serves the call, and what its index
  * needs. The file form is attached once, by `resolveRoot`.
  *
@@ -210,6 +292,10 @@ export function rootRelativeFile(
  * adapter's factory, spec 0003); when omitted, the lookup reports no
  * index, so a root without an index resolves to its manifest directory.
  *
+ * The containment rule is not part of this policy: it constrains where an
+ * anchored root may resolve, which `resolveRoot` enforces against the
+ * session's own root.
+ *
  * @throws CodegraphUnavailable when no project can be resolved.
  */
 function resolveRootPolicy(
@@ -217,16 +303,7 @@ function resolveRootPolicy(
   fileArg?: string,
   findNearest?: (startPath: string) => string | null | undefined,
 ): ResolvedRoot {
-  const anchor =
-    fileArg === undefined
-      ? path.resolve(startDir)
-      : expandPathArg(fileArg, startDir);
-  let base: string;
-  try {
-    base = fs.statSync(anchor).isDirectory() ? anchor : path.dirname(anchor);
-  } catch {
-    base = path.dirname(anchor);
-  }
+  const base = anchorBaseDir(startDir, fileArg);
 
   const worktree = gitWorktreeRoot(base);
   if (worktree) {
@@ -269,20 +346,53 @@ function resolveRootPolicy(
  * Resolve the project root a call must be served from, plus what its file
  * argument means inside that root.
  *
- * The root comes from the root policy above. When a file argument is given,
- * the result carries its root-relative form (`ResolvedRoot.file`); with no
- * file argument the result is the root policy's alone. See
- * `rootRelativeFile` for the escape rule.
+ * The session root is resolved first, from the call's working directory, and
+ * is the anchor of record for the call. When a file argument anchors the
+ * call, the anchored root must stay inside the session root (the containment
+ * rule, spec 0008): a file in a monorepo sub-project that has its own index
+ * still resolves to that sub-project, and a file that points at any other
+ * project is refused with a structural `CodegraphUnavailable` that names both
+ * paths. A call with no file argument anchors on the working directory alone
+ * and so cannot cross.
  *
- * @throws CodegraphUnavailable when no project can be resolved.
+ * When a file argument is given, the result carries its root-relative form
+ * (`ResolvedRoot.file`); with no file argument the result is the root
+ * policy's alone. See `rootRelativeFile` for the escape rule.
+ *
+ * @throws CodegraphUnavailable when no project can be resolved, or when an
+ * anchored root would leave the session root.
  */
 export function resolveRoot(
   startDir: string,
   fileArg?: string,
   findNearest?: (startPath: string) => string | null | undefined,
 ): ResolvedRoot {
-  const resolved = resolveRootPolicy(startDir, fileArg, findNearest);
-  if (fileArg === undefined) return resolved;
+  if (fileArg === undefined) {
+    return resolveRootPolicy(startDir, undefined, findNearest);
+  }
+  const sessionRoot = resolveRootPolicy(startDir, undefined, findNearest);
+  let resolved: ResolvedRoot;
+  try {
+    resolved = resolveRootPolicy(startDir, fileArg, findNearest);
+  } catch (err) {
+    // The anchor's own tree has no project to resolve. When that tree is
+    // outside the session root, name the boundary instead: the file is not
+    // in this project, and the other tree's missing manifest is not the
+    // reason the call cannot be served.
+    const outside = outsideSessionRootReason(
+      sessionRoot.root,
+      anchorBaseDir(startDir, fileArg),
+      fileArg,
+    );
+    if (outside !== undefined) throw outsideProjectRefusal(outside);
+    throw err;
+  }
+  const outside = outsideSessionRootReason(
+    sessionRoot.root,
+    resolved.root,
+    fileArg,
+  );
+  if (outside !== undefined) throw outsideProjectRefusal(outside);
   return {
     ...resolved,
     file: rootRelativeFile(resolved.root, startDir, fileArg),
@@ -373,11 +483,11 @@ export function resolveNamedRoot(
     );
   }
   const real = safeRealpath(base);
-  const snapped = opts.snap?.(real);
+  const snapped = real !== undefined ? opts.snap?.(real) : undefined;
   let root: string;
   let needsCreate: boolean;
   if (snapped !== undefined) {
-    root = safeRealpath(snapped);
+    root = safeRealpath(snapped) ?? path.resolve(snapped);
     needsCreate = !opts.hasIndex?.(root);
   } else {
     const resolved = resolveRootPolicy(abs, undefined, opts.findNearest);
@@ -394,12 +504,4 @@ export function resolveNamedRoot(
     isMainCheckout: false,
     named: true,
   };
-}
-
-function safeRealpath(p: string): string {
-  try {
-    return fs.realpathSync(p);
-  } catch {
-    return path.resolve(p);
-  }
 }

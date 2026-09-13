@@ -510,7 +510,22 @@ export class CodegraphSession {
         ...(resolved.named === true ? { named: true } : {}),
       };
     } catch (err) {
-      throw this.classifyError(f, err);
+      const classified = this.classifyError(f, err);
+      // Structural failures raised where no UI is reachable carry their
+      // warning key on the error (the session-root refusal, spec 0008): the
+      // ready seam is the path that owns the warning and reports it once per
+      // session.
+      if (
+        classified instanceof CodegraphUnavailable &&
+        classified.warnKey !== undefined
+      ) {
+        this.notifyOnce(
+          classified.warnKey,
+          "warning",
+          `codegraph: ${classified.reason}`,
+        );
+      }
+      throw classified;
     }
   }
 
