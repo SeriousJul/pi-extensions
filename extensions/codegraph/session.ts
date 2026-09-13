@@ -89,8 +89,11 @@ export interface ReadyInfo {
    * The file argument expressed relative to `root`, when the call gave one.
    * `ensureReady` copies it from `ResolvedRoot.file`, the one decision of that
    * form (spec 0006); see `rootRelativeFile` for the escape rule that keeps
-   * the caller's own argument when the relative form would leave `root`. An
-   * anchored consumer reads this instead of rewriting parameters.
+   * the caller's own argument when the relative form would leave `root`. A
+   * consumer that needs the form reads this instead of re-deriving it:
+   * anchored consumers get it from the seam, and the tool wrapper attaches
+   * the same root-relative form for the disambiguating `file` parameter, so
+   * no consumer ever compares a raw parameter against the index.
    */
   file?: string;
   mainCheckout?: string;

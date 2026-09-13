@@ -345,6 +345,94 @@ describe("tool outputs", () => {
     expect(h.session.statusFor(fixture.feature).needsCreate).toBe(true);
   });
 
+  it("disambiguates a same-named symbol from a sub-directory by its root-relative file", async () => {
+    const pkg = path.join(fixture.main, "pkg");
+    // The main index carries two definitions of `overloaded`, one per
+    // sub-project: pkg/src/x.ts and lib/src/x.ts.
+    const ambiguous = await h.call(
+      "codegraph_node",
+      { symbol: "overloaded" },
+      fixture.main,
+    );
+    expect(ambiguous).toContain("Multiple definitions");
+
+    // From <main>/pkg, `src/x.ts` is a path relative to the working
+    // directory. Expressed against the resolved root (pkg/src/x.ts) it
+    // selects that definition, not a same-named file elsewhere in the
+    // index - the bare form suffix-matches both and reports the ambiguity.
+    const text = await h.call(
+      "codegraph_node",
+      { symbol: "overloaded", file: "src/x.ts" },
+      pkg,
+    );
+    expect(text).toContain("pkg/src/x.ts");
+    expect(text).toContain("return x * 3");
+    expect(text).not.toContain("Multiple definitions");
+    expect(text).not.toContain("return x + 10");
+
+    // A relative form that crosses sub-projects still resolves inside the
+    // root, so ../lib/src/x.ts selects lib's definition.
+    const across = await h.call(
+      "codegraph_node",
+      { symbol: "overloaded", file: "../lib/src/x.ts" },
+      pkg,
+    );
+    expect(across).toContain("lib/src/x.ts");
+    expect(across).toContain("return x + 10");
+    expect(across).not.toContain("Multiple definitions");
+
+    // The disambiguating file moved nothing: the call is still served from
+    // the main worktree, and the sub-directory gets no index of its own.
+    expect(h.session.statusFor(pkg).root).toBe(fixture.main);
+    expect(h.session.statusFor(pkg).needsCreate).toBe(false);
+  });
+
+  it("disambiguates the same way in callers, callees, and impact", async () => {
+    const pkg = path.join(fixture.main, "pkg");
+    // Without the root-relative form the bare `src/x.ts` suffix-matches both
+    // definitions and reports the ambiguity in every renderer.
+    for (const tool of [
+      "codegraph_callers",
+      "codegraph_callees",
+      "codegraph_impact",
+    ]) {
+      const ambiguous = await h.call(
+        tool,
+        { symbol: "overloaded", file: "src/x.ts" },
+        fixture.main,
+      );
+      expect(ambiguous).toContain("Multiple definitions");
+
+      const text = await h.call(
+        tool,
+        { symbol: "overloaded", file: "src/x.ts" },
+        pkg,
+      );
+      expect(text).toContain("pkg/src/x.ts");
+      expect(text).not.toContain("Multiple definitions");
+      expect(text).not.toContain("lib/src/x.ts");
+    }
+  });
+
+  it("keeps a disambiguating file that escapes the root in the caller's own form", async () => {
+    // From <main>/pkg, a file that points into the sibling feature worktree
+    // escapes the root: the caller's own form is kept, it matches nothing,
+    // and no index is created for the other worktree.
+    const pkg = path.join(fixture.main, "pkg");
+    const rel = path.relative(
+      pkg,
+      path.join(fixture.feature, "src", "feature.ts"),
+    );
+    const text = await h.call(
+      "codegraph_node",
+      { symbol: "featureOnlySymbol", file: rel },
+      pkg,
+    );
+    expect(text).toBe('Symbol "featureOnlySymbol" not found');
+    expect(h.session.statusFor(pkg).root).toBe(fixture.main);
+    expect(h.session.statusFor(fixture.feature).needsCreate).toBe(true);
+  });
+
   it("reports an out-of-root file as not found", async () => {
     const baseFactory = createInMemoryIndexFactory();
     const factory = {
@@ -760,6 +848,60 @@ describe("the named-root file rule (spec 0009)", () => {
 
     // A refusal writes nothing: the failed calls created no index directory.
     expect(fs.existsSync(getCodeGraphDir(featureReal))).toBe(false);
+    fs.rmSync(opensrcHome, { recursive: true, force: true });
+  });
+
+  it("resolves a disambiguating file against the named root, not the working directory", async () => {
+    const { h, opensrcHome } = namedSession();
+    const featureReal = fs.realpathSync(fixture.feature);
+    // `helper` has two definitions in the feature index (src/feature.ts and
+    // src/shared.ts), so a disambiguating file must select one.
+    const ambiguous = await h.call(
+      "codegraph_node",
+      { symbol: "helper", projectRoot: fixture.feature },
+      fixture.main,
+    );
+    expect(ambiguous).toContain("Multiple definitions");
+
+    // The working directory sits inside the named root and the file is
+    // given in the named root's form: the named-call file rule resolves it
+    // inside the named root, so src/feature.ts selects that definition.
+    // Resolved against the working directory it would name src/src/feature.ts,
+    // a file that does not exist.
+    const text = await h.call(
+      "codegraph_node",
+      {
+        symbol: "helper",
+        file: "src/feature.ts",
+        projectRoot: fixture.feature,
+      },
+      path.join(featureReal, "src"),
+    );
+    expect(
+      text.startsWith(`Project: featurelib @9.9.9 - ${featureReal}\n\n`),
+    ).toBe(true);
+    expect(text).toContain("src/feature.ts");
+    expect(text).toContain("return x * 2");
+    expect(text).not.toContain("Multiple definitions");
+    expect(text).not.toContain("return x + ANSWER");
+
+    // A form that leaves the named root keeps the caller's own form and
+    // matches nothing: ../../main/src/mainonly.ts resolves into the sibling
+    // main worktree, outside the named root. The symbol lives only there
+    // (committed on main after the feature branch was cut), so the raw form
+    // finds no definition in the named index.
+    const escape = await h.call(
+      "codegraph_node",
+      {
+        symbol: "mainOnlySymbol",
+        file: "../../main/src/mainonly.ts",
+        projectRoot: fixture.feature,
+      },
+      fixture.main,
+    );
+    expect(escape).toBe(
+      `Project: featurelib @9.9.9 - ${featureReal}\n\nSymbol "mainOnlySymbol" not found`,
+    );
     fs.rmSync(opensrcHome, { recursive: true, force: true });
   });
 });

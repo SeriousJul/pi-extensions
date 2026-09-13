@@ -18,7 +18,7 @@ import {
   renderExplore,
 } from "./format";
 import type { CodegraphSession, IndexPromptState, ReadyInfo } from "./session";
-import { CodegraphUnavailable } from "./root";
+import { CodegraphUnavailable, rootRelativeFile } from "./root";
 import { appendUsage, type UsageSummary } from "./usage";
 
 // This module is loaded when the tools are registered (production entry
@@ -188,8 +188,11 @@ type Execute = (
  * undefined to anchor on the call's own working directory. Only
  * `codegraph_node` file mode passes one; in the other tools, and in node
  * symbol mode, `file` only disambiguates a symbol and must not move the
- * index. The wrapper rewrites no parameters: the root-relative form of an
- * anchored file arrives on the ready result (`ReadyInfo.file`).
+ * index. The wrapper rewrites no parameters: the root-relative form of a
+ * file arrives on the ready result (`ReadyInfo.file`) - copied by the seam
+ * for an anchored file, attached here for a disambiguating one - and the
+ * run callback is passed that result, so a renderer never compares the
+ * caller's raw form.
  *
  * The usage ledger is the only thing this wrapper adds on top of the ready
  * seam. It records every call, success or failure, so what `/codegraph status`
@@ -224,7 +227,7 @@ function makeExecute(
       // result reuses the resolution the seam already did, so a call resolves
       // its project root once.
       usageDir = info.cg.codeGraphDir();
-      const text = await run(info, params);
+      const text = await run(withDisambiguatingFile(info, ctx.cwd, params), params);
       appendUsage(usageDir, {
         tool: toolName,
         ok: true,
@@ -281,6 +284,37 @@ function nodeFileAnchor(params: Record<string, unknown>): string | undefined {
     return undefined;
   }
   return String(params.file);
+}
+
+/**
+ * The ready result a run callback sees: the seam's result, plus the
+ * root-relative form of a disambiguating `file` parameter.
+ *
+ * An anchored call already carries its form on the ready result
+ * (`ReadyInfo.file`, spec 0006). A call whose `file` only disambiguates a
+ * symbol (`codegraph_callers`, `codegraph_callees`, `codegraph_impact`,
+ * `codegraph_node` symbol mode) is not anchored, so the seam leaves the form
+ * unset; this attaches it, expressed against the call's resolved root with
+ * the same single rule (`rootRelativeFile`). A path that escapes the root
+ * keeps the caller's own form and matches nothing, which is the safe
+ * outcome. The root policy is untouched: the root is already resolved by the
+ * seam, and this only fixes the form the filter compares. A fresh object is
+ * returned per call, so a shared ready result is never mutated.
+ *
+ * The base the argument resolves against honors the named-call file rule
+ * (spec 0009): the `file` argument of a named call resolves inside the
+ * named root, never against the working directory, exactly as an anchored
+ * file of the same call does. An unnamed call resolves against its working
+ * directory.
+ */
+function withDisambiguatingFile(
+  info: ReadyInfo,
+  startDir: string,
+  params: Record<string, unknown>,
+): ReadyInfo {
+  if (typeof params.file !== "string" || info.file !== undefined) return info;
+  const base = info.named ? info.root : startDir;
+  return { ...info, file: rootRelativeFile(info.root, base, params.file) };
 }
 
 /**
@@ -367,7 +401,7 @@ export function registerTools(
           info.cg,
           String(params.symbol),
           "callers",
-          params.file !== undefined ? String(params.file) : undefined,
+          info.file,
           typeof params.line === "number" ? params.line : undefined,
           typeof params.limit === "number" ? params.limit : undefined,
         ),
@@ -399,7 +433,7 @@ export function registerTools(
           info.cg,
           String(params.symbol),
           "callees",
-          params.file !== undefined ? String(params.file) : undefined,
+          info.file,
           typeof params.line === "number" ? params.line : undefined,
           typeof params.limit === "number" ? params.limit : undefined,
         ),
@@ -432,7 +466,7 @@ export function registerTools(
           info.cg,
           String(params.symbol),
           typeof params.depth === "number" ? params.depth : 2,
-          params.file !== undefined ? String(params.file) : undefined,
+          info.file,
           typeof params.line === "number" ? params.line : undefined,
         ),
     ),
@@ -512,15 +546,16 @@ export function registerTools(
       (info, params) => {
         // Symbol mode wins when both are given: `file` then narrows the symbol
         // to the definition in that file (the spec's file+symbol priority).
-        // The disambiguating file stays in the caller's own form: this call is
-        // not anchored, so its root is the working directory.
+        // This call is not anchored, so its root is the working directory;
+        // the wrapper expresses the disambiguating file in that root's form
+        // and carries it on the ready result.
         if (params.symbol !== undefined) {
           return renderSymbol(
             info.cg,
             info.root,
             String(params.symbol),
             params.includeCode !== false,
-            params.file !== undefined ? String(params.file) : undefined,
+            info.file,
             typeof params.line === "number" ? params.line : undefined,
           );
         }
