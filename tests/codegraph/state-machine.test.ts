@@ -516,4 +516,15 @@ describe("named roots (spec 0009)", () => {
     s.closeAll();
     expect(store.root(depReal).open).toBe(false);
   });
+
+  it("seed with no argument keeps the legacy sibling form", async () => {
+    const s = withTrusted();
+    expect(await s.seedTargetFor(root, undefined)).toEqual({});
+  });
+
+  it("seed with a path that is not a sibling targets a named root", async () => {
+    const dep = makeDep("depH");
+    const s = withTrusted();
+    expect(await s.seedTargetFor(root, dep)).toEqual({ projectRoot: dep });
+  });
 });

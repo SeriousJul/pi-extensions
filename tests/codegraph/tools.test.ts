@@ -4,6 +4,7 @@ import {
   describe,
   expect,
   it,
+  vi,
 } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -716,3 +717,101 @@ describe("the project preamble (spec 0009)", () => {
   });
 });
 
+describe("/codegraph named-root surface (spec 0009)", () => {
+  /** A session whose trusted roots include the whole fixture base. */
+  function trustedHarness(): Harness {
+    return makeHarness(
+      newSession({
+        trustedRoots: [
+          { root: fixture.base, origin: "CODEGRAPH_PI_TRUSTED_ROOTS" },
+        ],
+      }),
+      fixture.main,
+    );
+  }
+
+  it("add trusts an existing directory and reports a missing one", async () => {
+    const h = trustedHarness();
+    const ui = freshUi();
+    await h.commands.get("codegraph")!.handler(
+      `add ${fixture.main}`,
+      makeCtx(fixture.main, ui),
+    );
+    expect(
+      ui.notifications.some(([, m]) => m.includes("trusted root added")),
+    ).toBe(true);
+
+    const ui2 = freshUi();
+    await h.commands.get("codegraph")!.handler(
+      "add no/such/dir",
+      makeCtx(fixture.main, ui2),
+    );
+    expect(
+      ui2.notifications.some(([, m]) => m.includes("no such directory")),
+    ).toBe(true);
+  });
+
+
+  it("a bare command lists the opened and the trusted named roots", async () => {
+    const h = trustedHarness();
+    await h.call("codegraph_search", {
+      query: "featureOnlySymbol",
+      projectRoot: fixture.feature,
+    });
+
+    const ui = freshUi();
+    await h.commands.get("codegraph")!.handler(
+      "",
+      makeCtx(fixture.main, ui),
+    );
+    const text = ui.notifications.map(([, m]) => m).join("\n");
+    expect(text).toContain("named roots opened this session");
+    expect(text).toContain(`elsewhere/feature - ${fs.realpathSync(fixture.feature)} - `);
+    expect(text).toContain("trusted roots");
+    expect(text).toContain(`${fixture.base} (CODEGRAPH_PI_TRUSTED_ROOTS)`);
+  });
+
+  it("init and uninit take a path argument", async () => {
+    const h = trustedHarness();
+    const ui = freshUi();
+    await h.commands.get("codegraph")!.handler(
+      `init ${fixture.feature}`,
+      makeCtx(fixture.main, ui),
+    );
+    await vi.waitFor(
+      () =>
+        expect(
+          ui.notifications.some(([, m]) => m.includes("index rebuilt")),
+        ).toBe(true),
+      { timeout: 120_000 },
+    );
+
+    const ui2 = freshUi();
+    await h.commands.get("codegraph")!.handler(
+      `uninit ${fixture.feature}`,
+      makeCtx(fixture.main, ui2),
+    );
+    expect(
+      ui2.notifications.some(([, m]) => m.includes("removed index")),
+    ).toBe(true);
+  });
+
+  it("seed takes a named target and seeds it from the session's sibling", async () => {
+    const h = trustedHarness();
+    // The session root needs an index: it is the seed source.
+    await h.call("codegraph_search", { query: "mainEntry" });
+
+    const ui = freshUi();
+    await h.commands.get("codegraph")!.handler(
+      `seed ${fixture.feature}`,
+      makeCtx(fixture.main, ui),
+    );
+    await vi.waitFor(
+      () =>
+        expect(
+          ui.notifications.some(([, m]) => m.includes("seeded from")),
+        ).toBe(true),
+      { timeout: 120_000 },
+    );
+  });
+});

@@ -674,6 +674,44 @@ function statusLines(
   }
 }
 
+/**
+ * The named-roots listing of the bare /codegraph command (spec 0009): the
+ * roots this session opened, in the form
+ * "  <names> @<version> - <absolute root path> - <state>", then the trusted
+ * roots with the origin they came from.
+ */
+function namedRootLines(session: CodegraphSession): string[] {
+  const lines: string[] = [];
+  const opened = session.openedNamedRoots();
+  if (opened.length > 0) {
+    lines.push("  named roots opened this session:");
+    for (const { root } of opened) {
+      let state: string;
+      let indexNote = "";
+      try {
+        const s = session.statusFor(root);
+        if (s.root !== root) indexNote = ` (index: ${s.root})`;
+        state = s.needsCreate
+          ? "none yet"
+          : s.stats
+            ? `${s.stats.fileCount} files, ${s.stats.nodeCount} nodes`
+            : "on disk";
+      } catch {
+        state = "unavailable";
+      }
+      lines.push(`    ${session.projectLabel(root)} - ${root} - ${state}${indexNote}`);
+    }
+  }
+  const trusted = session.trustedRoots();
+  if (trusted.length > 0) {
+    lines.push("  trusted roots:");
+    for (const { root, origin } of trusted) {
+      lines.push(`    ${root} (${origin})`);
+    }
+  }
+  return lines;
+}
+
 export interface CommandUi {
   notify(type: "info" | "warning" | "error", message: string): void;
   confirm?(title: string, message: string): Promise<boolean>;
@@ -698,10 +736,12 @@ export function registerCommand(
 ): void {
   pi.registerCommand("codegraph", {
     description:
-      "Manage the codegraph index: status, init (full rebuild), seed [path], uninit, auto on|off",
+      "Manage the codegraph index and the named project roots: status, init [path], seed [path], uninit [path], add <path>, auto on|off",
     handler: async (args: string, ctx: ExtensionContext) => {
       const ui = uiFromCtx(ctx);
       const parts = args.trim().split(/\s+/).filter(Boolean);
+      // The bare command is `status` plus the named-roots listing.
+      const bare = parts.length === 0;
       const verb = parts[0] ?? "status";
 
       /**
@@ -735,14 +775,26 @@ export function registerCommand(
       try {
         if (verb === "status" || verb === "") {
           const lines = statusLines(session, ctx);
+          if (bare) lines.push(...namedRootLines(session));
           ui.setWidget?.("codegraph", lines);
           ui.notify("info", lines.join("\n"));
           return;
         }
+        if (verb === "add") {
+          const target = parts.slice(1).join(" ");
+          if (target === "") {
+            ui.notify("warning", "codegraph: usage: /codegraph add <path>");
+            return;
+          }
+          const root = session.addTrustedRoot(target, ctx.cwd);
+          ui.notify("info", `codegraph: trusted root added: ${root}`);
+          return;
+        }
         if (verb === "init") {
           if (refuseDuringPrewarm(prewarmHoldsRoot())) return;
+          const target = parts.slice(1).join(" ") || undefined;
           session
-            .rebuild(ctx.cwd)
+            .rebuild(target ?? ctx.cwd, target)
             .then((info) => {
               ui.setWidget?.("codegraph", undefined);
               ui.notify(
@@ -757,28 +809,48 @@ export function registerCommand(
           return;
         }
         if (verb === "seed") {
-          if (refuseDuringPrewarm(prewarmHoldsRoot())) return;
-          session
-            .reseed(ctx.cwd, parts[1])
-            .then((info) => {
-              ui.setWidget?.("codegraph", undefined);
-              const changed = info.justSeeded?.changedFiles ?? 0;
-              ui.notify(
-                "info",
-                `codegraph: index at ${info.root} seeded from ${info.justSeeded?.source}; reconcile changed ${changed} file${changed === 1 ? "" : "s"}`,
-              );
-            })
-            .catch((err) => {
-              ui.setWidget?.("codegraph", undefined);
-              ui.notify("warning", reasonOf(err));
-            });
+          const target = parts.slice(1).join(" ");
+          // Zero args keep the legacy form: seed from an indexed sibling
+          // worktree. A path is either a source like that (a sibling worktree
+          // with an index) or a target named root (spec 0009).
+          const run = (sourceDir?: string, projectRoot?: string) =>
+            session
+              .reseed(ctx.cwd, sourceDir, projectRoot)
+              .then((info) => {
+                ui.setWidget?.("codegraph", undefined);
+                const changed = info.justSeeded?.changedFiles ?? 0;
+                ui.notify(
+                  "info",
+                  `codegraph: index at ${info.root} seeded from ${info.justSeeded?.source}; reconcile changed ${changed} file${changed === 1 ? "" : "s"}`,
+                );
+              })
+              .catch((err) => {
+                ui.setWidget?.("codegraph", undefined);
+                ui.notify("warning", reasonOf(err));
+              });
+          if (target === "") {
+            if (refuseDuringPrewarm(prewarmHoldsRoot())) return;
+            run();
+            return;
+          }
+          const form = await session.seedTargetFor(ctx.cwd, target);
+          if (form.sourceDir !== undefined) {
+            if (refuseDuringPrewarm(prewarmHoldsRoot())) return;
+            run(form.sourceDir);
+          } else {
+            // A named target is never prewarmed, so no build to fight.
+            run(undefined, form.projectRoot);
+          }
           return;
         }
         if (verb === "uninit") {
           // Confirm first; nothing is deleted until the user agrees.
+          const target = parts.slice(1).join(" ") || undefined;
           let root: string;
           try {
-            root = session.resolveRootFor(ctx.cwd).root;
+            // statusFor resolves the root without building, so the confirm
+            // asks about the exact directory the delete will touch.
+            root = session.statusFor(ctx.cwd, target).root;
           } catch (err) {
             ui.notify("warning", reasonOf(err));
             return;
@@ -799,7 +871,7 @@ export function registerCommand(
             refuseDuringPrewarm(root);
             return;
           }
-          const res = await session.uninit(ctx.cwd);
+          const res = await session.uninit(ctx.cwd, target);
           ui.setWidget?.("codegraph", undefined);
           if (res.removed) {
             ui.notify("info", `codegraph: removed index at ${res.root}`);
@@ -827,7 +899,7 @@ export function registerCommand(
         }
         ui.notify(
           "warning",
-          `codegraph: unknown verb "${verb}". Use: status, init, seed [path], uninit, auto on|off`,
+          `codegraph: unknown verb "${verb}". Use: status, init [path], seed [path], uninit [path], add <path>, auto on|off`,
         );
       } catch (err) {
         ui.notify("warning", reasonOf(err));
