@@ -12,6 +12,24 @@ import {
 const NOW = 1_700_000_000_000;
 const FIVE_H = 5 * 3600 * 1000;
 const SEVEN_D = 7 * 24 * 3600 * 1000;
+const THIRTY_D = 30 * 24 * 3600 * 1000;
+
+function windowObj(labelMs: number, usedPercent: number) {
+	return {
+		used_percent: usedPercent,
+		limit_window_seconds: Math.round(labelMs / 1000),
+		reset_after_seconds: Math.round((NOW + labelMs - NOW) / 1000),
+		reset_at: Math.floor((NOW + labelMs) / 1000),
+	};
+}
+
+function usageBody(primary: unknown, secondary: unknown = null): unknown {
+	return {
+		email: "a@b.c",
+		plan_type: "plus",
+		rate_limit: { primary_window: primary, secondary_window: secondary },
+	};
+}
 
 let root: string;
 let authPath: string;
@@ -27,63 +45,50 @@ afterEach(() => rmSync(root, { recursive: true, force: true }));
 // ---------------------------------------------------------------------------
 
 describe("parseUsageResponse", () => {
-	it("labels the 5-hour window by length, not position", () => {
+	it("labels the 5-hour and weekly windows by length", () => {
 		const snapshot = parseUsageResponse(
-			{
-				windows: [
-					{ resets_at_ms: NOW + SEVEN_D, window_ms: SEVEN_D, used_percent: 40 },
-					{ resets_at_ms: NOW + FIVE_H, window_ms: FIVE_H, used_percent: 100 },
-				],
-			},
+			usageBody({ ...windowObj(FIVE_H, 100), reset_at: Math.floor((NOW + FIVE_H) / 1000) }, windowObj(SEVEN_D, 40)),
 			NOW,
 		);
-		expect(snapshot?.windows.map((w) => w.label)).toEqual(["7d", "5h"]);
+		expect(snapshot?.windows.map((w) => w.label)).toEqual(["5h", "7d"]);
+		expect(snapshot?.windows[0]).toMatchObject({ usedPercent: 100, resetsAtMs: NOW + FIVE_H });
 	});
 
-	it("accepts seconds for epoch and window fields", () => {
+	it("labels a 30-day window by its length (free plan shape)", () => {
 		const snapshot = parseUsageResponse(
-			{
-				windows: [
-					{ resets_at: Math.floor((NOW + FIVE_H) / 1000), window_seconds: 5 * 3600, used: 1 },
-				],
-			},
+			usageBody(windowObj(THIRTY_D, 100), null),
 			NOW,
 		);
-		expect(snapshot?.windows[0]).toMatchObject({ label: "5h", usedPercent: 100, resetsAtMs: NOW + FIVE_H });
+		expect(snapshot?.windows.map((w) => w.label)).toEqual(["30d"]);
 	});
 
-	it("treats a 0-1 `used` fraction as a percentage", () => {
-		const snapshot = parseUsageResponse({ windows: [{ resets_at_ms: NOW + FIVE_H, window_ms: FIVE_H, used: 0.25 }] }, NOW);
-		expect(snapshot?.windows[0].usedPercent).toBe(25);
-	});
-
-	it("keeps a >1 `used` value as a percentage", () => {
-		const snapshot = parseUsageResponse({ windows: [{ resets_at_ms: NOW + FIVE_H, window_ms: FIVE_H, used: 120 }] }, NOW);
+	it("keeps used_percent as a percentage, values above 100 included", () => {
+		const snapshot = parseUsageResponse(usageBody({ ...windowObj(FIVE_H, 120) }), NOW);
 		expect(snapshot?.windows[0].usedPercent).toBe(120);
 	});
 
-	it("derives the window length from start and reset when absent", () => {
-		const snapshot = parseUsageResponse(
-			{ windows: [{ resets_at_ms: NOW + FIVE_H, window_start: Math.floor(NOW / 1000), used_percent: 10 }] },
-			NOW,
-		);
-		expect(snapshot?.windows[0].label).toBe("5h");
+	it("accepts a null secondary window", () => {
+		const snapshot = parseUsageResponse(usageBody(windowObj(FIVE_H, 10), null), NOW);
+		expect(snapshot?.windows).toHaveLength(1);
+	});
+
+	it("accepts milliseconds for reset_at", () => {
+		const snapshot = parseUsageResponse(usageBody({ ...windowObj(FIVE_H, 10), reset_at: NOW + FIVE_H }), NOW);
+		expect(snapshot?.windows[0].resetsAtMs).toBe(NOW + FIVE_H);
 	});
 
 	it("carries plan type and account email", () => {
-		const snapshot = parseUsageResponse(
-			{ primary_plan: "plus", email: "a@b.c", windows: [{ resets_at_ms: NOW, window_ms: FIVE_H, used_percent: 1 }] },
-			NOW,
-		);
+		const snapshot = parseUsageResponse(usageBody(windowObj(FIVE_H, 1)), NOW);
 		expect(snapshot?.planType).toBe("plus");
 		expect(snapshot?.accountEmail).toBe("a@b.c");
 	});
 
 	it("returns undefined on shape drift", () => {
 		expect(parseUsageResponse(null, NOW)).toBeUndefined();
-		expect(parseUsageResponse({ windows: [] }, NOW)).toBeUndefined();
-		expect(parseUsageResponse({ windows: [{ used_percent: 5 }] }, NOW)).toBeUndefined(); // no reset
-		expect(parseUsageResponse({ windows: [{ resets_at_ms: NOW }] }, NOW)).toBeUndefined(); // no usage
+		expect(parseUsageResponse({ rate_limit: {} }, NOW)).toBeUndefined();
+		expect(parseUsageResponse(usageBody(null), NOW)).toBeUndefined();
+		expect(parseUsageResponse(usageBody({ limit_window_seconds: 18000 }), NOW)).toBeUndefined(); // no reset
+		expect(parseUsageResponse(usageBody({ reset_at: NOW }), NOW)).toBeUndefined(); // no usage
 	});
 });
 
@@ -134,17 +139,17 @@ function tokenResponse(access = "new-access", refresh = "new-refresh", expiresIn
 	});
 }
 
-function usageResponse(windows: unknown, plan = "plus"): Response {
-	return new Response(JSON.stringify({ primary_plan: plan, windows }), {
+function usageResponse(primary: unknown, secondary: unknown = null): Response {
+	return new Response(JSON.stringify(usageBody(primary, secondary)), {
 		status: 200,
 		headers: { "content-type": "application/json" },
 	});
 }
 
-const WINDOWS = [
-	{ resets_at_ms: NOW + FIVE_H, window_ms: FIVE_H, used_percent: 100 },
-	{ resets_at_ms: NOW + SEVEN_D, window_ms: SEVEN_D, used_percent: 40 },
-];
+const WINDOWS = {
+	primary: windowObj(FIVE_H, 100),
+	secondary: windowObj(SEVEN_D, 40),
+};
 
 function writeAuth(entry: unknown): void {
 	writeFileSync(authPath, JSON.stringify({ "openai-codex": entry }));
@@ -167,7 +172,9 @@ describe("createQuotaSource().read()", () => {
 
 	it("reads usage with a fresh token and no refresh", async () => {
 		writeAuth({ type: "oauth", access: "fresh", refresh: "r", expires: NOW + 100_000 });
-		const fake = makeFetch((url) => (url === "USAGE" ? usageResponse(WINDOWS) : new Response("{}", { status: 200 })));
+		const fake = makeFetch((url) =>
+			url === "USAGE" ? usageResponse(WINDOWS.primary, WINDOWS.secondary) : new Response("{}", { status: 200 }),
+		);
 		const { read } = makeSource(fake.impl);
 		const result = await read();
 		expect(result.ok).toBe(true);
@@ -180,7 +187,9 @@ describe("createQuotaSource().read()", () => {
 
 	it("refreshes an expired token before reading", async () => {
 		writeAuth({ type: "oauth", access: "old", refresh: "r1", expires: NOW - 1_000 });
-		const fake = makeFetch((url) => (url === "TOKEN" ? tokenResponse() : usageResponse(WINDOWS)));
+		const fake = makeFetch((url) =>
+			url === "TOKEN" ? tokenResponse() : usageResponse(WINDOWS.primary, WINDOWS.secondary),
+		);
 		const { read } = makeSource(fake.impl);
 		const result = await read();
 		expect(result.ok).toBe(true);
@@ -197,7 +206,7 @@ describe("createQuotaSource().read()", () => {
 		writeAuth({ type: "oauth", access: "a1", refresh: "r1", expires: NOW + 100_000 });
 		const fake = makeFetch((url, n) => {
 			if (url === "TOKEN") return tokenResponse();
-			return n === 0 ? new Response("unauthorized", { status: 401 }) : usageResponse(WINDOWS);
+			return n === 0 ? new Response("unauthorized", { status: 401 }) : usageResponse(WINDOWS.primary, WINDOWS.secondary);
 		});
 		const { read } = makeSource(fake.impl);
 		const result = await read();
@@ -207,7 +216,9 @@ describe("createQuotaSource().read()", () => {
 
 	it("reports login-dead when the endpoint still rejects after a refresh", async () => {
 		writeAuth({ type: "oauth", access: "a1", refresh: "r1", expires: NOW + 100_000 });
-		const fake = makeFetch((url) => (url === "TOKEN" ? tokenResponse() : new Response("unauthorized", { status: 401 })));
+		const fake = makeFetch((url) =>
+			url === "TOKEN" ? tokenResponse() : new Response("unauthorized", { status: 401 }),
+		);
 		const { read } = makeSource(fake.impl);
 		const result = await read();
 		expect(result).toMatchObject({ ok: false, reason: "login-dead" });
@@ -226,7 +237,7 @@ describe("createQuotaSource().read()", () => {
 
 	it("reports parse when the usage shape is wrong", async () => {
 		writeAuth({ type: "oauth", access: "a1", refresh: "r1", expires: NOW + 100_000 });
-		const fake = makeFetch(() => usageResponse([]));
+		const fake = makeFetch(() => usageResponse(null));
 		const { read } = makeSource(fake.impl);
 		const result = await read();
 		expect(result).toMatchObject({ ok: false, reason: "parse" });

@@ -6,6 +6,7 @@ A pi package that bundles pi extensions. This package contains:
 - **tools** - the `/tools` command to enable and disable tools per session.
 - **context-cap** - `--context-window <tokens>` caps the session's context window so compaction fires early.
 - **model-router** - recovers a session from a provider usage-limit halt (switch to a fallback or wait for the reset, then resume).
+- **quota** - monitors the OpenAI ChatGPT plan quota: a footer line with the used windows, and a `/quota` detail view.
 - **hello** - a minimal example extension.
 
 See the [pi packages docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md) and the [extensions docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md).
@@ -21,7 +22,7 @@ See the [pi packages docs](https://github.com/earendil-works/pi/blob/main/packag
 │   ├── tools.ts
 │   ├── context-cap/  # multi-file extension, entry point at context-cap/index.ts
 │   ├── model-router/ # multi-file extension, entry point at model-router/index.ts
-│   ├── quota/        # Quota source module (no index.ts, not a standalone extension)
+│   ├── quota/        # multi-file extension, entry point at quota/index.ts
 │   └── codegraph/    # multi-file extension, entry point at codegraph/index.ts
 ├── docs/adr/         # architecture decision records
 ├── scripts/          # postinstall patch for the embedded codegraph library
@@ -291,6 +292,18 @@ pi reports an error and runs uncapped when the value is not a positive
 integer or is at or below `compaction.reserveTokens`. See
 [`extensions/context-cap/README.md`](extensions/context-cap/README.md) and
 [ADR 0004](docs/adr/0004-context-window-cap-via-provider-reregistration.md).
+
+# quota extension
+
+Monitors the OpenAI ChatGPT plan quota, so the user sees the remaining
+budget before a 5-hour or weekly limit is hit mid-task. A footer line
+always shows the plan's quota windows as used percentages (`GPT 5h 42% · 7d
+18%`, `FULL` in the error color when exhausted, `stale` when the last read
+failed). `/quota` forces a fresh read and shows plan type, account email,
+reset times, and time left. The quota is read at session start and every 5
+minutes (a fixed constant, not configurable). It works from any session and
+refreshes the ChatGPT access token itself when it expires (ADR 0005). See
+[`extensions/quota/README.md`](extensions/quota/README.md).
 
 # hello extension
 

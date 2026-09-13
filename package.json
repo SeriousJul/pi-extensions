@@ -36,7 +36,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "smoke:node": "node tests/codegraph/smoke/smoke-node.mjs",
-    "e2e:context-cap": "node tests/context-cap/e2e-rpc.mjs"
+    "e2e:context-cap": "node tests/context-cap/e2e-rpc.mjs",
+    "e2e:quota": "node tests/quota/e2e-rpc.mjs"
   },
   "dependencies": {
     "@colbymchenry/codegraph": "^1.6.0"
