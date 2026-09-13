@@ -59,7 +59,7 @@ import {
   resolveRoot,
   unsafeRootReason,
 } from "./root";
-import type { OpenSrc } from "./opensrc";
+import { pathLabel, type OpenSrc } from "./opensrc";
 import { findSeedSource } from "./seed";
 import { emptyUsage, readUsage, USAGE_NAME, type UsageSummary } from "./usage";
 import { startWatcher as startCodegraphWatcher, type WatcherState } from "./watcher";
@@ -921,9 +921,9 @@ export class CodegraphSession {
     writeMarker(cg.codeGraphDir(), "build");
     try {
       await cg.recreate();
-      this.status(`codegraph: rebuilding index at ${root}`);
+      this.status(`codegraph: rebuilding index at ${this.rootName(root)}`);
       const res = await cg.indexAll({
-        onProgress: (p) => this.status(formatProgress(p, root)),
+        onProgress: (p) => this.status(formatProgress(p, this.rootName(root))),
       });
       this.status(undefined);
       if (!res.success) {
@@ -1322,7 +1322,7 @@ export class CodegraphSession {
     isMainCheckout: boolean,
     named: boolean,
   ): Promise<ReadyInfo> {
-    this.status(`codegraph: reconciling seeded index at ${entry.root}`);
+    this.status(`codegraph: reconciling seeded index at ${this.rootName(entry.root)}`);
     const res = await this.runSync(entry);
     const changed = res.filesAdded + res.filesModified + res.filesRemoved;
     recordSeed(entry.cg.codeGraphDir(), seedSource);
@@ -1384,9 +1384,9 @@ export class CodegraphSession {
           named,
         );
       }
-      this.status(`codegraph: building index at ${root}`);
+      this.status(`codegraph: building index at ${this.rootName(root)}`);
       const res = await cg.indexAll({
-        onProgress: (p) => this.status(formatProgress(p, root)),
+        onProgress: (p) => this.status(formatProgress(p, this.rootName(root))),
       });
       this.status(undefined);
       if (!res.success) {
@@ -1425,7 +1425,9 @@ export class CodegraphSession {
   ): Promise<void> {
     if (!force && entry.firstSyncDone && entry.watcher === "active") return;
     this.status(
-      `codegraph: reconciling index at ${entry.root}${label ? ` (${label})` : ""}`,
+      `codegraph: reconciling index at ${this.rootName(entry.root)}${
+        label ? ` (${label})` : ""
+      }`,
     );
     await this.runSync(entry);
     entry.firstSyncDone = true;
@@ -1521,6 +1523,23 @@ export class CodegraphSession {
     });
   }
 
+  /**
+   * The name of a root in a status line (spec 0009): the project's label
+   * when the dependency cache names it, the raw path otherwise.
+   */
+  private rootName(root: string): string {
+    return this.opensrc?.labelFor(root) ?? root;
+  }
+
+  /**
+   * The project label for a named root (spec 0009): the dependency cache's
+   * label ("name, name @version") when one matches, the path-form label
+   * otherwise. A missing label never fails a call.
+   */
+  projectLabel(root: string): string {
+    return this.opensrc?.labelFor(root) ?? pathLabel(root);
+  }
+
   /** All trusted roots: the environment's, plus the ones added this session. */
   trustedRoots(): Array<{ root: string; origin: string }> {
     return [...this.envTrustedRoots, ...this.addedTrusted];
@@ -1561,6 +1580,7 @@ export class CodegraphSession {
     }
     return real;
   }
+
 
   /** The trust refusal, shared by every build-gating site. */
   private refuseUntrusted(root: string): CodegraphUnavailable {

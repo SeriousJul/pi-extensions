@@ -214,10 +214,12 @@ function makeExecute(
         chars: text.length,
       });
       // A named call serves a different project than the session root, so its
-      // result names the root it was served from (spec 0009).
+      // result names the project it was served from (spec 0009): the label
+      // the dependency cache gives the root (or the path form), then the
+      // absolute root path. Results from the session root carry no preamble.
       return ok(
         info.named
-          ? `Project: ${info.root}\n\n${text}`
+          ? `Project: ${session.projectLabel(info.root)} - ${info.root}\n\n${text}`
           : text,
       );
     } catch (err) {

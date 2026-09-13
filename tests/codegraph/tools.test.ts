@@ -16,6 +16,7 @@ import {
   registerTools,
 } from "../../extensions/codegraph/handlers";
 import { createInMemoryIndexFactory } from "./inMemoryIndex";
+import { createOpenSrc } from "../../extensions/codegraph/opensrc";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getCodeGraphDir, getDatabasePath } from "../../extensions/codegraph/runtime";
 import { appendUsage, IGNORE_NAME, USAGE_NAME } from "../../extensions/codegraph/usage";
@@ -665,3 +666,53 @@ describe("/codegraph command", () => {
     expect(ui.notifications.some(([, m]) => m.includes("unknown verb"))).toBe(true);
   });
 });
+
+describe("the project preamble (spec 0009)", () => {
+  function namedSession(): { h: Harness; opensrcHome: string } {
+    // A dependency cache that names the feature worktree.
+    const opensrcHome = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "codegraph-preamble-")),
+    );
+    fs.symlinkSync(
+      fixture.feature,
+      path.join(opensrcHome, "feature"),
+    );
+    const s = new CodegraphSession({
+      trustedRoots: [
+        { root: fixture.base, origin: "CODEGRAPH_PI_TRUSTED_ROOTS" },
+      ],
+      opensrc: createOpenSrc(opensrcHome, {
+        list: () => ({
+          repos: [
+            { name: "featurelib", version: "9.9.9", path: "feature" },
+          ],
+        }),
+      }),
+    });
+    sessions.push(s);
+    return { h: makeHarness(s, fixture.main), opensrcHome };
+  }
+
+  it("prefaces a named result with the label and the absolute root", async () => {
+    const { h, opensrcHome } = namedSession();
+    const text = await h.call("codegraph_search", {
+      query: "featureOnlySymbol",
+      projectRoot: fixture.feature,
+    });
+    const featureReal = fs.realpathSync(fixture.feature);
+    expect(text.startsWith(`Project: featurelib @9.9.9 - ${featureReal}\n\n`)).toBe(
+      true,
+    );
+    expect(text).toContain("featureOnlySymbol");
+    fs.rmSync(opensrcHome, { recursive: true, force: true });
+  });
+
+  it("carries no preamble for a result from the session root", async () => {
+    const { h, opensrcHome } = namedSession();
+    const text = await h.call("codegraph_search", { query: "mainEntry" });
+    expect(text.startsWith("Project:")).toBe(false);
+    expect(text).toContain("mainEntry");
+    fs.rmSync(opensrcHome, { recursive: true, force: true });
+  });
+});
+
