@@ -7,11 +7,8 @@ export default defineConfig({
     // running every test file in a single fork keeps that cost low and
     // avoids grammar-load races.
     pool: "forks",
-    poolOptions: {
-      forks: {
-        singleFork: true,
-      },
-    },
+    maxWorkers: 1,
+    isolate: false,
     testTimeout: 240_000,
     hookTimeout: 240_000,
   },
