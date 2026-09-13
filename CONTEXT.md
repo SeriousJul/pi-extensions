@@ -1,10 +1,11 @@
-# Codegraph Extension
+# Pi Extensions
 
-A pi extension that embeds the codegraph library in-process, giving the agent
-transparent semantic code search over the current project. Each git worktree
-gets its own index, so results always reflect the branch being edited.
+Extensions for the pi coding agent. Two today: Codegraph (semantic code
+search over the current project) and Quota (subscription quota monitor).
 
 ## Language
+
+### Codegraph
 
 **Index**:
 The `.codegraph/` directory and its `codegraph.db` for one project root.
@@ -129,3 +130,22 @@ trying to detect one, and it gives the agent the path to hand to its next read
 or grep.
 _Avoid_: header (the file headers stay root-relative and unchanged), banner,
 project line
+
+### Quota
+
+**Quota window**:
+One rolling usage budget reported by a subscription plan: a used fraction and
+a reset time. The OpenAI ChatGPT plan reports two: the 5-hour window and the
+weekly window.
+_Avoid_: rate limit (a request-rate ceiling, not a budget), bucket, period
+
+**Usage snapshot**:
+The latest successful read of a plan's quota windows, stamped with the time it
+was fetched. It becomes stale the moment a later read fails; a stale snapshot
+is still shown, marked, rather than hidden.
+_Avoid_: cache (too generic), state, sample
+
+**Quota source**:
+One subscription plan the Quota extension reads windows from. Examples: the
+OpenAI ChatGPT plan, the Qwen token plan.
+_Avoid_: provider (pi's word for a model API), backend, account
