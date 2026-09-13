@@ -1,7 +1,8 @@
 # Pi Extensions
 
-Extensions for the pi coding agent. Two today: Codegraph (semantic code
-search over the current project) and Quota (subscription quota monitor).
+Extensions for the pi coding agent. Three today: Codegraph (semantic code
+search over the current project), Quota (subscription quota monitor), and
+Model router (automatic recovery from quota exhaustion).
 
 ## Language
 
@@ -149,3 +150,57 @@ _Avoid_: cache (too generic), state, sample
 One subscription plan the Quota extension reads windows from. Examples: the
 OpenAI ChatGPT plan, the Qwen token plan.
 _Avoid_: provider (pi's word for a model API), backend, account
+
+### Model router
+
+**Quota halt**:
+The state in which the active model's provider reported a terminal usage
+limit error and pi's own retries gave up on the turn. The event that starts a
+Recovery.
+_Avoid_: rate limit (also covers recoverable non-terminal throttling),
+quota error (generic)
+
+**Recovery**:
+The router's automated response to a Quota halt: run strategies in
+Precedence order until the session runs again or the chain is exhausted.
+_Avoid_: retry (pi's built-in backoff; recovery is what happens when retrying
+is not possible), fallback (too narrow: one strategy), failover (implies the
+original model is abandoned)
+
+**Recovery strategy**:
+One step of a Recovery. v1 has exactly two: switch to a Fallback model, and
+wait for the quota to reset.
+_Avoid_: mode, plan (clashes with subscription plan), step
+
+**Precedence**:
+The configured ordered list of Recovery strategies to run on a Quota halt.
+_Avoid_: priority (ambiguous: a high/low scalar instead of an ordered list),
+order (too generic)
+
+**Fallback model**:
+One entry (provider and model) of the configured ordered list that the
+router tries in sequence during the switch strategy.
+_Avoid_: backup (implies it only holds state), secondary (implies a fixed
+pair)
+
+**Switch-back**:
+The router returning the session to its original model after the quota
+windows recovered. A manual model change cancels the pending switch-back.
+_Avoid_: restore (clashes with session restore), revert (too generic),
+roll back
+
+**Pending recovery**:
+A Recovery that started but did not finish, recorded in the session so a
+restart can re-arm it.
+_Avoid_: recovery state (state is a general word), saved recovery
+
+**Binding reset**:
+The latest reset time among the exhausted Quota windows. The earliest moment
+waiting can pay off.
+_Avoid_: reset time (ambiguous: there are several windows), quota reset (does
+not say it is the maximum across windows)
+
+**Recovery message**:
+The one synthetic user message the router sends to resume the halted turn.
+_Avoid_: resume prompt, continuation (generic), retry message (a retry is a
+different concept)
