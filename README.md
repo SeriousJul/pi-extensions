@@ -4,6 +4,7 @@ A pi package that bundles pi extensions. This package contains:
 
 - **codegraph** - semantic code index for the agent. The main extension.
 - **tools** - the `/tools` command to enable and disable tools per session.
+- **context-cap** - `--context-window <tokens>` caps the session's context window so compaction fires early.
 - **hello** - a minimal example extension.
 
 See the [pi packages docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md) and the [extensions docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md).
@@ -17,6 +18,7 @@ See the [pi packages docs](https://github.com/earendil-works/pi/blob/main/packag
 ├── extensions/       # every .ts file (or subdirectory with index.ts) is an extension
 │   ├── hello.ts
 │   ├── tools.ts
+│   ├── context-cap/  # multi-file extension, entry point at context-cap/index.ts
 │   └── codegraph/    # multi-file extension, entry point at codegraph/index.ts
 ├── docs/adr/         # architecture decision records
 ├── scripts/          # postinstall patch for the embedded codegraph library
@@ -268,6 +270,24 @@ persists in the session (a `tools-config` entry) and is restored on session
 start and branch navigation, so it respects the session tree. Non-built-in
 tools show a tag with their origin (package name or file name), so you can
 see which extension provides each tool.
+
+# context-cap extension
+
+Caps the effective context window for a pi session, so auto-compaction fires
+early and prompts stay small:
+
+```bash
+pi --context-window 32000
+# or
+PI_CONTEXT_WINDOW=32000 pi
+```
+
+The cap is a ceiling (`min(cap, model window)`), it is session-wide (initial
+model, switches, resume), and the picker and footer show the capped window.
+pi reports an error and runs uncapped when the value is not a positive
+integer or is at or below `compaction.reserveTokens`. See
+[`extensions/context-cap/README.md`](extensions/context-cap/README.md) and
+[ADR 0004](docs/adr/0004-context-window-cap-via-provider-reregistration.md).
 
 # hello extension
 

@@ -118,6 +118,10 @@ short-TTL memo live with the section, so a new source renderer inherits the
 never-a-drifted-slice guarantee by construction.
 _Avoid_: code block, snippet, file view
 
+**Context window cap**:
+The per-session ceiling on a model's context window, set by the user. Every behavior that reads the window (compaction timing, overflow detection, usage display) acts as if the window were the smaller of the cap and the model's declared window. It only shrinks a window, never grows one.
+_Avoid_: context limit (ambiguous with the window itself), max context, window shrink
+
 **Project label**:
 The one line above a result from a Named root: the project's name and version,
 and the absolute path of its root. It makes a wrong version visible instead of
