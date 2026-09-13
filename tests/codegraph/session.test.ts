@@ -168,24 +168,16 @@ describe("ensureReady (primary seam)", () => {
 
   it("preserves each caller's file form during concurrent preparation", async () => {
     const s = newSession();
-    const featureFile = path.relative(
-      fixture.main,
-      path.join(fixture.feature, "src", "feature.ts"),
-    );
-    const mainFile = path.relative(
-      fixture.main,
-      path.join(fixture.feature, "src", "main.ts"),
-    );
 
-    const [featureInfo, mainInfo] = await Promise.all([
-      s.ensureReady(fixture.main, featureFile),
-      s.ensureReady(fixture.main, mainFile),
+    const [sharedInfo, mainInfo] = await Promise.all([
+      s.ensureReady(fixture.main, "src/shared.ts"),
+      s.ensureReady(fixture.main, "src/main.ts"),
     ]);
 
-    expect(featureInfo.cg).toBe(mainInfo.cg);
-    expect(featureInfo.root).toBe(fixture.feature);
-    expect(featureInfo.file).toBe("src/feature.ts");
-    expect(mainInfo.root).toBe(fixture.feature);
+    expect(sharedInfo.cg).toBe(mainInfo.cg);
+    expect(sharedInfo.root).toBe(fixture.main);
+    expect(sharedInfo.file).toBe("src/shared.ts");
+    expect(mainInfo.root).toBe(fixture.main);
     expect(mainInfo.file).toBe("src/main.ts");
   });
 
@@ -350,14 +342,73 @@ describe("root resolution", () => {
     expect(resolved.mainCheckout).toBe(fixture.main);
   });
 
-  it("returns a sibling worktree root and root-relative file", () => {
+  it("refuses an anchored root that is neither the session root nor inside it", () => {
+    // A file that only exists in a sibling worktree anchors outside the
+    // session root: resolution never leaves the project the call came from
+    // (spec 0008), so the anchor is refused, not followed.
     const file = path.relative(
       fixture.main,
       path.join(fixture.feature, "src", "feature.ts"),
     );
-    const resolved = resolveRoot(fixture.main, file);
-    expect(resolved.root).toBe(fixture.feature);
-    expect(resolved.file).toBe("src/feature.ts");
+    let err: unknown;
+    try {
+      resolveRoot(fixture.main, file);
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(CodegraphUnavailable);
+    const refusal = err as CodegraphUnavailable;
+    expect(refusal.reason).toBe(
+      `file ${file} is outside this project (${fixture.main})`,
+    );
+    expect(refusal.structural).toBe(true);
+    expect(refusal.warnKey).toBe("outside-session-root");
+  });
+
+  it("refuses an anchored file whose tree has no project at all", () => {
+    // The anchor's own tree has no manifest to resolve, so the policy cannot
+    // name a root. The boundary is still named: the file is outside this
+    // project, and the other tree's missing manifest is not the reason.
+    const outside = path.join(fixture.base, "nowhere", "orphan.ts");
+    fs.mkdirSync(path.join(fixture.base, "nowhere"), { recursive: true });
+    let err: unknown;
+    try {
+      resolveRoot(fixture.main, outside);
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(CodegraphUnavailable);
+    expect((err as CodegraphUnavailable).reason).toBe(
+      `file ${outside} is outside this project (${fixture.main})`,
+    );
+  });
+
+  it("keeps resolving a file in an indexed sub-project to that sub-project", () => {
+    // The monorepo case stays: an indexed sub-project inside the session
+    // root is a descendant of it, so the anchored root is contained.
+    const sub = path.join(fixture.main, "packages", "app");
+    fs.mkdirSync(path.join(sub, "src"), { recursive: true });
+    const findNearest = (startPath: string): string | null =>
+      startPath === path.join(sub, "src") ? sub : null;
+    const resolved = resolveRoot(
+      fixture.main,
+      "packages/app/src/app.ts",
+      findNearest,
+    );
+    expect(resolved.root).toBe(sub);
+    expect(resolved.needsCreate).toBe(false);
+    expect(resolved.file).toBe("src/app.ts");
+  });
+
+  it("does not refuse a symlink that reaches the session root", () => {
+    // The same project reached by a different path: the containment rule
+    // compares realpaths, so the link and its target do not look like two
+    // projects.
+    const link = path.join(fixture.base, "main-link");
+    fs.symlinkSync(fixture.main, link, "dir");
+    const resolved = resolveRoot(link, "src/shared.ts");
+    expect(resolved.root).toBe(fixture.main);
+    expect(resolved.file).toBe("src/shared.ts");
   });
 
   it("returns a worktree root and root-relative file for a sub-directory file", () => {

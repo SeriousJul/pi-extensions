@@ -479,18 +479,95 @@ describe("tool outputs", () => {
     expect(text).toContain("src/feature.ts");
   });
 
-  it("anchors codegraph_node file mode on the file's own worktree", async () => {
-    // From the main worktree, ask for a file that only exists in the
-    // feature worktree: the file argument must anchor root resolution to
-    // the feature worktree, whose index is then created (seeded) for it.
-    await h.call("codegraph_search", { query: "helper" }, fixture.main);
-    const rel = path.relative(
+  it("refuses a file mode anchor outside the session root and writes nothing", async () => {
+    // The measured accident behind spec 0008: a file argument pointing at a
+    // tree outside the session's own root used to resolve that tree, build
+    // an index in it, and serve the file from the wrong project. The call
+    // must now fail with the standard unavailable line naming the boundary,
+    // and leave no trace on disk anywhere.
+    await h.call("codegraph_search", { query: "helper" });
+
+    const outside = path.join(fixture.base, "outside-proj");
+    fs.mkdirSync(path.join(outside, "src"), { recursive: true });
+    fs.writeFileSync(path.join(outside, "package.json"), "{}");
+    const target = path.join(outside, "src", "lib.ts");
+    fs.writeFileSync(target, "export const outsideSymbol = 1;\n");
+
+    const ui = freshUi();
+    h.session.setUi({
+      notify: (level, message) => ui.notifications.push([level, message]),
+    });
+    const text = await h.call(
+      "codegraph_node",
+      { file: target },
       fixture.main,
-      path.join(fixture.feature, "src", "feature.ts"),
+      ui,
     );
-    const text = await h.call("codegraph_node", { file: rel }, fixture.main);
-    expect(text).toContain("File: src/feature.ts");
-    expect(text).toContain("featureOnlySymbol");
+    expect(text).toBe(
+      `codegraph is unavailable (file ${target} is outside this project (${fixture.main})). Use the built-in read and grep tools instead.`,
+    );
+
+    // Nothing is created in the refused tree: no index directory, no
+    // ledger, no marker - not even the directory the call refused to
+    // index.
+    expect(fs.existsSync(path.join(outside, ".codegraph"))).toBe(false);
+    expect(fs.existsSync(getCodeGraphDir(outside))).toBe(false);
+    expect(fs.readdirSync(outside).sort()).toEqual([
+      "package.json",
+      "src",
+    ]);
+
+    // The refusal is not recorded in the session's own ledger either: a
+    // refused call has no index directory to keep a ledger in.
+    const sessionLedger = fs
+      .readFileSync(
+        path.join(getCodeGraphDir(fixture.main), USAGE_NAME),
+        "utf-8",
+      )
+      .trim()
+      .split("\n");
+    expect(sessionLedger).toHaveLength(1);
+    expect(JSON.parse(sessionLedger[0])).toMatchObject({
+      tool: "codegraph_search",
+      ok: true,
+    });
+
+    // One warning per session names the boundary; a second refusal adds
+    // none.
+    expect(ui.notifications).toEqual([
+      [
+        "warning",
+        `codegraph: file ${target} is outside this project (${fixture.main})`,
+      ],
+    ]);
+    const again = await h.call(
+      "codegraph_node",
+      { file: target },
+      fixture.main,
+      ui,
+    );
+    expect(again).toContain("codegraph is unavailable");
+    expect(ui.notifications).toHaveLength(1);
+  });
+
+  it("keeps answering codegraph_explore from the session index for an external path in the query", async () => {
+    // The other half of the measured accident: explore never anchored on
+    // anything but the working directory, so an absolute external path in
+    // the query answers from the session's own index - and now that no tool
+    // can cross, that is the only answer any path can get.
+    await h.call("codegraph_search", { query: "helper" });
+
+    const outside = path.join(fixture.base, "outside-proj");
+    fs.mkdirSync(path.join(outside, "src"), { recursive: true });
+    fs.writeFileSync(path.join(outside, "package.json"), "{}");
+    const target = path.join(outside, "src", "lib.ts");
+    fs.writeFileSync(target, "export const outsideSymbol = 1;\n");
+
+    const text = await h.call("codegraph_explore", { query: target });
+    expect(text).toBe(`No relevant context found for "${target}"`);
+    expect(fs.existsSync(path.join(outside, ".codegraph"))).toBe(false);
+    // The call was served by, and recorded in, the session's own index.
+    expect(fs.existsSync(getCodeGraphDir(fixture.main))).toBe(true);
   });
 
   it("maps every failure to the standard fallback line", async () => {

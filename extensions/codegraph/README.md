@@ -216,6 +216,17 @@ a named root is built only at or under a **trusted root**.
   that names the `opensrc fetch` for the dependency. The extension never
   fetches on the agent's behalf and never resolves a package name.
 
+Root resolution never leaves the project the session started in (spec
+0008). The session root - the project the call's working directory resolves
+to - is resolved first and is the anchor of record for the call. An anchored
+root may be the session root or a descendant of it (the monorepo sub-project
+case above), compared on realpaths so a symlinked working directory and its
+target do not look like two projects. A `file` that points at any other
+project fails with the standard unavailable line, with a reason that names
+both paths: `file <x> is outside this project (<session root>)`. The refusal
+writes nothing - no index, no ledger, no directory in a tree the user did not
+ask about - and its visible record is one warning per session.
+
 ## /codegraph
 
 | Verb | Effect |
@@ -284,7 +295,10 @@ codegraph is unavailable (<reason>). Use the built-in read and grep tools instea
 The reason is recorded in the worktree's usage log too, so `/codegraph status`
 shows it after the tool result has scrolled away. Structural failures also get
 one warning per session; a background prewarm adds no second warning on top of
-the one the failing path already emitted.
+the one the failing path already emitted. The one failure recorded nowhere is
+the session-root refusal (Project root, above): it declines to create the
+index a ledger would live in, so it has no ledger of its own - the one
+warning per session is its record.
 
 ## Layout
 
@@ -314,8 +328,10 @@ the one the failing path already emitted.
 - `sync-retry.ts` - the reconcile retry contract shared by both adapters
   (initial attempt + 2 retries at a 750 ms ramp; library-free).
 - `root.ts` - project root resolution, the unsafe-root guard, the path
-  rule (absolute, `~`, relative) shared by every path argument, and the
-  named-root resolution (snapping, the file-argument boundary).
+  rule (absolute, `~`, relative) shared by every path argument, the
+  named-root resolution (snapping, the file-argument boundary), and the
+  session-root containment rule (spec 0008): an anchored root must stay
+  inside the project the session's working directory resolves to.
 - `opensrc.ts` - the dependency-source module (spec 0009): the only place
   in the extension that names opensrc. The cache home, the trusted roots
   from the environment, the cache manifest (re-read only when it changes on
