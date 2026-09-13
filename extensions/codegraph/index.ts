@@ -90,7 +90,10 @@ export default function codegraphExtension(
     const state = session.indexStateFor(ctx.cwd, resolved);
     if (!state) return undefined;
     return {
-      systemPrompt: `${event.systemPrompt}\n\n${promptNoteFor(state)}`,
+      systemPrompt: `${event.systemPrompt}\n\n${promptNoteFor(
+        state,
+        session.hasTrustedRoot(),
+      )}`,
     };
   });
 

@@ -70,8 +70,23 @@ const PROMPT_FIRST_LINE: Record<IndexPromptState, string> = {
   none: "The codegraph index is not built yet; your first codegraph call builds it and may wait a while.",
 };
 
-export function promptNoteFor(state: IndexPromptState): string {
-  return `${PROMPT_FIRST_LINE[state]}\n${PROMPT_POLICY}`;
+/**
+ * The seventh policy line (spec 0009): dependency sources are queryable
+ * through `projectRoot`. Added to the fixed block only when at least one
+ * trusted root exists on disk, so the note never advertises a query form
+ * every call would refuse.
+ */
+const PROMPT_NAMED_ROOTS =
+  "- To query a dependency's source, pass its directory as projectRoot (`opensrc path <pkg>` prints it). One projectRoot serves one call; its results are labeled with the project's name and version.";
+
+export function promptNoteFor(
+  state: IndexPromptState,
+  namedRootsAvailable = false,
+): string {
+  const policy = namedRootsAvailable
+    ? `${PROMPT_POLICY}\n${PROMPT_NAMED_ROOTS}`
+    : PROMPT_POLICY;
+  return `${PROMPT_FIRST_LINE[state]}\n${policy}`;
 }
 
 const NodeKindUnion = Type.Union([

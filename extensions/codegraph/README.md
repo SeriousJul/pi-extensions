@@ -79,10 +79,12 @@ package, so the postinstall also looks for it in ancestor
 | `codegraph_node` | Read a single file (line numbers, dependents header) or a single symbol (signature, body, top callers/callees). |
 | `codegraph_explore` | Source, call paths, and relationships for an area in one call. |
 
-There is no `projectPath` parameter on any tool. The index is always the one
-for the worktree the call was made from, resolved automatically.
-`codegraph_search.kind` accepts the upstream single-kind string or an array
-of kinds.
+Every tool takes an optional `projectRoot`: the directory of a dependency
+source to query instead of the session's own worktree (see [Named project
+roots](#named-project-roots)). There is no `projectPath` parameter on any
+tool; without `projectRoot` the index is always the one for the worktree the
+call was made from, resolved automatically. `codegraph_search.kind` accepts
+the upstream single-kind string or an array of kinds.
 
 ## Per-worktree indexes
 
@@ -140,6 +142,11 @@ the index state (ready, building, or none) and six fixed policy lines say which
 tool fits which job. It is the only codegraph steering text in the prompt, so
 the note is the single place to change policy. The text is contract (issue #9).
 
+A seventh line - the dependency-source line that tells the model to pass a
+dependency's directory as `projectRoot` - joins the block when at least one
+[trusted root](#named-project-roots) exists on disk, and is absent otherwise:
+a note must not advertise a query form every call would refuse.
+
 The note appears only when all three conditions hold:
 
 - at least one `codegraph_*` tool is active in the session (a disabled toolset
@@ -171,16 +178,53 @@ to disambiguate a symbol never moves the root: it stays the call's working
 directory. The root-relative form of an anchored file is carried by the ready
 index result, so the tool never rewrites its own parameters. Outside git, the
 root falls back to the nearest ancestor that contains a build manifest. The
-home directory and the filesystem root are never indexed.
+home directory and the filesystem root are never indexed. A `file`
+argument of a named call (`projectRoot` given) resolves inside the named
+root, never against the working directory, and a form that escapes the named
+root is refused: outside it there is no index that could answer.
+
+## Named project roots
+
+A `projectRoot` argument queries a **dependency source**: the source of a
+cached dependency, for example under the opensrc cache home (`opensrc path
+<pkg>` prints it). The argument applies the path rule (an absolute path, a
+`~` path, or a path relative to the working directory), and the root it
+names is honored the way the session root is - with one bound: an index for
+a named root is built only at or under a **trusted root**.
+
+- **Trusted roots.** The cache home (an explicit `OPENSRC_HOME`, else
+  `~/.opensrc`, when it exists), the `CODEGRAPH_PI_TRUSTED_ROOTS` entries
+  (PATH-style, existing directories only), and the roots `/codegraph add`
+  stores for the session. A build outside every trusted root is refused
+  with a reason that names the command to run, and the refusal writes
+  nothing: no index directory, no ledger line.
+- **Labels.** A result from a named root is prefaced with one line -
+  `Project: <names> @<version> - <absolute root path>` - and status and
+  progress lines use the same label where one exists. The label comes from
+  the cache's manifest (every name on the path, one version, re-read only
+  when the manifest changes on disk) and falls back to the last two path
+  segments (or the basename alone). A missing label never fails a call.
+- **Snapping.** A named directory that lies inside a cache entry serves
+  that entry's tree; a directory outside every entry is honored as-is
+  through the normal root policy.
+- **No prewarm, no seeding, no watcher.** A named root is built on demand
+  at the cost of a full build (disk is the real cost, which is why the
+  bound exists), reconciled before every query, and cached per root for the
+  session. Instances of named roots are never capped.
+- **Missing sources.** A named directory that does not exist fails with
+  `no such directory (<abs>)`; under a trusted root the failure adds a hint
+  that names the `opensrc fetch` for the dependency. The extension never
+  fetches on the agent's behalf and never resolves a package name.
 
 ## /codegraph
 
 | Verb | Effect |
 | --- | --- |
-| `/codegraph` | Show index status for the current directory. |
-| `/codegraph init` | Force a full rebuild of the index. |
-| `/codegraph seed [path]` | Re-seed the index from a named sibling worktree (or the default seed source), then reconcile. |
-| `/codegraph uninit` | Remove the index for the current directory, with its usage log (asks for confirmation). |
+| `/codegraph` | Show index status for the current directory, then the named roots this session opened (label, path, index state) and the trusted roots with their origin. |
+| `/codegraph init [path]` | Force a full rebuild of the index for the given root (trust-gated), or the session root without a path. |
+| `/codegraph seed [path]` | With no path, re-seed the session index from a sibling worktree. With a path, re-seed that sibling (a worktree of the same repository with an index) or seed the named root it names. Then reconcile. |
+| `/codegraph uninit [path]` | Remove the index for the given root (or the session root), with its usage log (asks for confirmation). |
+| `/codegraph add <path>` | Trust a directory for named-root builds for the rest of the session (the path rule applies; the directory must exist). A session add expires with the session; there is no `remove` verb. |
 | `/codegraph auto on\|off` | Toggle automatic index creation for the session. |
 
 The three verbs that change an index (`init`, `seed`, `uninit`) refuse to run
@@ -220,6 +264,8 @@ over.
 | `CODEGRAPH_PI_SEEDING` | `0`/`false`/`off` disables seeding from sibling worktrees (first build is from scratch). |
 | `CODEGRAPH_NO_WATCH` | `1` disables the file watcher (reconcile before every query). |
 | `CODEGRAPH_PI_SQLITE_SHIM` | Set to `bun` to force the shim's `bun:sqlite` path (used by the bun-only test). |
+| `CODEGRAPH_PI_TRUSTED_ROOTS` | PATH-style list of trusted roots for named-root builds. Entries that do not exist are ignored. |
+| `OPENSRC_HOME` | The dependency cache home. When it exists it is a trusted root and the source of project labels and fetch hints; when the variable is set but the directory is missing, the extension behaves as if opensrc were absent. |
 | `CODEGRAPH_NO_FAST_INIT` | Set to `1` automatically on the bun runtime (any bun version) unless the user set it, because bun's SQLite engine rejects the fast-init journal-mode change (see Runtime and installation). |
 | `CODEGRAPH_TELEMETRY` | Set to `0` by this extension unless already set. |
 | `CODEGRAPH_NO_UPDATE_CHECK` | Set to `1` by this extension unless already set. |
@@ -266,7 +312,14 @@ the one the failing path already emitted.
   at load; a session resolves it without importing the adapter module.
 - `sync-retry.ts` - the reconcile retry contract shared by both adapters
   (initial attempt + 2 retries at a 750 ms ramp; library-free).
-- `root.ts` - project root resolution and the unsafe-root guard.
+- `root.ts` - project root resolution, the unsafe-root guard, the path
+  rule (absolute, `~`, relative) shared by every path argument, and the
+  named-root resolution (snapping, the file-argument boundary).
+- `opensrc.ts` - the dependency-source module (spec 0009): the only place
+  in the extension that names opensrc. The cache home, the trusted roots
+  from the environment, the cache manifest (re-read only when it changes on
+  disk), project labels, the path-form label, and the fetch hint. Everything
+  else in the extension speaks of named roots, trusted roots, and labels.
 - `git.ts` - git worktree helpers (sibling discovery).
 - `seed.ts` - seed source discovery (the database copy is the adapter's
   `seedFrom` operation).
@@ -294,7 +347,7 @@ the one the failing path already emitted.
 
 ## Specs
 
-The design specs (0001-0007) live as GitHub issues on this repository; the
+The design specs (0001-0009) live as GitHub issues on this repository; the
 issue titles carry the spec numbers, and the `spec 000X` references in code
 comments point to them. The closed issues are the implemented history; the
 open ones are ready for the next agent pass.
