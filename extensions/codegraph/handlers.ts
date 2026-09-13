@@ -300,6 +300,12 @@ function nodeFileAnchor(params: Record<string, unknown>): string | undefined {
  * outcome. The root policy is untouched: the root is already resolved by the
  * seam, and this only fixes the form the filter compares. A fresh object is
  * returned per call, so a shared ready result is never mutated.
+ *
+ * The base the argument resolves against honors the named-call file rule
+ * (spec 0009): the `file` argument of a named call resolves inside the
+ * named root, never against the working directory, exactly as an anchored
+ * file of the same call does. An unnamed call resolves against its working
+ * directory.
  */
 function withDisambiguatingFile(
   info: ReadyInfo,
@@ -307,7 +313,8 @@ function withDisambiguatingFile(
   params: Record<string, unknown>,
 ): ReadyInfo {
   if (typeof params.file !== "string" || info.file !== undefined) return info;
-  return { ...info, file: rootRelativeFile(info.root, startDir, params.file) };
+  const base = info.named ? info.root : startDir;
+  return { ...info, file: rootRelativeFile(info.root, base, params.file) };
 }
 
 /**

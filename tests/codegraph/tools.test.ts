@@ -850,6 +850,60 @@ describe("the named-root file rule (spec 0009)", () => {
     expect(fs.existsSync(getCodeGraphDir(featureReal))).toBe(false);
     fs.rmSync(opensrcHome, { recursive: true, force: true });
   });
+
+  it("resolves a disambiguating file against the named root, not the working directory", async () => {
+    const { h, opensrcHome } = namedSession();
+    const featureReal = fs.realpathSync(fixture.feature);
+    // `helper` has two definitions in the feature index (src/feature.ts and
+    // src/shared.ts), so a disambiguating file must select one.
+    const ambiguous = await h.call(
+      "codegraph_node",
+      { symbol: "helper", projectRoot: fixture.feature },
+      fixture.main,
+    );
+    expect(ambiguous).toContain("Multiple definitions");
+
+    // The working directory sits inside the named root and the file is
+    // given in the named root's form: the named-call file rule resolves it
+    // inside the named root, so src/feature.ts selects that definition.
+    // Resolved against the working directory it would name src/src/feature.ts,
+    // a file that does not exist.
+    const text = await h.call(
+      "codegraph_node",
+      {
+        symbol: "helper",
+        file: "src/feature.ts",
+        projectRoot: fixture.feature,
+      },
+      path.join(featureReal, "src"),
+    );
+    expect(
+      text.startsWith(`Project: featurelib @9.9.9 - ${featureReal}\n\n`),
+    ).toBe(true);
+    expect(text).toContain("src/feature.ts");
+    expect(text).toContain("return x * 2");
+    expect(text).not.toContain("Multiple definitions");
+    expect(text).not.toContain("return x + ANSWER");
+
+    // A form that leaves the named root keeps the caller's own form and
+    // matches nothing: ../../main/src/mainonly.ts resolves into the sibling
+    // main worktree, outside the named root. The symbol lives only there
+    // (committed on main after the feature branch was cut), so the raw form
+    // finds no definition in the named index.
+    const escape = await h.call(
+      "codegraph_node",
+      {
+        symbol: "mainOnlySymbol",
+        file: "../../main/src/mainonly.ts",
+        projectRoot: fixture.feature,
+      },
+      fixture.main,
+    );
+    expect(escape).toBe(
+      `Project: featurelib @9.9.9 - ${featureReal}\n\nSymbol "mainOnlySymbol" not found`,
+    );
+    fs.rmSync(opensrcHome, { recursive: true, force: true });
+  });
 });
 
 describe("/codegraph named-root surface (spec 0009)", () => {
