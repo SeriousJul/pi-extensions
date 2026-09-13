@@ -220,7 +220,8 @@ a named root is built only at or under a **trusted root**.
 
 | Verb | Effect |
 | --- | --- |
-| `/codegraph` | Show index status for the current directory, then the named roots this session opened (label, path, index state) and the trusted roots with their origin. |
+| `/codegraph` | Show index status for the current directory, then the named roots this session opened (label, path, state, counts, last call) and the trusted roots with their origin. |
+| `/codegraph status [path]` | Show the index status of the named root the path names (the path rule applies), or the session root without a path. |
 | `/codegraph init [path]` | Force a full rebuild of the index for the given root (trust-gated), or the session root without a path. |
 | `/codegraph seed [path]` | With no path, re-seed the session index from a sibling worktree. With a path, re-seed that sibling (a worktree of the same repository with an index) or seed the named root it names. Then reconcile. |
 | `/codegraph uninit [path]` | Remove the index for the given root (or the session root), with its usage log (asks for confirmation). |

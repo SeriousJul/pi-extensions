@@ -814,8 +814,38 @@ describe("/codegraph named-root surface (spec 0009)", () => {
     const text = ui.notifications.map(([, m]) => m).join("\n");
     expect(text).toContain("named roots opened this session");
     expect(text).toContain(`elsewhere/feature - ${fs.realpathSync(fixture.feature)} - `);
+    // The line names label, root, state, and the last call (spec 0009).
+    expect(text).toContain("- last call ");
     expect(text).toContain("trusted roots");
     expect(text).toContain(`${fixture.base} (CODEGRAPH_PI_TRUSTED_ROOTS)`);
+  });
+
+  it("status takes a path and reports that named root", async () => {
+    const h = trustedHarness();
+    // Open the named root once: its index exists when status reads it.
+    await h.call("codegraph_search", {
+      query: "featureOnlySymbol",
+      projectRoot: fixture.feature,
+    });
+
+    const ui = freshUi();
+    await h.commands.get("codegraph")!.handler(
+      `status ${fixture.feature}`,
+      makeCtx(fixture.main, ui),
+    );
+    const text = ui.notifications.map(([, m]) => m).join("\n");
+    expect(text).toContain("codegraph: " + fs.realpathSync(fixture.feature));
+    expect(text).toMatch(/index: \d+ files, \d+ nodes, \d+ edges/);
+
+    // A missing directory reports the reason, like every other verb.
+    const ui2 = freshUi();
+    await h.commands.get("codegraph")!.handler(
+      "status no/such/dir",
+      makeCtx(fixture.main, ui2),
+    );
+    expect(
+      ui2.notifications.map(([, m]) => m).join("\n"),
+    ).toContain("no such directory");
   });
 
   it("init and uninit take a path argument", async () => {

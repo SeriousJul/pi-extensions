@@ -650,9 +650,10 @@ function usageLines(usage: UsageSummary): string[] {
 function statusLines(
   session: CodegraphSession,
   ctx: ExtensionContext,
+  projectRoot?: string,
 ): string[] {
   try {
-    const s = session.statusFor(ctx.cwd);
+    const s = session.statusFor(ctx.cwd, projectRoot);
     const lines: string[] = [];
     lines.push(`codegraph: ${s.root}`);
     if (s.mainCheckout && !s.isMainCheckout) {
@@ -693,22 +694,21 @@ function statusLines(
 }
 
 /**
- * The named-roots listing of the bare /codegraph command (spec 0009): the
- * roots this session opened, in the form
- * "  <names> @<version> - <absolute root path> - <state>", then the trusted
- * roots with the origin they came from.
+ * The named-roots listing of the bare /codegraph command (spec 0009): one
+ * line per root this session opened - label, state, counts, last call -
+ * then the trusted roots with the origin they came from.
  */
 function namedRootLines(session: CodegraphSession): string[] {
   const lines: string[] = [];
   const opened = session.openedNamedRoots();
   if (opened.length > 0) {
     lines.push("  named roots opened this session:");
-    for (const { root } of opened) {
+    for (const { root, lastCallAt } of opened) {
       let state: string;
-      let indexNote = "";
       try {
-        const s = session.statusFor(root);
-        if (s.root !== root) indexNote = ` (index: ${s.root})`;
+        // The root is the root a named call was served from, already
+        // resolved, so it is read as-is and never walked again.
+        const s = session.rootStatusFor(root);
         state = s.needsCreate
           ? "none yet"
           : s.stats
@@ -717,7 +717,9 @@ function namedRootLines(session: CodegraphSession): string[] {
       } catch {
         state = "unavailable";
       }
-      lines.push(`    ${session.projectLabel(root)} - ${root} - ${state}${indexNote}`);
+      lines.push(
+        `    ${session.projectLabel(root)} - ${root} - ${state} - last call ${fmtTime(lastCallAt)}`,
+      );
     }
   }
   const trusted = session.trustedRoots();
@@ -754,7 +756,7 @@ export function registerCommand(
 ): void {
   pi.registerCommand("codegraph", {
     description:
-      "Manage the codegraph index and the named project roots: status, init [path], seed [path], uninit [path], add <path>, auto on|off",
+      "Manage the codegraph index and the named project roots: status [path], init [path], seed [path], uninit [path], add <path>, auto on|off",
     handler: async (args: string, ctx: ExtensionContext) => {
       const ui = uiFromCtx(ctx);
       const parts = args.trim().split(/\s+/).filter(Boolean);
@@ -792,7 +794,10 @@ export function registerCommand(
 
       try {
         if (verb === "status" || verb === "") {
-          const lines = statusLines(session, ctx);
+          // `status <path>` selects a named root by the parameter's path
+          // rule (spec 0009); no argument is the session root.
+          const target = bare ? undefined : parts.slice(1).join(" ") || undefined;
+          const lines = statusLines(session, ctx, target);
           if (bare) lines.push(...namedRootLines(session));
           ui.setWidget?.("codegraph", lines);
           ui.notify("info", lines.join("\n"));
@@ -917,7 +922,7 @@ export function registerCommand(
         }
         ui.notify(
           "warning",
-          `codegraph: unknown verb "${verb}". Use: status, init [path], seed [path], uninit [path], add <path>, auto on|off`,
+          `codegraph: unknown verb "${verb}". Use: status [path], init [path], seed [path], uninit [path], add <path>, auto on|off`,
         );
       } catch (err) {
         ui.notify("warning", reasonOf(err));
