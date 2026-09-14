@@ -204,3 +204,30 @@ not say it is the maximum across windows)
 The one synthetic user message the router sends to resume the halted turn.
 _Avoid_: resume prompt, continuation (generic), retry message (a retry is a
 different concept)
+
+### Sync
+
+**Sync manifest**:
+The config that names the sync Backend and the include and exclude
+patterns for which files sync. Default deny: only files an include pattern
+matches are in scope, and an exclude pattern wins over an include. The
+manifest is itself part of the Snapshot, so one copy serves every device.
+_Avoid_: config (too generic), include list (only half of it), sync config
+
+**Snapshot**:
+The full set of files one sync run moves, selected by the Sync manifest.
+_Avoid_: backup (a backup exists to restore after loss), export, bundle
+
+**Backend**:
+The pluggable storage target a Snapshot is fetched from and pushed to.
+v1 is a GitHub Gist.
+_Avoid_: provider (pi's word for a model API), remote (implies a network
+peer), store (too generic)
+
+**Base state**:
+The tool-managed record the last push writes into the Backend, holding
+per-file time and content. Any device compares its local files and the
+remote Snapshot against it, so a merge decides on facts no single device
+holds.
+_Avoid_: metadata (generic), manifest (clashes with Sync manifest), state
+(too generic)
