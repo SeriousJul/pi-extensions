@@ -293,6 +293,77 @@ integer or is at or below `compaction.reserveTokens`. See
 [`extensions/context-cap/README.md`](extensions/context-cap/README.md) and
 [ADR 0004](docs/adr/0004-context-window-cap-via-provider-reregistration.md).
 
+# model-router extension
+
+Recovers a session from a provider usage-limit (quota) halt, so an
+unattended run survives a ChatGPT plan limit instead of dying at an error.
+When a turn settles with a terminal usage-limit error, the router runs the
+configured strategies in order: switch to the first usable fallback model, or
+wait for the quota window to reset. It resumes the halted turn with one
+synthetic user message, and switches back to the original model once the
+quota recovers and the session is idle.
+
+Configuration is the `modelRouter` section of `settings.json`. Project
+`<cwd>/.pi/settings.json` overrides global `~/.pi/agent/settings.json`, key
+by key:
+
+```json
+{
+  "modelRouter": {
+    "precedence": ["switch", "wait"],
+    "fallbacks": ["anthropic/claude-sonnet-4-5", "google/gemini-3.5-flash"],
+    "maxWaitMinutes": 360
+  }
+}
+```
+
+| Key              | Default             | Meaning                                                       |
+| ---------------- | ------------------- | ------------------------------------------------------------- |
+| `enabled`        | `true`              | Turn the router on or off.                                    |
+| `precedence`     | `["switch","wait"]` | Strategy order on a halt.                                     |
+| `fallbacks`      | `[]`                | Ordered `"provider/model-id"` entries the switch strategy tries. |
+| `maxWaitMinutes` | `360`               | Only wait when the binding reset is within this many minutes. |
+
+The wait strategy and the switch-back only apply to the `openai-codex`
+(ChatGPT plan) provider, because that is what the Quota source reads; for any
+other provider only switch applies. User input cancels a pending wait; a
+manual model change cancels the wait and the pending switch-back. Recovery is
+bounded to three strategy cycles per failed prompt, and a pending recovery
+survives a restart. Transient throttles and overloads stay with pi's built-in
+retry. See
+[`extensions/model-router/README.md`](extensions/model-router/README.md).
+
+### Real example: a fallback chain walk
+
+Observed in a live session on 2026-09-14. The user typed `test` on
+`qwen-token-plan-individual/qwen3.8-max` while the token plan was
+exhausted. The error body carries `insufficient_quota`, which the
+classifier matches:
+
+```
+13:06:38  ASSIST qwen3.8-max  stop=error
+          429: {"message":"Your token-plan 1-week quota has been
+          exhausted. The quota will reset at 09-19 15:43:00 UTC.",
+          "type":"insufficient_quota","code":"insufficient_quota"}
+          -> router switched to qwen3.8-flash
+13:07:15  ASSIST qwen3.8-flash  stop=error (same 429)
+          -> persisted recovery: {"phase":"on-fallback",
+             "original":"qwen-token-plan-individual/qwen3.8-max",
+             "chainPos":2,
+             "fallbackInUse":"qwen-token-plan-individual/qwen3.8-flash",
+             "cycles":1}
+          -> router sent the Recovery message; flash halted on it
+          -> chain advanced: chainPos 3,
+             fallbackInUse llama.cpp/unsloth/qwen3.8-27b, cycles 2
+          -> router sent the Recovery message on the local model
+13:07:24  ASSIST llama.cpp (unsloth/qwen3.8-27b) ran the resumed turn
+```
+
+The wait strategy did not run: it applies only to `openai-codex`, so this
+recovery was a pure switch walk until the local model took over. The
+`model-router-pending` session entries above are also what re-arms the
+recovery if the session restarts mid-walk.
+
 # quota extension
 
 Monitors the OpenAI ChatGPT plan quota, so the user sees the remaining
