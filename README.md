@@ -388,19 +388,33 @@ conflict keeps the local side, and every overwritten file gets a
 `<path>.<millis>.bak` backup. `push` uploads the merged tree before it
 touches the local tree, so a network failure leaves the tree intact.
 
+**Onboarding is a wizard.** Once per account, run
+`scripts/setup-sync-wizard.sh`: it registers the GitHub OAuth app and
+stores the public client id. Then each device runs `pi-sync init`: the
+first device creates the shared secret gist (device flow auth, preview,
+confirm), every later device joins with `pi-sync init <gist-id>`. The
+gist is created, and a device joins, only after the preview is
+confirmed. `--yes` confirms without prompting (non-tty runs); `--force`
+re-inits an already-joined device.
+
 ```bash
-pi-sync init <gist-id>   # first device on a new machine
+pi-sync init             # first device: create the shared secret gist
+pi-sync init <gist-id>   # later devices: join it
 pi-sync push             # upload this device's changes (merged)
 pi-sync pull             # take the other devices' changes
 pi-sync status           # ahead / behind / conflict, no side effects
 ```
 
-In a session: `/sync status`, `/sync pull`, `/sync push` (TUI dialogs).
-At startup, a joined device gets a footer line with the ahead/behind
-counts when the tree has moved. The token lives in `~/.pi/sync/token` (mode 600) or
-`PI_SYNC_TOKEN` for one run. See
-[`extensions/sync/README.md`](extensions/sync/README.md) for the merge
-semantics, the manifest, and the module map.
+Auth is the GitHub OAuth device flow (ADR 0007): a gist-only token the
+tool renews while it lives (proactive skew refresh plus one reactive
+retry on 401/403). A hand-written token in `~/.pi/sync/token` (mode 600)
+or `PI_SYNC_TOKEN` is respected but never managed. In a session: `/sync
+init [gist-id]`, `/sync status`, `/sync pull`, `/sync push` (TUI
+dialogs). At startup, a joined device gets a footer line with the
+ahead/behind counts when the tree has moved. See
+[`extensions/sync/README.md`](extensions/sync/README.md) for the
+onboarding steps, the token lifecycle, the merge semantics, the
+manifest, and the module map.
 
 # hello extension
 

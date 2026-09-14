@@ -208,12 +208,12 @@ different concept)
 ### Sync
 
 **Sync wizard**:
-The guided first run that makes a device useful: secure a Gist-only token, then create the shared tree or Pair to an existing one, preview the local changes, confirm them, and report. Re-running it is harmless: a finished step is a no-op.
+The guided first run that makes a device useful: secure a Gist-only token, then create the shared tree or join an existing one, preview the local changes, confirm them, and report. Re-running it on a joined device is a plain error unless the user passes --force.
 _Avoid_: setup (generic), install, first run
 
 **Pairing**:
-Joining a device to a shared tree that already exists: the device fetches the tree, the user confirms what arrives, and the device records which tree it belongs to. Its counterpart is the first device creating the tree.
-_Avoid_: join (generic), attach, link
+Joining a device to a shared tree that already exists: the device fetches the tree, the user confirms what arrives, and the device records which tree it belongs to. Its counterpart is the first device creating the tree. "Join" is the verb for the act; "pairing" is the noun.
+_Avoid_: attach, link
 
 **Gist-only token**:
 The device-local GitHub credential the Gist Backend uses, limited to creating and updating gists. The tool issues it, renews it while it lives, and re-issues it when it dies. A token the user writes by hand is respected but never managed.

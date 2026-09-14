@@ -7,6 +7,69 @@ through a pluggable Backend. v1 ships exactly one backend: a **secret
 GitHub Gist**. The Backend is a single seam, so a later backend (S3,
 Syncthing, rsync) is a new implementation, not a redesign.
 
+## Onboarding (one command per device)
+
+The whole setup is a guided wizard. Each human action is either one
+browser page or one key press.
+
+**Once per account (the only account-level step):**
+
+```bash
+scripts/setup-sync-wizard.sh
+```
+
+The bash wizard opens the GitHub OAuth app page, walks the form (name,
+a `http://127.0.0.1` callback URL that is never used), and stores the
+public **client id** in `<state-dir>/oauth-client.json`. A client secret
+is never created or stored: the device flow does not use one. Scripted
+contexts can set `PI_SYNC_OAUTH_CLIENT_ID` instead.
+
+**On each device:**
+
+```bash
+pi-sync init              # first device: creates the shared secret gist
+pi-sync init <gist-id>    # every later device: joins that gist
+```
+
+What `init` does, step by step:
+
+1. **Auth.** With no token on the device, the CLI runs the GitHub
+   **OAuth device flow** (ADR 0007): it prints a short code, opens
+   `github.com/login/device` in the browser (set `PI_SYNC_NO_BROWSER=1`
+   to skip), and polls until you enter the code. The token it stores
+   carries only the `gist` scope. On expiry or denial it offers exactly
+   one fresh retry, or cancels. It never fails silently and never
+   retries without you.
+2. **Preview.** Before anything is written, the wizard prints the
+   preview: which files are in scope, which files would be sent or
+   replaced, and which files would arrive. The gist is created, and a
+   device joins, only after you confirm with `y`. Declining writes
+   nothing (the stored token excepted, if the flow already finished).
+3. **Report.** The create path prints the gist id and the exact join
+   command for the other devices. The join path prints the files it
+   adopted.
+
+In pi, the same wizard runs as `/sync init [gist-id]`: the device flow
+is a TUI dialog, and the preview confirm is a TUI dialog.
+
+### Flags
+
+| Flag | Effect |
+| --- | --- |
+| `--yes` | Confirm the preview without prompting. Non-tty runs (CI, scripts) need this. |
+| `--force` | Re-init an already-joined device without prompting. The shared tree re-adopts; the local manifest keeps its gist id. |
+
+### The token lifecycle (ADR 0007)
+
+| Token form | How it is managed |
+| --- | --- |
+| **Managed** (device flow) | Stored as JSON in `<state-dir>/token` (mode 600) with `accessToken`, `refreshToken`, and expiry. The tool **renews it while it lives**: proactively when a run starts inside the 5-minute skew window, and reactively when a request gets a 401/403 (the request retries once with the fresh token). Bounds: at most one refresh and one device-flow re-run per run; the device flow re-run needs a terminal, so a headless run reports the fix instead of looping. |
+| **Hand-written** (plain text file or `PI_SYNC_TOKEN`) | Respected but **never managed**: no refresh, no device flow, no rewrites. A dead hand-written token produces the plain "token rejected" error. |
+
+A 404 (gist not found, not a permission problem) never enters renewal:
+it is a plain error. In pi, nothing on session start ever triggers the
+device flow: startup work is read-only.
+
 ## What gets synced
 
 The manifest is an owner-only JSON file in the sync state dir
@@ -27,13 +90,14 @@ hashes, or backs them up. Walking skips symlinks and the directories
 
 ## Operations
 
-All four exist as pi commands (`/sync ...`, with a TUI status dialog) and
-as CLI verbs (same code, `extensions/sync/ops.ts`):
+All five exist as pi commands (`/sync ...`, with a TUI status dialog)
+and as CLI verbs (same code, `extensions/sync/ops.ts`):
 
 | Verb | Effect |
 | --- | --- |
-| `pi-sync init <gist-id>` | Join a new device: fetch the shared tree, adopt the files this device lacks, and record the gist id locally. |
-| `pi-sync push` | Merge local + remote, upload the merged tree, then apply the merge to the local tree. |
+| `pi-sync init` (no id) | The create path: on auth, preview, and confirm, it creates the shared secret gist from this device's tree. |
+| `pi-sync init <gist-id>` | The join path: on auth, preview, and confirm, this device adopts the shared tree and records the gist id. |
+| `pi-sync push` | Merge local + remote, upload the merged tree, then apply the merge to the local tree. On a device that never ran `init`, push is a plain error pointing at `pi-sync init`: it never creates. |
 | `pi-sync pull` | Merge local + remote and apply to the local tree. |
 | `pi-sync status` | The merge without side effects: ahead / behind / conflict. |
 
@@ -109,26 +173,37 @@ dangle after a sync.
   `https://api.github.com` (overridable by `PI_SYNC_GITHUB_BASE_URL`);
   tests stub it, the CLI E2E stands up a loopback server, and the real
   API is covered by the opt-in e2e.
+- **Updates use `PATCH /gists/{id}`.** The legacy `PUT` alias is not
+  in the fine-grained PAT endpoint list, and GitHub answers it with a
+  404 that reads as "gist not found".
 - Every request carries `Authorization: Bearer <token>`; the token is
   never logged, and failure reports carry the GitHub message without
-  credentials.
+  credentials. A 401/403 on an authenticated request gives the auth
+  session one chance to renew the managed token and retry the request
+  once.
 
 ## Token and state
 
 | Location | Purpose |
 | --- | --- |
-| `~/.pi/sync/token` (or `$PI_SYNC_STATE_DIR/token`) | GitHub token, mode 600. A group/world-readable file produces a warning in every report (CLI and pi commands). |
-| `PI_SYNC_TOKEN` | Overrides the file for one run. |
+| `~/.pi/sync/token` (or `$PI_SYNC_STATE_DIR/token`) | The GitHub token, mode 600: managed JSON (device flow) or hand-written plain text. A group/world-readable file produces a warning in every report (CLI and pi commands). |
+| `PI_SYNC_TOKEN` | Overrides the file for one run. Never managed. |
+| `~/.pi/sync/oauth-client.json` | The public OAuth client id, written by `scripts/setup-sync-wizard.sh`. |
+| `PI_SYNC_OAUTH_CLIENT_ID` | Overrides the client id file for one run. |
 | `~/.pi/sync/manifest.json` | The device's manifest copy (carries the local gist id). |
 | `~/.pi/sync/base-state.json` | The device's last-synced Base (owner-only). |
 | `PI_SYNC_HOME` / `PI_SYNC_STATE_DIR` / `PI_SYNC_GITHUB_BASE_URL` | Relocate home, state dir, and API base for scripted runs. |
+| `PI_SYNC_NO_BROWSER=1` | Do not open a browser during the device flow. |
 
 ## pi integration
 
-`/sync push`, `/sync pull`, and `/sync status` open a TUI dialog with the
-full report (in print and RPC modes the report goes to the stream);
-`/sync` alone prints the usage. On session start, when this device is
-already joined, the extension runs a read-only status in the background
+`/sync init [gist-id]`, `/sync push`, `/sync pull`, and `/sync status`
+open a TUI dialog with the full report (in print and RPC modes the
+report goes to the stream); `/sync` alone prints the usage. `/sync init`
+runs the same wizard as the CLI: the device flow as a TUI dialog (it
+only starts in the TUI, never in print or RPC modes), the preview
+confirm as a dialog. On session start, when this device is already
+joined, the extension runs a read-only status in the background
 (5 s timeout) and, on drift, puts a footer status line up:
 
 ```
@@ -148,26 +223,44 @@ empty. Nothing on startup ever mutates the tree or the backend.
 | `localfs.ts` | Local collect (symlink and dir-name guards), plan apply with backups, manifest + base-state files. |
 | `merge.ts` | The pure three-way merge. |
 | `refs.ts` | The cross-reference scanner. |
-| `token.ts` | Token resolution, home/state-dir locations. |
+| `token.ts` | Token file: managed JSON vs hand-written plain text, resolution, warnings. |
+| `config.ts` | The OAuth client id resolution (env wins, then the wizard-written file). |
+| `deviceflow.ts` | The GitHub OAuth device flow: request code, poll, one retry, persist. |
+| `refresh.ts` | The token refresh: proactive skew check and the reactive exchange. |
+| `auth.ts` | The auth session: resolves a token, owns the renewal bounds (one refresh, one re-flow per run). |
 | `backends.ts` | Backend registry. |
-| `backends/github-gist.ts` | The Gist backend over the `GistTransport` seam. |
-| `ops.ts` | The four operations; one `SyncRuntime` for CLI and pi. |
+| `backends/github-gist.ts` | The Gist backend over the `GistTransport` seam; 401/403 hands back to the auth session for one renewal + retry. |
+| `ops.ts` | The five operations; one `SyncRuntime` for CLI and pi. |
 | `cli.ts` / `cli.mjs` | The `pi-sync` CLI (jiti-loaded TS, no build step). |
-| `index.ts` | The pi extension: `/sync`, the startup notice. |
+| `index.ts` | The pi extension: `/sync`, the TUI wizard, the startup notice. |
 
 ## Tests
 
 ```bash
-npx vitest run tests/sync     # unit + CLI E2E (loopback fake API), no network
-PI_SYNC_TOKEN=<gist token> node tests/sync/e2e-gist.mjs   # opt-in real API
+npx vitest run tests/sync                          # no network
+PI_SYNC_TOKEN=<gist token> node tests/sync/e2e-gist.mjs          # opt-in, real GitHub, PAT mode
+PI_SYNC_OAUTH_CLIENT_ID=<id> node tests/sync/e2e-gist.mjs --device-flow   # opt-in, real GitHub, device flow
 ```
 
 - `manifest.test.ts` - glob semantics, validation, canonical serialization.
 - `merge.test.ts` - every merge case from the spec table.
 - `refs.test.ts` - scanner coverage and caps.
-- `token.test.ts` - token precedence and state-dir overrides.
+- `token.test.ts` - managed vs hand-written tokens, precedence, warnings.
+- `deviceflow.test.ts` - the device flow states (success, one retry on
+  expiry, denial, abort), the refresh paths, and the auth session
+  bounds (hand-written tokens never managed; at most one renewal per
+  run; 404 never renews).
 - `ops.test.ts` - the operations on real temp homes against the in-memory
-  fake backend, including the multi-device stale-base scenarios.
+  fake backend, including the multi-device stale-base scenarios and the
+  consent gates on both init paths.
 - `gist-backend.test.ts` - the Gist backend against a stubbed transport.
-- `cli.test.ts` - the CLI E2E: a loopback server speaks the Gist API,
-  two homes sync through the real HTTP stack.
+- `cli.test.ts` - the CLI E2E: a loopback server speaks the Gist API
+  and the OAuth endpoints, two homes sync through the real HTTP stack.
+- `onboarding-e2e.test.ts` - the onboarding proof (issue #40): the real
+  CLI in a real terminal (a pty via util-linux `script`), a loopback
+  stub playing GitHub, the test playing the human (entering the device
+  code by flipping the stub, confirming with y), from a clean home to a
+  joined device, plus the decline path that writes nothing.
+- `e2e-gist.mjs` - the opt-in live run against the real GitHub (PAT or
+  device flow mode), timed for human actions; it records the human
+  action count and deletes the gist on exit.

@@ -6,10 +6,14 @@ scopes, or handle a secret by hand. We decided to issue the credential through
 GitHub's OAuth device flow: the tool shows a one-time code at
 `github.com/login/device`, and when the user enters it, GitHub hands the tool
 a token limited to the `gist` scope. The OAuth app opts into expiring tokens,
-so the tool holds an 8-hour access token plus a refresh token that rolls on
-every use, and the tool re-runs the device flow when the refresh token dies.
-A rejected token mid-operation triggers one re-run and one retry, then a
-clean error.
+so the tool holds an 8-hour access token plus a refresh token. The tool
+renews the access token while it lives: proactively when a run starts
+near expiry, and reactively on a 401/403. The refresh token is replaced
+when the exchange returns a new one and kept when it does not. The tool
+re-runs the device flow when the refresh token dies, and only in a
+context that can show it (a terminal or the TUI). A rejected token
+mid-operation triggers at most one refresh and one retry per operation,
+then a clean error.
 
 The alternative that keeps the user out of token handling was rejected: a
 non-expiring device-flow token with a local 180-day rotation policy and
