@@ -7,6 +7,7 @@ A pi package that bundles pi extensions. This package contains:
 - **context-cap** - `--context-window <tokens>` caps the session's context window so compaction fires early.
 - **model-router** - recovers a session from a provider usage-limit halt (switch to a fallback or wait for the reset, then resume).
 - **quota** - monitors the OpenAI ChatGPT plan quota: a footer line with the used windows, and a `/quota` detail view.
+- **sync** - cross-device pi config sync: `/sync` plus the `pi-sync` CLI, three-way merge, v1 backend a secret GitHub Gist.
 - **hello** - a minimal example extension.
 
 See the [pi packages docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md) and the [extensions docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md).
@@ -23,6 +24,7 @@ See the [pi packages docs](https://github.com/earendil-works/pi/blob/main/packag
 │   ├── context-cap/  # multi-file extension, entry point at context-cap/index.ts
 │   ├── model-router/ # multi-file extension, entry point at model-router/index.ts
 │   ├── quota/        # multi-file extension, entry point at quota/index.ts
+│   ├── sync/         # multi-file extension, entry point at sync/index.ts, plus the pi-sync CLI
 │   └── codegraph/    # multi-file extension, entry point at codegraph/index.ts
 ├── docs/adr/         # architecture decision records
 ├── scripts/          # postinstall patch for the embedded codegraph library
@@ -376,6 +378,30 @@ minutes (a fixed constant, not configurable). It works from any session and
 refreshes the ChatGPT access token itself when it expires (ADR 0005). See
 [`extensions/quota/README.md`](extensions/quota/README.md).
 
+# sync extension
+
+Keeps the user's pi config (the files named in a default-deny sync
+manifest) in sync across devices through a pluggable Backend. v1 ships
+one backend: a secret GitHub Gist. `push` and `pull` run a three-way
+merge (the device's last-synced base, local, remote); a same-second
+conflict keeps the local side, and every overwritten file gets a
+`<path>.<millis>.bak` backup. `push` uploads the merged tree before it
+touches the local tree, so a network failure leaves the tree intact.
+
+```bash
+pi-sync init <gist-id>   # first device on a new machine
+pi-sync push             # upload this device's changes (merged)
+pi-sync pull             # take the other devices' changes
+pi-sync status           # ahead / behind / conflict, no side effects
+```
+
+In a session: `/sync status`, `/sync pull`, `/sync push` (TUI dialogs).
+At startup, a joined device gets a footer line with the ahead/behind
+counts when the tree has moved. The token lives in `~/.pi/sync/token` (mode 600) or
+`PI_SYNC_TOKEN` for one run. See
+[`extensions/sync/README.md`](extensions/sync/README.md) for the merge
+semantics, the manifest, and the module map.
+
 # hello extension
 
 A minimal example extension: registers a `/hello` command that shows a
@@ -432,6 +458,8 @@ bun test tests/codegraph/runtime-bun.test.cts
 - [`extensions/codegraph/README.md`](extensions/codegraph/README.md) - the
   full internal reference for the codegraph extension: the runtime patch,
   index lifecycle, root resolution, labels, and the module map.
+- [`extensions/sync/README.md`](extensions/sync/README.md) - the sync
+  extension reference: manifest, merge semantics, Gist backend, module map.
 - [`CONTEXT.md`](CONTEXT.md) - the domain glossary (index, project root,
   named root, trusted root, seed, reconcile, prewarm, and the rest).
 - [`docs/adr/`](docs/adr/) - the architecture decisions behind the design.
