@@ -11,6 +11,9 @@
     "extensions",
     "scripts"
   ],
+  "bin": {
+    "pi-sync": "./extensions/sync/cli.mjs"
+  },
   "pi": {
     "extensions": [
       "./extensions"
@@ -26,7 +29,6 @@
     "@earendil-works/pi-coding-agent": "^0.85.1",
     "@earendil-works/pi-tui": "^0.85.1",
     "@types/node": "^26.4.1",
-    "jiti": "^2.7.0",
     "typebox": "^1.3.28",
     "typescript": "^5.6.0",
     "vitest": "^4.1.11"
@@ -37,10 +39,12 @@
     "test": "vitest run",
     "smoke:node": "node tests/codegraph/smoke/smoke-node.mjs",
     "e2e:context-cap": "node tests/context-cap/e2e-rpc.mjs",
-    "e2e:quota": "node tests/quota/e2e-rpc.mjs"
+    "e2e:quota": "node tests/quota/e2e-rpc.mjs",
+    "e2e:sync": "node tests/sync/e2e-gist.mjs"
   },
   "dependencies": {
-    "@colbymchenry/codegraph": "^1.6.0"
+    "@colbymchenry/codegraph": "^1.6.0",
+    "jiti": "^2.7.0"
   },
   "allowScripts": {
     "esbuild@0.28.2": true

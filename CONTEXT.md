@@ -225,9 +225,12 @@ _Avoid_: provider (pi's word for a model API), remote (implies a network
 peer), store (too generic)
 
 **Base state**:
-The tool-managed record the last push writes into the Backend, holding
-per-file time and content. Any device compares its local files and the
-remote Snapshot against it, so a merge decides on facts no single device
-holds.
+The tool-managed record of a synced tree: per-file modification time
+and content hash. It is the "before" side of every three-way merge. It
+exists in two copies: each device caches the Base of its last sync
+(owner-only, in the state directory) and merges against that cache, so a
+stale device never reads quiet files as both-sides changes; the newest
+shared Base lives in the Backend and advances with every push. A device
+that lost its cache falls back to the shared Base.
 _Avoid_: metadata (generic), manifest (clashes with Sync manifest), state
 (too generic)
