@@ -31,12 +31,13 @@ const USAGE = [
 export default function (pi: ExtensionAPI): void {
 	let sessionCtx: ExtensionContext | null = null;
 
-	function makeRuntime(signal?: AbortSignal): { runtime?: SyncRuntime; error?: string } {
+	/** The token warning (for example a group-readable token file) rides with the runtime so every report carries it. */
+	function makeRuntime(signal?: AbortSignal): { runtime?: SyncRuntime; warning?: string; error?: string } {
 		const token = tokenFor(process.env);
 		if (token.error && !token.token) return { error: token.error };
 		try {
 			const runtime = buildSyncRuntime(process.env, token.token ?? "");
-			return signal ? { runtime: withSignal(runtime, signal) } : { runtime };
+			return signal ? { runtime: withSignal(runtime, signal), warning: token.warning } : { runtime, warning: token.warning };
 		} catch (err) {
 			return { error: err instanceof Error ? err.message : String(err) };
 		}
@@ -109,6 +110,7 @@ export default function (pi: ExtensionAPI): void {
 	async function run(args: string, ctx: ExtensionContext): Promise<void> {
 		const [command, ...rest] = args.trim().split(/\s+/);
 		let outcome: SyncOutcome;
+		let tokenWarning: string | undefined;
 		switch (command) {
 			case "init": {
 				const gistId = rest[0];
@@ -121,6 +123,7 @@ export default function (pi: ExtensionAPI): void {
 					show(ctx, [built.error ?? "could not build the sync backend"], true);
 					return;
 				}
+				tokenWarning = built.warning;
 				outcome = await runInit(built.runtime, gistId);
 				break;
 			}
@@ -132,6 +135,7 @@ export default function (pi: ExtensionAPI): void {
 					show(ctx, [built.error ?? "could not build the sync backend"], true);
 					return;
 				}
+				tokenWarning = built.warning;
 				outcome =
 					command === "push"
 						? await runPush(built.runtime)
@@ -151,7 +155,8 @@ export default function (pi: ExtensionAPI): void {
 			show(ctx, [outcome.error], true);
 			return;
 		}
-		show(ctx, [...outcome.report.lines, ...outcome.report.warnings], false);
+		// The token warning (loose token file mode) rides with every report, the same as in the CLI.
+		show(ctx, [...outcome.report.lines, ...(tokenWarning ? [tokenWarning] : []), ...outcome.report.warnings], false);
 	}
 
 	pi.on("session_start", (_event, ctx) => {

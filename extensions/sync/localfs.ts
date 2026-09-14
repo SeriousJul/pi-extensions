@@ -93,7 +93,10 @@ async function collectFile(full: string, home: string, manifest: SyncManifest, f
 		buffer = await readFile(full);
 		mtimeMs = (await stat(full)).mtimeMs;
 	} catch {
-		return; // unreadable file: skip rather than fail the run
+		// Unreadable file: skip rather than fail the run, but say so. A
+		// silent skip can hide a file from the Snapshot without notice.
+		warnings.push(`skipped unreadable file: ${relative}`);
+		return;
 	}
 	if (!isUtf8(buffer)) {
 		warnings.push(`skipped non-text file (gists are text only): ${relative}`);

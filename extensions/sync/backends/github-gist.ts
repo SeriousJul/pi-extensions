@@ -12,7 +12,7 @@
  */
 import { sha256Hex } from "../hash.ts";
 import { canonicalManifestText } from "../manifest.ts";
-import type { Backend, BackendResult, BaseState, Snapshot, SyncFile, SyncManifest, SyncPath } from "../types.ts";
+import type { Backend, BackendResult, BaseState, PushResult, Snapshot, SyncFile, SyncManifest, SyncPath } from "../types.ts";
 
 export const GIST_BACKEND_NAME = "github-gist";
 export const GIST_MANIFEST_FILE = ".pi-sync-manifest.json";
@@ -144,7 +144,7 @@ export function createGistBackend(options: GistBackendOptions): Backend {
 		}
 	}
 
-	async function push(snapshot: Snapshot): Promise<BackendResult<string>> {
+	async function push(snapshot: Snapshot): Promise<BackendResult<PushResult>> {
 		if (!options.gistId) {
 			return { ok: false, code: "error", message: "no gist id configured; run the first push to create the gist" };
 		}
@@ -152,15 +152,25 @@ export function createGistBackend(options: GistBackendOptions): Backend {
 			const limitError = gistLimitError(snapshot);
 			if (limitError) throw new GistError("error", limitError);
 			// Gist updates replace the named files. Files the gist still has
-			// that the Snapshot drops are deleted by naming them null.
+			// that the Snapshot drops are handled by name:
+			//  - the Base state marks them deleted (a tool-managed deletion):
+			//    name them null so the deletion propagates
+			//  - otherwise they are unmanaged (hand-added in the GitHub UI):
+			//    leave them in place and report them; never delete user data
 			const current = await github<GistShape>("GET", `/gists/${options.gistId}`);
 			const payload = toGistPayload(snapshot);
-			for (const name of Object.keys(current.files ?? {})) {
-				if (!(name in payload.files)) payload.files[name] = null;
+			const kept: string[] = [];
+			for (const name of Object.keys(current.files ?? {}).sort()) {
+				if (name in payload.files) continue;
+				if (snapshot.base?.[name]?.deleted === true) {
+					payload.files[name] = null;
+				} else {
+					kept.push(name);
+				}
 			}
 			const updated = await github<GistShape>("PUT", `/gists/${options.gistId}`, { files: payload.files });
 			if (typeof updated.id !== "string") throw new GistError("error", "GitHub updated a gist but returned no id");
-			return { ok: true, value: updated.id };
+			return { ok: true, value: { id: updated.id, kept } };
 		} catch (err) {
 			return mapError(err, options.gistId);
 		}

@@ -92,14 +92,15 @@ try {
 	console.log("ok: device B reports in sync");
 } finally {
 	// Delete the gist no matter what failed, then drop the homes.
+	// The token rides in the child's env, never on the command line.
 	if (gistId) {
 		const del = spawnSync(
 			process.execPath,
 			[
 				"-e",
-				`fetch("https://api.github.com/gists/${gistId}", { method: "DELETE", headers: { Authorization: "bearer ${token}", "User-Agent": "pi-sync-e2e", Accept: "application/vnd.github+json" } }).then((r) => console.log("gist delete: " + r.status)).catch((e) => console.error("gist delete error: " + e.message));`,
+				"const id = process.env.PI_SYNC_GIST_ID; const token = process.env.PI_SYNC_TOKEN; fetch('https://api.github.com/gists/' + id, { method: 'DELETE', headers: { Authorization: 'bearer ' + token, 'User-Agent': 'pi-sync-e2e', Accept: 'application/vnd.github+json' } }).then((r) => console.log('gist delete: ' + r.status)).catch((e) => console.error('gist delete error: ' + e.message));",
 			],
-			{ stdio: "inherit" },
+			{ stdio: "inherit", env: { PI_SYNC_GIST_ID: gistId, PI_SYNC_TOKEN: token } },
 		);
 		if (del.status !== 0) fail("could not run the gist cleanup");
 	}

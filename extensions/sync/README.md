@@ -40,7 +40,9 @@ as CLI verbs (same code, `extensions/sync/ops.ts`):
 `push` uploads **first**: a network failure leaves the local tree
 untouched. Unreadable files and non-text files are skipped with a
 warning line in the report, so a partial or binary-laden tree never
-silently goes out wrong.
+silently goes out wrong. The device-local base is recorded only after
+the local apply succeeds, so a push whose apply fails cannot leave a
+half-merged tree labeled "in sync".
 
 ## Merge semantics
 
@@ -56,30 +58,41 @@ snapshots: **base**, **local**, **remote**.
   the base the device just wrote.
 - **Unchanged + unchanged:** no action.
 - **One side changed:** take the changed side.
-- **Both changed, same content:** no action (they converged).
+- **Both changed, same content:** converged. The file is rewritten with
+  the shared content and its mtime is normalized (no backup).
 - **Both changed, different content:** conflict. The newer file mtime
   wins; on an equal mtime the **local** side wins, so a pull never
   clobbers an edit made at the same second it ran.
 - **Deleted one side, changed the other:** the change wins. Deleted on
   both sides: stays deleted.
 - **New on one side:** appears on the other.
+- **Not covered by either manifest:** unmanaged. Files the shared tree
+  holds that no manifest pattern covers (for example hand-added in the
+  GitHub UI) never enter the merge: no device applies them locally and
+  they never reach the base state.
 
 Every file the merge overwrites gets a backup named
 `<path>.<millis>.bak` next to it. The collector skips `*.bak`, so
 backups never enter a snapshot. The tool never deletes user files that
 the manifest no longer matches.
 
-A joining device (init) adopts every shared file it lacks. The
-tool-managed manifest is never adopted by the merge; the init operation
-writes it explicitly, which keeps the local copy's gist id intact.
+A joining device (init) adopts every manifest-covered shared file it
+lacks. The tool-managed manifest is never adopted by the merge; the
+init operation writes it explicitly, which keeps the local copy's gist
+id intact.
+
+**Hand-added files are protected.** A gist file the tool never managed
+(for example one added in the GitHub UI at a path no pattern covers) is
+never deleted by a push: the backend leaves it in place, and every push
+reports it, so the user can delete it deliberately in the GitHub UI.
 
 ## Reference scanner
 
 Before init, pull, and push, the local markdown files are scanned for
 references to paths outside the manifest: `~/...` tokens and markdown
-link targets. Each distinct (file, resolved path) pair that is not
-covered produces one warning line, capped at 10 with a `+N more`
-counter. The warnings are advisory: the operation still runs. This
+link targets. The scanner dedupes by (file, resolved path) pair; each
+distinct uncovered pair produces one warning line. The warnings are
+advisory: the operation still runs. This
 implements the spec's "detect and warn" for cross-references that would
 dangle after a sync.
 
@@ -90,8 +103,9 @@ dangle after a sync.
   `.pi-sync-base-state.json` (the shared base).
 - **Limits are enforced locally, before any request:** 20 files max
   (the gist file cap), 10 MB total (the gist body cap).
-- **Transport is a seam.** `GistTransport` is two functions, `json` and
-  `raw`. Production uses the global `fetch` against
+- **Transport is a seam.** `GistTransport` is one `request` function
+  (method, url, headers, optional body). Production uses the global
+  `fetch` against
   `https://api.github.com` (overridable by `PI_SYNC_GITHUB_BASE_URL`);
   tests stub it, the CLI E2E stands up a loopback server, and the real
   API is covered by the opt-in e2e.
@@ -103,8 +117,8 @@ dangle after a sync.
 
 | Location | Purpose |
 | --- | --- |
-| `~/.pi/sync/token` (or `$PI_SYNC_STATE_DIR/token`) | GitHub token, mode 600. |
-| `PI_SYNC_TOKEN` | Overrides the file for one run. A warning is added to the report when the token came from the environment. |
+| `~/.pi/sync/token` (or `$PI_SYNC_STATE_DIR/token`) | GitHub token, mode 600. A group/world-readable file produces a warning in every report (CLI and pi commands). |
+| `PI_SYNC_TOKEN` | Overrides the file for one run. |
 | `~/.pi/sync/manifest.json` | The device's manifest copy (carries the local gist id). |
 | `~/.pi/sync/base-state.json` | The device's last-synced Base (owner-only). |
 | `PI_SYNC_HOME` / `PI_SYNC_STATE_DIR` / `PI_SYNC_GITHUB_BASE_URL` | Relocate home, state dir, and API base for scripted runs. |
@@ -129,8 +143,8 @@ empty. Nothing on startup ever mutates the tree or the backend.
 | File | Role |
 | --- | --- |
 | `types.ts` | The seams: `SyncManifest`, `Snapshot`, `BaseState`, `Backend`. |
-| `manifest.ts` | Manifest parse/validate/serialize, glob matching, `walkRoots` with symlink and size guards. |
-| `hash.ts` | sha256 (hex, truncated) and the strict UTF-8 check. |
+| `manifest.ts` | Manifest parse/validate/serialize, glob matching, `walkRoots`. |
+| `hash.ts` | sha256 hex and the strict UTF-8 check. |
 | `localfs.ts` | Local collect (symlink and dir-name guards), plan apply with backups, manifest + base-state files. |
 | `merge.ts` | The pure three-way merge. |
 | `refs.ts` | The cross-reference scanner. |

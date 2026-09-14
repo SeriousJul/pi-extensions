@@ -66,6 +66,18 @@ export interface BaseEntry {
 /** Per-file record of the last push, keyed by path. Includes MANIFEST_KEY. */
 export type BaseState = Record<SyncPath, BaseEntry>;
 
+/** What a successful push produced. */
+export interface PushResult {
+	/** The target id. */
+	id: string;
+	/**
+	 * Files the target held that the new Snapshot does not carry and the tool
+	 * never managed (for example hand-added in the GitHub UI). The backend
+	 * left them in place instead of deleting them; the caller reports them.
+	 */
+	kept: string[];
+}
+
 /** The full Snapshot a Backend stores. */
 export interface Snapshot {
 	/** Tool-managed. Null only for a hand-created Backend without one. */
@@ -93,6 +105,11 @@ export interface Backend {
 	fetch(): Promise<BackendResult<Snapshot>>;
 	/** Create the target from a Snapshot. Resolves to the target id. */
 	create(snapshot: Snapshot): Promise<BackendResult<string>>;
-	/** Replace the stored Snapshot. Resolves to the target id. */
-	push(snapshot: Snapshot): Promise<BackendResult<string>>;
+	/**
+	 * Replace the stored Snapshot. Resolves to the target id plus the files
+	 * the target held that the Snapshot does not carry and that the backend
+	 * kept in place instead of deleting (it never deletes files it does not
+	 * manage).
+	 */
+	push(snapshot: Snapshot): Promise<BackendResult<PushResult>>;
 }

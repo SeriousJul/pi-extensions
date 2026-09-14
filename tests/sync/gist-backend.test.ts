@@ -132,7 +132,7 @@ describe("GistBackend against a stubbed GistTransport (no network)", () => {
 		expect(body.files[GIST_BASE_FILE]).toBeDefined();
 	});
 
-	it("push PUTs the snapshot and deletes files the gist still has but the snapshot dropped", async () => {
+	it("push PUTs the snapshot and deletes a file the Base state marks deleted", async () => {
 		const canned = makeTransport([
 			{
 				status: 200,
@@ -146,10 +146,12 @@ describe("GistBackend against a stubbed GistTransport (no network)", () => {
 			{ status: 200, json: gistJson({ "AGENTS.md": { content: "old" } }, "gid-1") },
 		]);
 		const backend = createGistBackend({ gistId: "gid-1", token: "tok", transport: canned.transport });
-		const result = await backend.push(snapshotOf("# agents v2"));
+		const snapshot = snapshotOf("# agents v2");
+		snapshot.base!["OPINIONS.md"] = { hash: sha256Hex("dropped"), mtimeMs: 1_000, deleted: true };
+		const result = await backend.push(snapshot);
 		expect(result.ok).toBe(true);
 		if (!result.ok) return;
-		expect(result.value).toBe("gid-1");
+		expect(result.value).toEqual({ id: "gid-1", kept: [] });
 
 		const [get, put] = canned.requests;
 		expect(get.method).toBe("GET");
@@ -158,6 +160,31 @@ describe("GistBackend against a stubbed GistTransport (no network)", () => {
 		expect(body.files["AGENTS.md"].content).toBe("# agents v2");
 		expect(body.files["OPINIONS.md"]).toBeNull();
 		expect(body.files[GIST_MANIFEST_FILE]).toBeDefined();
+	});
+
+	it("push keeps a hand-added gist file (not in the snapshot, not deleted in the base) and reports it", async () => {
+		const canned = makeTransport([
+			{
+				status: 200,
+				json: gistJson({
+					"AGENTS.md": { content: "old" },
+					"notes/hand-added.md": { content: "hand" },
+					[GIST_MANIFEST_FILE]: { content: "{}" },
+					[GIST_BASE_FILE]: { content: "{}" },
+				}),
+			},
+			{ status: 200, json: gistJson({ "AGENTS.md": { content: "old" } }, "gid-1") },
+		]);
+		const backend = createGistBackend({ gistId: "gid-1", token: "tok", transport: canned.transport });
+		const result = await backend.push(snapshotOf("# agents v2"));
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.value).toEqual({ id: "gid-1", kept: ["notes/hand-added.md"] });
+
+		const [, put] = canned.requests;
+		const body = JSON.parse(put.body!);
+		// The hand-added file is absent from the PUT body: GitHub leaves it in place.
+		expect(body.files["notes/hand-added.md"]).toBeUndefined();
 	});
 
 	it("rejects a snapshot that exceeds the gist file limit before any API call", async () => {

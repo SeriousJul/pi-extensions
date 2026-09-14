@@ -10,7 +10,7 @@
  */
 import { applyPlan, collectLocalFiles, localManifestFile, readLocalBase, readLocalManifest, writeLocalBase, writeLocalManifest, type ApplyResult } from "./localfs.ts";
 import { merge, planMutatesLocal, type MergePlan, type SideMap } from "./merge.ts";
-import { DEFAULT_MANIFEST, canonicalManifest, canonicalManifestText, parseManifest } from "./manifest.ts";
+import { DEFAULT_MANIFEST, canonicalManifest, canonicalManifestText, isPathIncluded, parseManifest } from "./manifest.ts";
 import { scanReferences } from "./refs.ts";
 import { sha256Hex } from "./hash.ts";
 import { MANIFEST_KEY, type Backend, type BaseState, type Snapshot, type SyncFile, type SyncManifest } from "./types.ts";
@@ -123,7 +123,13 @@ async function loadRemote(backend: Backend, fallbackGistId?: string): Promise<Re
 function planMerge(base: BaseState | null, local: LocalSide, remote: RemoteSide, fresh = false): MergePlan {
 	const localMap = filesToSideMap(local.files);
 	if (local.manifestFile) localMap.set(MANIFEST_KEY, { hash: local.manifestFile.hash, mtimeMs: local.manifestFile.mtimeMs, content: local.manifestFile.content });
-	const remoteMap = filesToSideMap(remote.files);
+	// The manifest is the single source of truth for what syncs. Files the
+	// shared tree holds that neither manifest covers (for example
+	// hand-added in the GitHub UI) are unmanaged: the merge ignores them,
+	// no device applies them locally, and the backend keeps them in place
+	// and reports them on push instead of deleting them.
+	const covered = (path: string) => isPathIncluded(path, local.manifest) || isPathIncluded(path, remote.manifest);
+	const remoteMap = filesToSideMap(remote.files.filter((f) => covered(f.path)));
 	const manifestText = canonicalManifestText(remote.manifest);
 	remoteMap.set(MANIFEST_KEY, {
 		hash: sha256Hex(manifestText),
@@ -347,9 +353,9 @@ export async function runPush(rt: SyncRuntime): Promise<SyncOutcome> {
 		return fail(`push failed; local files were not modified: ${pushed.message}`);
 	}
 
-	// The upload succeeded: this device's last-synced Base is the one it just
-	// wrote, whether or not the local apply below also succeeds.
-	await writeLocalBase(rt.stateDir, base);
+	// The upload succeeded: apply the merge locally. The base is recorded
+	// only after the apply succeeds, so a failed apply can never leave a
+	// half-merged tree labeled in sync.
 	let apply: ApplyResult = { backups: [] };
 	if (planMutatesLocal(plan)) {
 		try {
@@ -359,8 +365,9 @@ export async function runPush(rt: SyncRuntime): Promise<SyncOutcome> {
 			return fail(`push uploaded, but applying the merge locally failed: ${String(err)}`);
 		}
 	}
+	await writeLocalBase(rt.stateDir, base);
 	const gistId = local.manifest.backendOptions.gistId;
-	const lines: string[] = [`pi sync push (gist ${pushed.value})`];
+	const lines: string[] = [`pi sync push (gist ${pushed.value.id})`];
 	const planReport = planLines(plan, apply.backups, true);
 	if (planReport.length > 0) {
 		lines.push("resolved before pushing:");
@@ -369,7 +376,8 @@ export async function runPush(rt: SyncRuntime): Promise<SyncOutcome> {
 	lines.push(`pushed ${merged.length} files; base state updated`);
 	const toolManaged = toolManagedLine(plan, true);
 	if (toolManaged) lines.push(toolManaged);
-	const warnings = [...local.collectWarnings, ...refWarningLines(local.files)];
+	const kept = pushed.value.kept.map((name) => `warning: the gist keeps ${name}, which is not part of the synced tree; delete it in the GitHub UI if it is not wanted`);
+	const warnings = [...local.collectWarnings, ...refWarningLines(local.files), ...kept];
 	return { ok: true, report: reportFor("push", gistId, plan, lines, warnings) };
 }
 

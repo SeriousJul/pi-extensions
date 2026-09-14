@@ -5,7 +5,7 @@
  * the network.
  */
 import { sha256Hex } from "../../extensions/sync/hash.ts";
-import type { Backend, BaseState, BackendResult, Snapshot, SyncFile, SyncManifest } from "../../extensions/sync/types.ts";
+import type { Backend, BaseState, BackendResult, PushResult, Snapshot, SyncFile, SyncManifest } from "../../extensions/sync/types.ts";
 
 export interface FakeBackendOptions {
 	/** The stored Snapshot. Null = the target does not exist. */
@@ -52,12 +52,23 @@ export class FakeBackend implements Backend {
 		return Promise.resolve({ ok: true, value: this.id });
 	}
 
-	push(snapshot: Snapshot): Promise<BackendResult<string>> {
+	push(snapshot: Snapshot): Promise<BackendResult<PushResult>> {
 		this.calls.push({ method: "push", id: this.id });
 		if (this.fails("push")) return Promise.resolve({ ok: false, code: "error", message: this.failure! });
 		if (!this.stored) return Promise.resolve({ ok: false, code: "not-found", message: `gist ${this.id} not found` });
-		this.stored = snapshot;
-		return Promise.resolve({ ok: true, value: this.id });
+		// Same rule as the Gist backend: a file the stored tree has that the
+		// new Snapshot drops is a tool deletion (Base marks it deleted) or
+		// unmanaged (hand-added). Only the former is removed; the latter is
+		// kept in the target and reported.
+		const kept: string[] = [];
+		for (const file of this.stored.files) {
+			if (snapshot.files.some((next) => next.path === file.path)) continue;
+			if (snapshot.base?.[file.path]?.deleted === true) continue;
+			kept.push(file.path);
+		}
+		const keptFiles = this.stored.files.filter((file) => kept.includes(file.path));
+		this.stored = { ...snapshot, files: [...snapshot.files, ...keptFiles] };
+		return Promise.resolve({ ok: true, value: { id: this.id, kept } });
 	}
 }
 

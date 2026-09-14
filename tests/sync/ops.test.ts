@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -17,6 +17,8 @@ async function tempDir(prefix: string): Promise<string> {
 	dirs.push(dir);
 	return dir;
 }
+// Permission-based failure injection does not work as root.
+const isRoot = typeof process.getuid === "function" && process.getuid() === 0;
 afterEach(async () => {
 	await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
@@ -389,6 +391,72 @@ describe("init / push / pull / status (fake backend)", () => {
 		const init = await runInit(b.rt, "gist-abc");
 		expect(init.ok).toBe(true);
 		expect(await get(b.home, "AGENTS.md")).toBe("b local edit");
+	});
+
+	it("a hand-added gist file survives push: it stays in the target and is reported", async () => {
+		await put(a.home, "AGENTS.md", "base", 1_000_000_000_000);
+		expect((await runPush(a.rt)).ok).toBe(true);
+
+		// Someone hand-adds a file to the gist that no include pattern covers.
+		const hand = file("notes/hand.md", "hand", 1_000_000_000_500);
+		fake.stored = { ...fake.stored!, files: [...fake.stored!.files, hand] };
+
+		// A second device joins: the unmanaged hand file is not adopted
+		// locally (the manifest does not cover it), and its later push must
+		// not delete it from the gist.
+		const b = await makeDevice(fake);
+		expect((await runInit(b.rt, "gist-abc")).ok).toBe(true);
+		expect(await has(b.home, "notes/hand.md")).toBe(false);
+
+		const outcome = await runPush(b.rt);
+		expect(outcome.ok).toBe(true);
+		if (!outcome.ok) return;
+		// The unmanaged file is reported, not silently deleted.
+		expect(outcome.report.warnings.some((w) => w.includes("notes/hand.md"))).toBe(true);
+		expect(fake.stored!.files.some((f) => f.path === "notes/hand.md")).toBe(true);
+	});
+
+	it.skipIf(isRoot)("push records the device base only after the local apply succeeds", async () => {
+		await put(a.home, "AGENTS.md", "base", 1_000_000_000_000);
+		expect((await runPush(a.rt)).ok).toBe(true);
+		const baseBefore = await readFile(join(a.stateDir, "base-state.json"), "utf8");
+
+		// Remote work that the merge would apply locally.
+		const remoteMtime = 1_000_000_000_200;
+		fake.stored = {
+			manifest: DEFAULT_MANIFEST,
+			base: { "AGENTS.md": { hash: sha256Hex("remote edit"), mtimeMs: remoteMtime } },
+			files: [file("AGENTS.md", "remote edit", remoteMtime)],
+		};
+
+		// Make the home read-only so the local apply cannot write.
+		await chmod(a.home, 0o555);
+		const outcome = await runPush(a.rt);
+		await chmod(a.home, 0o755);
+		expect(outcome.ok).toBe(false);
+		if (outcome.ok) return;
+		expect(outcome.error).toContain("applying the merge locally failed");
+		// The local tree is untouched...
+		expect(await get(a.home, "AGENTS.md")).toBe("base");
+		// ...and the base was not advanced, so the next status reports drift
+		// instead of "in sync" over a half-merged tree.
+		expect(await readFile(join(a.stateDir, "base-state.json"), "utf8")).toBe(baseBefore);
+	});
+
+	it.skipIf(isRoot)("an unreadable in-scope file is skipped with a warning line", async () => {
+		await put(a.home, "AGENTS.md", "base", 1_000_000_000_000);
+		await put(a.home, "OPINIONS.md", "locked", 1_000_000_000_000);
+		await chmod(join(a.home, "OPINIONS.md"), 0o000);
+		try {
+			const outcome = await runPush(a.rt);
+			expect(outcome.ok).toBe(true);
+			if (!outcome.ok) return;
+			expect(outcome.report.warnings).toContain("skipped unreadable file: OPINIONS.md");
+			// The unreadable file did not enter the snapshot.
+			expect(fake.stored!.files.some((f) => f.path === "OPINIONS.md")).toBe(false);
+		} finally {
+			await chmod(join(a.home, "OPINIONS.md"), 0o644);
+		}
 	});
 
 	it("the whole snapshot round-trips through collectLocalFiles after a push", async () => {
