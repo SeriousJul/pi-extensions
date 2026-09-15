@@ -646,6 +646,7 @@ describe("startup probe (issue #36)", () => {
 
 	it("stays silent for a joined device with zero drift", async () => {
 		await put(a.home, "AGENTS.md", "base", 1_000_000_000_000);
+		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true);
 		expect((await runPush(a.rt)).ok).toBe(true);
 		const probe = await probeStartup(a.rt);
 		expect(probe).toEqual({ state: "silent" });
@@ -653,6 +654,7 @@ describe("startup probe (issue #36)", () => {
 
 	it("reports drift for a joined device", async () => {
 		await put(a.home, "AGENTS.md", "base", 1_000_000_000_000);
+		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true);
 		expect((await runPush(a.rt)).ok).toBe(true);
 		// Diverge: local adds a file; remote edits AGENTS.md.
 		await put(a.home, "VOICE.md", "local voice", 1_000_000_000_100);
@@ -668,6 +670,7 @@ describe("startup probe (issue #36)", () => {
 
 	it("stays silent when the fetch fails for a joined device", async () => {
 		await put(a.home, "AGENTS.md", "base", 1_000_000_000_000);
+		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true);
 		expect((await runPush(a.rt)).ok).toBe(true);
 		fake.failure = "401: Bad credentials";
 		const probe = await probeStartup(a.rt);
@@ -676,6 +679,7 @@ describe("startup probe (issue #36)", () => {
 
 	it("stays silent when the local manifest is unreadable", async () => {
 		await put(a.home, "AGENTS.md", "base", 1_000_000_000_000);
+		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true);
 		expect((await runPush(a.rt)).ok).toBe(true);
 		// Corrupt the manifest after joining: a failed local read stays silent.
 		await writeFile(join(a.stateDir, "manifest.json"), "{ not json ");
@@ -685,6 +689,7 @@ describe("startup probe (issue #36)", () => {
 
 	it("never starts a device flow: a joined probe only fetches", async () => {
 		await put(a.home, "AGENTS.md", "base", 1_000_000_000_000);
+		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true);
 		expect((await runPush(a.rt)).ok).toBe(true);
 		fake.calls = []; // drop the push's own traffic
 		await probeStartup(a.rt);
