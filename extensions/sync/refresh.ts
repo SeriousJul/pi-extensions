@@ -64,7 +64,17 @@ export async function refreshAccessToken(deps: RefreshDeps): Promise<RefreshResu
 			obtainedMs: now,
 			expiresMs: now + expiresInMs,
 		};
-		await writeManagedToken(deps.stateDir, token);
+		try {
+			await writeManagedToken(deps.stateDir, token);
+		} catch (err) {
+			// The refresh token was already rotated by this call, so the stored
+			// pair is dead even though the write failed: report it as dead.
+			return {
+				ok: false,
+				error: `the refresh succeeded but the new token pair could not be written to the token file: ${err instanceof Error ? err.message : String(err)}`,
+				refreshDead: true,
+			};
+		}
 		return { ok: true, token };
 	}
 	return {

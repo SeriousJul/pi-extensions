@@ -3,7 +3,7 @@
  * refresh of a managed token, and the auth session that bounds them.
  * A stub OAuth transport keeps every test off the network.
  */
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -381,5 +381,20 @@ describe("the auth session (issue #38)", () => {
 		expect(built.session?.token).toBe("old");
 		const renewed = await built.session?.renew();
 		expect(renewed).toBe("flow-at");
+	});
+
+	it("a successful refresh whose token-file write fails returns a result instead of throwing", async () => {
+		const stateDir = await tempDir("pi-sync-refresh-writefail-");
+		// A directory where the token file belongs: the write must fail even as root.
+		await mkdir(join(stateDir, "token"));
+		const { transport } = stubOAuth({ tokenResponses: [{ status: 200, json: { access_token: "new", refresh_token: "rt2", expires_in: 28800 } }] });
+		const result = await refreshAccessToken({ stateDir, clientId: "client-1", refreshToken: "rt", transport });
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.error).toContain("could not be written");
+			// The refresh already rotated the stored refresh token, so the
+			// stored pair is dead: the device flow is the way back.
+			expect(result.refreshDead).toBe(true);
+		}
 	});
 });

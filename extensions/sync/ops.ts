@@ -85,12 +85,16 @@ function createPreview(manifest: SyncManifest, files: SyncFile[]): string[] {
 }
 
 /** The preview for the join path: what arrives and what it does locally. */
-function joinPreview(gistId: string, manifest: SyncManifest, arriving: number, replaced: string[], deleted: string[]): string[] {
+function joinPreview(gistId: string, manifest: SyncManifest, arriving: string[], replaced: string[], deleted: string[]): string[] {
 	const lines = [
 		`pi sync init (gist ${gistId}) - preview, nothing written yet`,
 		`in scope: ${manifest.include.length} include pattern(s): ${manifest.include.join(", ")}`,
-		`arriving: ${arriving} file(s) from the shared tree`,
 	];
+	if (arriving.length > 0) {
+		lines.push(`arriving: ${arriving.length} new file(s) from the shared tree`, ...arriving.map((p) => `  ${p}`));
+	} else {
+		lines.push("no new files from the shared tree");
+	}
 	if (replaced.length > 0) {
 		lines.push("will replace local:", ...replaced.map((p) => `  ${p}`));
 	} else {
@@ -343,23 +347,28 @@ export async function runInit(rt: SyncRuntime, gistId: string | undefined, opts:
 	const remote = await loadRemote(backend, gistId);
 	if ("error" in remote) return fail(remote.error);
 
-	// Capture freshness before the adopted manifest makes this device look joined.
-	const fresh = existing.manifest === undefined;
 	const local = await loadLocal(rt, remote.manifest);
 	if ("error" in local) return fail(local.error);
 	// The manifest was just adopted from the remote: it is not a local change.
 	local.manifestFile = null;
+	// Fresh = this device has never synced (no base record), not "no
+	// manifest": a device with a pre-written manifest still adopts the shared
+	// tree. A shared file it has never held is an adoption, never a local
+	// deletion - reading it as one would delete it from every device on the
+	// first push.
+	const fresh = local.base === null;
 
 	const plan = planMerge(remote.base, local, remote, fresh);
 	const localPaths = new Set(local.files.map((f) => f.path));
+	const arriving: string[] = [];
 	const replaced: string[] = [];
 	const deleted: string[] = [];
 	for (const action of plan.actions) {
 		if (action.path === MANIFEST_KEY) continue;
-		if (action.kind === "write" && localPaths.has(action.path)) replaced.push(action.path);
+		if (action.kind === "write") (localPaths.has(action.path) ? replaced : arriving).push(action.path);
 		if (action.kind === "delete") deleted.push(action.path);
 	}
-	const preview = joinPreview(gistId, remote.manifest, remote.files.length, replaced, deleted);
+	const preview = joinPreview(gistId, remote.manifest, arriving, replaced, deleted);
 	const consent = await obtainConsent(preview, opts, true);
 	if (!consent.ok) return fail(consent.error, preview);
 

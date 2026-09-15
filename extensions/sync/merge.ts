@@ -75,10 +75,10 @@ function changed(side: MergeFile | undefined, base: MergeFile | undefined): bool
 
 export interface MergeOptions {
 	/**
-	 * True when the local device is joining for the first time (no local
-	 * manifest yet). A file that is on the remote but missing locally is then
-	 * adopted (written), not read as a local deletion: an empty home is not a
-	 * user who deleted everything.
+	 * True when the local device is joining for the first time (it has never
+	 * synced: no local base record). A file that is on the remote but missing
+	 * locally is then adopted (written), not read as a local deletion: an
+	 * empty home is not a user who deleted everything.
 	 */
 	fresh?: boolean;
 }

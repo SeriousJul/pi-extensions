@@ -47,7 +47,6 @@ export interface AuthSession {
 	/** Advisory warning from the token file (for example a loose mode). */
 	warning?: string;
 	source: TokenSource;
-	managed?: ManagedTokenData;
 	/**
 	 * Called by the backend after a 401/403: one refresh, then one
 	 * device-flow re-run (when allowed), then undefined so the caller fails
@@ -156,5 +155,5 @@ export async function createAuthSession(sessionEnv: AuthSessionEnv): Promise<{ s
 		return undefined;
 	};
 
-	return { session: { token: current.token, warning: current.warning, source: current.source, managed: current.managed, renew } };
+	return { session: { token: current.token, warning: current.warning, source: current.source, renew } };
 }

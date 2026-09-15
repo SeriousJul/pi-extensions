@@ -133,6 +133,42 @@ describe("init / push / pull / status (fake backend)", () => {
 		if (parsed.ok) expect(parsed.manifest.backendOptions.gistId).toBe("gist-abc");
 	});
 
+	it("joining with a pre-written manifest and no base adopts the shared tree; the first push keeps the shared files", async () => {
+		// Device A creates the gist with three files.
+		await put(a.home, "AGENTS.md", "agents", 1_000_000_000_000);
+		await put(a.home, "OPINIONS.md", "opinions", 1_000_000_000_000);
+		await put(a.home, "VOICE.md", "voice", 1_000_000_000_000);
+		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true); // the create path
+
+		// Device B is a real onboarding state: a hand-written manifest and a
+		// local AGENTS.md, but no base record (it never synced) and no
+		// OPINIONS.md or VOICE.md.
+		const b = await makeDevice(fake);
+		await mkdir(b.stateDir, { recursive: true });
+		await writeFile(join(b.stateDir, "manifest.json"), canonicalManifestText(DEFAULT_MANIFEST));
+		await put(b.home, "AGENTS.md", "agents", 1_000_000_000_000);
+
+		const init = await runInit(b.rt, "gist-abc", { yes: true });
+		expect(init.ok).toBe(true);
+		if (!init.ok) return;
+		// The join preview lists the files that arrive (F2), not just a count.
+		const preview = init.preview!.join("\n");
+		expect(preview).toContain("arriving: 2 new file(s) from the shared tree");
+		expect(preview).toContain("  OPINIONS.md");
+		expect(preview).toContain("  VOICE.md");
+		// The never-held shared files are adopted locally, not read as deletions.
+		expect(await has(b.home, "OPINIONS.md")).toBe(true);
+		expect(await has(b.home, "VOICE.md")).toBe(true);
+
+		// The first push must not delete the shared files this device never
+		// held: they survive in the gist and the base carries no deletion.
+		const pushed = await runPush(b.rt);
+		expect(pushed.ok).toBe(true);
+		expect(fake.stored!.files.map((f) => f.path).sort()).toEqual(["AGENTS.md", "OPINIONS.md", "VOICE.md"]);
+		expect(fake.stored!.base?.["OPINIONS.md"]?.deleted).not.toBe(true);
+		expect(fake.stored!.base?.["VOICE.md"]?.deleted).not.toBe(true);
+	});
+
 	it("init join without consent writes nothing and returns the preview", async () => {
 		await put(a.home, "AGENTS.md", "shared");
 		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true);
