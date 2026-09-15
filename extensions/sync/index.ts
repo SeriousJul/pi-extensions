@@ -19,7 +19,7 @@ import { buildSyncRuntime, parseInitArgs } from "./cli.ts";
 import { createAuthSession, type AuthSession } from "./auth.ts";
 import { resolveClientId } from "./config.ts";
 import { runDeviceFlow, type DeviceFlowResult } from "./deviceflow.ts";
-import { runInit, runPull, runPush, runStatus, type SyncOutcome, type SyncRuntime } from "./ops.ts";
+import { probeStartup, runInit, runPull, runPush, runStatus, type SyncOutcome, type SyncRuntime } from "./ops.ts";
 import { GITHUB_BASE_URL_ENV, homeFor, resolveToken, stateDirFor } from "./token.ts";
 
 const STATUS_KEY = "sync";
@@ -55,26 +55,27 @@ export default function (pi: ExtensionAPI): void {
 	let sessionCtx: ExtensionContext | null = null;
 
 	/**
-	 * Passive startup notice: a read-only status with a short timeout.
-	 * Reports ahead/behind counts only, or nothing at all: no token, no
-	 * manifest, drift of zero, or a failure all leave the status line empty.
-	 * It never starts the device flow and never renews the token.
+	 * Passive startup notice (issue #36): a read-only probe with a short
+	 * timeout. The line shows the drift when the device is joined, the
+	 * `run /sync init` nudge when a token exists but the device has not joined,
+	 * and nothing otherwise (no token, zero drift, or a failed read). It never
+	 * starts the device flow and never renews the token.
 	 */
 	function startupNotice(ctx: ExtensionContext): void {
 		void (async () => {
 			try {
 				if (!ctx.hasUI) return;
 				const token = resolveToken(homeFor(process.env), process.env);
-				if (!token.token) return;
+				if (!token.token) return; // no token: stay silent
 				const runtime = withSignal(buildSyncRuntime(process.env, token.token), AbortSignal.timeout(NOTICE_TIMEOUT_MS));
-				const outcome = await runStatus(runtime);
-				if (!outcome.ok) return;
-				const { ahead, behind } = outcome.report;
+				const probe = await probeStartup(runtime);
 				if (sessionCtx !== ctx) return; // a newer session owns the line now
-				if (ahead === 0 && behind === 0) {
-					ctx.ui.setStatus(STATUS_KEY, undefined);
+				if (probe.state === "not-joined") {
+					ctx.ui.setStatus(STATUS_KEY, "sync: not joined - run /sync init");
+				} else if (probe.state === "drift") {
+					ctx.ui.setStatus(STATUS_KEY, `sync: ${probe.ahead} ahead, ${probe.behind} behind`);
 				} else {
-					ctx.ui.setStatus(STATUS_KEY, `sync: ${ahead} ahead, ${behind} behind`);
+					ctx.ui.setStatus(STATUS_KEY, undefined);
 				}
 			} catch {
 				// The notice is best effort. Startup never sees an error.

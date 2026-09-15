@@ -580,6 +580,45 @@ function refWarningLines(files: SyncFile[]): string[] {
 	);
 }
 
+/**
+ * The passive startup probe (issue #36): a read-only decision about the status
+ * line. It never writes, never moves data, and never starts a re-authentication
+ * or device flow: it reads the local manifest, and only once this device is
+ * known to be joined does it fetch the remote to measure drift.
+ *
+ * `not-joined` is the single non-numeric report: a token exists but the device
+ * has no local manifest yet, so the caller shows the `run /sync init` nudge.
+ * Zero drift and every failure (a bad local read, a failed fetch, a timeout)
+ * stay silent - the startup line never blocks or alarms.
+ */
+export type StartupProbe =
+	| { state: "not-joined" }
+	| { state: "drift"; ahead: number; behind: number }
+	| { state: "silent" };
+
+export async function probeStartup(rt: SyncRuntime): Promise<StartupProbe> {
+	let local: LocalSide;
+	try {
+		const loaded = await loadLocal(rt);
+		if ("error" in loaded) return { state: "silent" };
+		local = loaded;
+	} catch {
+		return { state: "silent" }; // a local read that throws: stay silent
+	}
+	if (!local.hasLocalManifest) return { state: "not-joined" };
+	try {
+		const backend = rt.buildBackend(local.manifest);
+		const remote = await loadRemote(backend, local.manifest.backendOptions.gistId);
+		if ("error" in remote) return { state: "silent" };
+		const plan = planMerge(mergeBase(local, remote), local, remote);
+		const { ahead, behind } = driftCounts(plan);
+		if (ahead === 0 && behind === 0) return { state: "silent" };
+		return { state: "drift", ahead, behind };
+	} catch {
+		return { state: "silent" }; // a fetch that throws (timeout, network): stay silent
+	}
+}
+
 /** Status: compare without moving anything. Read-only; works with a read-only token. */
 export async function runStatus(rt: SyncRuntime): Promise<SyncOutcome> {
 	const local = await loadLocal(rt);
