@@ -19,14 +19,17 @@ scripts/setup-sync-wizard.sh
 ```
 
 The bash wizard opens the GitHub OAuth app page, walks the form (name,
-a `http://127.0.0.1` callback URL that is never used, and the **Use
-expiring tokens** checkbox that ADR 0007 needs), and stores the public
-**client id** in `<state-dir>/oauth-client.json`. Before it stores the id
-it verifies it against GitHub: a live id gets a throwaway device code, a
-typo is caught on the spot (offline or without `curl` the check degrades
-to a warning and a confirm). A client secret is never created or stored:
-the device flow does not use one. Scripted contexts can set
-`PI_SYNC_OAUTH_CLIENT_ID` instead.
+a `http://127.0.0.1` callback URL that is never used, the **Use
+expiring tokens** checkbox that ADR 0007 needs, and the **device flow
+opt-in** box that GitHub now requires on every app), and stores the
+public **client id** in `<state-dir>/oauth-client.json`. Before it stores
+the id it verifies it against GitHub: a live id gets a throwaway device
+code, a typo is caught on the spot, and an app that left the device flow
+off is named by GitHub's own `device_flow_disabled` refusal - the wizard
+opens the settings page where the opt-in box lives (offline or without
+`curl` the check degrades to a warning and a confirm). A client secret is
+never created or stored: the device flow does not use one. Scripted
+contexts can set `PI_SYNC_OAUTH_CLIENT_ID` instead.
 
 **On each device:**
 

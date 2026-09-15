@@ -239,7 +239,8 @@ if command -v curl >/dev/null 2>&1; then
     printf '  %s✓ verified against GitHub: the client id is live%s\n' "$GREEN" "$RESET"
   elif printf '%s' "$response" | grep -q 'device_flow_disabled'; then
     warn "GitHub refused the device code: device flow is disabled for that app."
-    step "Open the app's settings page, check the device flow opt-in box, then re-run this wizard to re-verify."
+    open_url "${BASE_URL}/settings/developers"
+    step "In the page just opened, pick the app, check the device flow opt-in box on its settings page, then re-run this wizard to re-verify."
     if ! confirm "Store the client id anyway?"; then
       exit 1
     fi

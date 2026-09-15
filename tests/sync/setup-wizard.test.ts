@@ -241,6 +241,8 @@ describe("scripts/setup-sync-wizard.sh (issue #34)", () => {
 		expect(run.status).toBe(0);
 		expect(run.output).toContain("device flow is disabled for that app");
 		expect(run.output).toContain("device flow opt-in box");
+		// the wizard opens the settings page where the opt-in box lives
+		expect(run.output).toContain(`${stub.url}/settings/developers`);
 		expect(readClientId(stateDir)).toBe("abcdef0123456789abcdef0123456789");
 	});
 
