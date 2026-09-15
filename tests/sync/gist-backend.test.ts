@@ -202,6 +202,93 @@ describe("GistBackend against a stubbed GistTransport (no network)", () => {
 	});
 });
 
+describe("mid-operation token renewal (issue #38)", () => {
+	it("renews once after a 401 and retries the request once with the fresh token", async () => {
+		let renewals = 0;
+		const canned = makeTransport([
+			{ status: 401, text: "" },
+			{ status: 200, json: gistJson({ "AGENTS.md": { content: "# agents" } }) },
+		]);
+		const backend = createGistBackend({
+			gistId: "gid-1",
+			token: "stale",
+			transport: canned.transport,
+			onAuthFailure: async () => {
+				renewals++;
+				return "fresh";
+			},
+		});
+		const result = await backend.fetch();
+		expect(result.ok).toBe(true);
+		expect(renewals).toBe(1);
+		expect(canned.requests).toHaveLength(2);
+		expect(canned.requests[0].headers.Authorization).toBe("Bearer stale");
+		expect(canned.requests[1].headers.Authorization).toBe("Bearer fresh");
+	});
+
+	it("a 403 that survives the renewal is a clean error: one renewal, one retry, no loop", async () => {
+		let renewals = 0;
+		const canned = makeTransport([
+			{ status: 403, text: "" },
+			{ status: 403, text: "" },
+		]);
+		const backend = createGistBackend({
+			gistId: "gid-1",
+			token: "stale",
+			transport: canned.transport,
+			onAuthFailure: async () => {
+				renewals++;
+				return "fresh";
+			},
+		});
+		const result = await backend.fetch();
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(renewals).toBe(1);
+		expect(canned.requests).toHaveLength(2); // the original plus exactly one retry
+		expect(result.message).toContain("after a renewal attempt");
+	});
+
+	it("a renewal that returns no token fails cleanly without a retry", async () => {
+		let renewals = 0;
+		const canned = makeTransport([{ status: 401, text: "" }]);
+		const backend = createGistBackend({
+			gistId: "gid-1",
+			token: "stale",
+			transport: canned.transport,
+			onAuthFailure: async () => {
+				renewals++;
+				return undefined;
+			},
+		});
+		const result = await backend.fetch();
+		expect(result.ok).toBe(false);
+		expect(renewals).toBe(1);
+		expect(canned.requests).toHaveLength(1); // no retry without a fresh token
+	});
+
+	it("a 404 never renews: the plain not-found error stays", async () => {
+		let renewals = 0;
+		const canned = makeTransport([{ status: 404, json: { message: "Not Found" } }]);
+		const backend = createGistBackend({
+			gistId: "gone",
+			token: "stale",
+			transport: canned.transport,
+			onAuthFailure: async () => {
+				renewals++;
+				return "fresh";
+			},
+		});
+		const result = await backend.fetch();
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.code).toBe("not-found");
+		expect(result.message).toContain("gone");
+		expect(renewals).toBe(0); // a missing gist is not an auth problem
+		expect(canned.requests).toHaveLength(1);
+	});
+});
+
 describe("toGistPayload", () => {
 	it("puts user files at their home-relative paths and the tool files at the gist root", () => {
 		const snapshot = snapshotOf("# agents");
