@@ -135,6 +135,7 @@ export default function (pi: ExtensionAPI): void {
 			let statusLine = "starting the GitHub device flow...";
 			let settled = false;
 			let done: (result?: unknown) => void = () => undefined;
+			let requestRender: (() => void) | undefined;
 			const controller = new AbortController();
 			const theme = ctx.ui.theme;
 			const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
@@ -142,6 +143,14 @@ export default function (pi: ExtensionAPI): void {
 			const status = new Text(statusLine, 0, 0);
 			box.addChild(status);
 			box.addChild(new Text(theme.fg("dim", "Enter or Esc cancels"), 0, 0));
+			// The status line changes after the dialog is mounted (the code and the
+			// token arrive over the network). The TUI only repaints a mounted
+			// component when it is asked to, so every change invalidates the box
+			// and requests a render.
+			const paint = (): void => {
+				box.invalidate();
+				requestRender?.();
+			};
 			const settle = (result: DeviceFlowResult): void => {
 				if (settled) return;
 				settled = true;
@@ -156,18 +165,19 @@ export default function (pi: ExtensionAPI): void {
 				onStatus: (line) => {
 					statusLine = line;
 					status.setText(line);
-					box.invalidate();
+					paint();
 				},
 				askRetry: async () => {
 					// Expired or denied: close the dialog; a re-run gets a fresh code.
 					statusLine = "code expired or denied: close this dialog and re-run /sync init";
 					status.setText(statusLine);
-					box.invalidate();
+					paint();
 					return false;
 				},
 			}).then(settle);
 			void ctx.ui
-				.custom((_tui, _theme, _keybindings, d) => {
+				.custom((tui, _theme, _keybindings, d) => {
+					requestRender = () => tui.requestRender();
 					done = d;
 					return {
 						render: (width: number) => box.render(width),
