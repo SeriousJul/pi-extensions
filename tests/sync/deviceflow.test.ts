@@ -206,6 +206,44 @@ describe("runDeviceFlow (issue #37)", () => {
 		expect(result.ok).toBe(false);
 		expect(result.cancelled).toBe(true);
 	});
+
+	it("drops its abort listener when each poll sleep ends (no growth over a long poll)", async () => {
+		const home = await tempDir("pi-sync-df-listeners-");
+		const stateDir = stateDirFor(home, {});
+		const { transport } = stubOAuth({ tokenResponses: [{ status: 200, json: { error: "authorization_pending" } }] });
+		const controller = new AbortController();
+		const base = controller.signal;
+		let adds = 0;
+		let removes = 0;
+		// Count the abort listeners the flow adds and removes on the signal.
+		const signal: AbortSignal = new Proxy(base, {
+			get(target, prop) {
+				if (prop === "addEventListener") {
+					return (type: string, listener: EventListenerOrEventListenerObject, options?: AddEventListenerOptions) => {
+						if (type === "abort") adds++;
+						return target.addEventListener(type, listener, options);
+					};
+				}
+				if (prop === "removeEventListener") {
+					return (type: string, listener: EventListenerOrEventListenerObject, options?: EventListenerOptions) => {
+						if (type === "abort") removes++;
+						return target.removeEventListener(type, listener, options);
+					};
+				}
+				return Reflect.get(target, prop);
+			},
+		});
+		const pending = runDeviceFlow({ stateDir, clientId: "client-1", transport, signal, onStatus: () => undefined, askRetry: async () => false });
+		// The stub device answer polls every 10 ms; wait for several poll
+		// sleeps to resolve, then the listeners must not have accumulated.
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		expect(adds).toBeGreaterThanOrEqual(3);
+		expect(adds - removes).toBeLessThanOrEqual(1); // only the in-flight sleep keeps one
+		controller.abort();
+		const result = await pending;
+		expect(result.ok).toBe(false);
+		expect(result.cancelled).toBe(true);
+	});
 });
 
 describe("refresh of a managed token (issue #38)", () => {

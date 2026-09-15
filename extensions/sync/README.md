@@ -63,7 +63,7 @@ is a TUI dialog, and the preview confirm is a TUI dialog.
 
 | Token form | How it is managed |
 | --- | --- |
-| **Managed** (device flow) | Stored as JSON in `<state-dir>/token` (mode 600) with `accessToken`, `refreshToken`, and expiry. The tool **renews it while it lives**: proactively when a run starts inside the 5-minute skew window, and reactively when a request gets a 401/403 (the request retries once with the fresh token). Bounds: at most one refresh and one device-flow re-run per run; the device flow re-run needs a terminal, so a headless run reports the fix instead of looping. |
+| **Managed** (device flow) | Stored as JSON in `<state-dir>/token` (mode 600) with `accessToken`, `refreshToken`, and expiry. The tool **renews it while it lives**: proactively when a run starts inside the 5-minute skew window, and reactively when a request gets a 401/403 (the request retries once with the fresh token). Bounds: at most one proactive refresh at run start, plus at most one reactive refresh or one device-flow re-run on a mid-operation 401/403; the device flow re-run needs a terminal, so a headless run reports the fix instead of looping. |
 | **Hand-written** (plain text file or `PI_SYNC_TOKEN`) | Respected but **never managed**: no refresh, no device flow, no rewrites. A dead hand-written token produces the plain "token rejected" error. |
 
 A 404 (gist not found, not a permission problem) never enters renewal:
@@ -226,7 +226,7 @@ empty. Nothing on startup ever mutates the tree or the backend.
 | `config.ts` | The OAuth client id resolution (env wins, then the wizard-written file). |
 | `deviceflow.ts` | The GitHub OAuth device flow: request code, poll, one retry, persist. |
 | `refresh.ts` | The token refresh: proactive skew check and the reactive exchange. |
-| `auth.ts` | The auth session: resolves a token, owns the renewal bounds (one refresh, one re-flow per run). |
+| `auth.ts` | The auth session: resolves a token, owns the renewal bounds (one proactive refresh at run start, one reactive renewal per run). |
 | `backends.ts` | Backend registry. |
 | `backends/github-gist.ts` | The Gist backend over the `GistTransport` seam; 401/403 hands back to the auth session for one renewal + retry. |
 | `ops.ts` | The five operations; one `SyncRuntime` for CLI and pi. |

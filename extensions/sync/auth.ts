@@ -5,8 +5,9 @@
  * operation, and hands the caller a `renew` callback the Gist backend invokes
  * after a mid-operation 401/403. The bounds, in full:
  *
- * - at most one refresh and at most one device-flow re-run per run, then a
- *   clean error (the backend retries the request exactly once);
+ * - at most one proactive refresh at run start, plus at most one reactive
+ *   refresh or one device-flow re-run, then a clean error (the backend
+ *   retries the request exactly once);
  * - a device-flow re-run happens only for a token the tool issued, and only
  *   when this context can show the flow (a CLI tty or a pi TUI dialog);
  * - a hand-written token (plain file or PI_SYNC_TOKEN) is never refreshed,

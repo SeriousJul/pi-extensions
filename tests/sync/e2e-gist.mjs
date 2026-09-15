@@ -140,19 +140,27 @@ try {
 		if (token) {
 			accessToken = token;
 		} else {
-			// Device flow mode: reuse the managed token device A stored.
-			const managed = JSON.parse(readFileSync(join(homeA, ".pi", "sync", "token"), "utf8").trim());
-			accessToken = managed.accessToken;
+			// Device flow mode: reuse the managed token device A stored. A
+			// flow cancelled before it stored one leaves no file: skip the
+			// delete instead of throwing here and hiding the real failure.
+			try {
+				const managed = JSON.parse(readFileSync(join(homeA, ".pi", "sync", "token"), "utf8").trim());
+				accessToken = managed.accessToken;
+			} catch {
+				console.log("note: no managed token file; skipping the gist delete");
+			}
 		}
-		const del = spawnSync(
-			process.execPath,
-			[
-				"-e",
-				"const id = process.env.PI_SYNC_GIST_ID; const at = process.env.PI_SYNC_AT; fetch('https://api.github.com/gists/' + id, { method: 'DELETE', headers: { Authorization: 'bearer ' + at, 'User-Agent': 'pi-sync-e2e', Accept: 'application/vnd.github+json' } }).then((r) => console.log('gist delete: ' + r.status)).catch((e) => console.error('gist delete error: ' + e.message));",
-			],
-			{ stdio: "inherit", env: { PI_SYNC_GIST_ID: gistId, PI_SYNC_AT: accessToken } },
-		);
-		if (del.status !== 0) fail("could not run the gist cleanup");
+		if (accessToken) {
+			const del = spawnSync(
+				process.execPath,
+				[
+					"-e",
+					"const id = process.env.PI_SYNC_GIST_ID; const at = process.env.PI_SYNC_AT; fetch('https://api.github.com/gists/' + id, { method: 'DELETE', headers: { Authorization: 'bearer ' + at, 'User-Agent': 'pi-sync-e2e', Accept: 'application/vnd.github+json' } }).then((r) => console.log('gist delete: ' + r.status)).catch((e) => console.error('gist delete error: ' + e.message));",
+				],
+				{ stdio: "inherit", env: { PI_SYNC_GIST_ID: gistId, PI_SYNC_AT: accessToken } },
+			);
+			if (del.status !== 0) fail("could not run the gist cleanup");
+		}
 	}
 	for (const home of homes) rmSync(home, { recursive: true, force: true });
 }

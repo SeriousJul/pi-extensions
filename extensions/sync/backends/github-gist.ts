@@ -77,11 +77,14 @@ interface GistShape {
 export function createGistBackend(options: GistBackendOptions): Backend {
 	const baseUrl = (options.baseUrl ?? "https://api.github.com").replace(/\/$/, "");
 	const transport = options.transport ?? createFetchTransport();
+	// The token changes on renewal; it lives here, never in the options
+	// object, which callers keep as a stable identity.
+	let token = options.token;
 
 	async function github<T>(method: "GET" | "POST" | "PATCH", path: string, body?: unknown, renewed = false): Promise<T> {
 		const response = await transport.request(method, `${baseUrl}${path}`, {
 			headers: {
-				Authorization: `Bearer ${options.token}`,
+				Authorization: `Bearer ${token}`,
 				Accept: "application/vnd.github+json",
 				"User-Agent": "pi-sync",
 				...(body === undefined ? {} : { "Content-Type": "application/json" }),
@@ -104,8 +107,8 @@ export function createGistBackend(options: GistBackendOptions): Backend {
 			// runs once more. A 404 never enters this path.
 			if (options.onAuthFailure && !renewed) {
 				const newToken = await options.onAuthFailure();
-				if (newToken && newToken !== options.token) {
-					options.token = newToken;
+				if (newToken && newToken !== token) {
+					token = newToken;
 					return github<T>(method, path, body, true);
 				}
 			}
@@ -129,7 +132,7 @@ export function createGistBackend(options: GistBackendOptions): Backend {
 		if (file.content !== undefined && file.content !== null) return file.content;
 		if (!file.raw_url) return "";
 		const response = await transport.request("GET", file.raw_url, {
-			headers: { Authorization: `Bearer ${options.token}`, "User-Agent": "pi-sync" },
+			headers: { Authorization: `Bearer ${token}`, "User-Agent": "pi-sync" },
 			signal: options.signal,
 		});
 		if (response.status < 200 || response.status >= 300) {

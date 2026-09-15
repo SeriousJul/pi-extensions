@@ -103,15 +103,19 @@ export async function runDeviceFlow(deps: DeviceFlowDeps): Promise<DeviceFlowRes
 
 	async function pollIntervalSleep(ms: number): Promise<void> {
 		await new Promise<void>((resolve, reject) => {
-			const timer = setTimeout(resolve, ms);
-			deps.signal?.addEventListener(
-				"abort",
-				() => {
-					clearTimeout(timer);
-					reject(new AbortError());
-				},
-				{ once: true },
-			);
+			const signal = deps.signal;
+			let timer: ReturnType<typeof setTimeout>;
+			const onAbort = () => {
+				clearTimeout(timer);
+				reject(new AbortError());
+			};
+			timer = setTimeout(() => {
+				// A long poll runs many sleeps; each one drops its abort
+				// listener when it resolves, so the signal never grows them.
+				signal?.removeEventListener("abort", onAbort);
+				resolve();
+			}, ms);
+			signal?.addEventListener("abort", onAbort, { once: true });
 		});
 	}
 
