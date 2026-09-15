@@ -16,6 +16,8 @@ import { AddressInfo } from "node:net";
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { main, type CliOutput } from "../../extensions/sync/cli.ts";
+
 const CLI_PATH = join(import.meta.dirname, "..", "..", "extensions", "sync", "cli.mjs");
 
 const dirs: string[] = [];
@@ -47,22 +49,36 @@ function readBody(req: IncomingMessage): Promise<string> {
  * The loopback GitHub stub: the two OAuth device flow endpoints plus the
  * Gist API. `approve` plays the human: until it is set, the device code
  * polls return authorization_pending, exactly as before the code is entered.
+ *
+ * `firstCode` scripts the first issued code to fail before it is entered
+ * (issue #37): it expires or is denied, so the CLI must offer retry or
+ * cancel and never silently retry. The failing code gets its own user code
+ * so the fresh code after a retry is visibly different.
  */
-function githubStub(): Promise<{ url: string; approve: () => void; gist: { id: string; files: Record<string, string> } }> {
+function githubStub(options: { firstCode?: "expire" | "deny" } = {}): Promise<{
+	url: string;
+	approve: () => void;
+	gist: { id: string; files: Record<string, string> };
+	deviceCodeRequests: () => number;
+}> {
 	const state = { approved: false };
 	const gist = { id: "e2e-gist-1", files: {} as Record<string, string> };
 	let gistExists = false;
+	let deviceCodeRequests = 0;
 	const server = createServer(async (req, res) => {
 		const send = (status: number, body: unknown) => {
 			res.writeHead(status, { "Content-Type": "application/json" });
 			res.end(JSON.stringify(body));
 		};
 		if (req.method === "POST" && req.url === "/login/device/code") {
-			return send(200, { device_code: "dc-e2e", user_code: "WXYZ-9999", verification_uri: "https://github.com/login/device", expires_in: 900, interval: 0.02 });
+			deviceCodeRequests += 1;
+			const userCode = options.firstCode ? (deviceCodeRequests === 1 ? "AAAA-0000" : `WXYZ-000${deviceCodeRequests}`) : "WXYZ-9999";
+			return send(200, { device_code: `dc-${deviceCodeRequests}`, user_code: userCode, verification_uri: "https://github.com/login/device", expires_in: 900, interval: 0.02 });
 		}
 		if (req.method === "POST" && req.url === "/login/oauth/access_token") {
-			const body = JSON.parse((await readBody(req)) || "{}") as { grant_type?: string };
+			const body = JSON.parse((await readBody(req)) || "{}") as { grant_type?: string; device_code?: string };
 			if (body.grant_type === "refresh_token") return send(200, { access_token: "e2e-at-2", refresh_token: "e2e-rt-2", expires_in: 28800 });
+			if (options.firstCode && body.device_code === "dc-1") return send(400, { error: options.firstCode === "expire" ? "expired_token" : "denied" });
 			if (!state.approved) return send(400, { error: "authorization_pending" });
 			return send(200, { access_token: "e2e-at", refresh_token: "e2e-rt", expires_in: 28800 });
 		}
@@ -92,7 +108,7 @@ function githubStub(): Promise<{ url: string; approve: () => void; gist: { id: s
 		server.listen(0, "127.0.0.1", () => {
 			const { port } = server.address() as AddressInfo;
 			servers.push(server);
-			resolve({ url: `http://127.0.0.1:${port}`, approve: () => (state.approved = true), gist });
+			resolve({ url: `http://127.0.0.1:${port}`, approve: () => (state.approved = true), gist, deviceCodeRequests: () => deviceCodeRequests });
 		});
 	});
 }
@@ -135,6 +151,38 @@ function runCliTty(args: string, env: Record<string, string>): PtySession {
 		send: (line) => child.stdin.write(line),
 		waitExit: () => exitPromise,
 	};
+}
+
+/** Wait for the CLI to exit, but never hang the suite. */
+function exitCode(cli: PtySession): Promise<number> {
+	return Promise.race([cli.waitExit(), new Promise<number>((r) => setTimeout(() => r(-9999), 15_000))]);
+}
+
+/**
+ * Run the CLI in-process for a non-interactive step. A spawnSync from here
+ * would block the stub's own event loop, so its fetch could never connect.
+ * The PI_SYNC_* env is set for the run and restored after.
+ */
+async function runCliInProcess(args: string[], env: Record<string, string>): Promise<{ code: number; output: string }> {
+	const envKeys = ["PI_SYNC_HOME", "PI_SYNC_STATE_DIR", "PI_SYNC_TOKEN", "PI_SYNC_GITHUB_BASE_URL"] as const;
+	const saved: Record<string, string | undefined> = {};
+	for (const key of envKeys) {
+		saved[key] = process.env[key];
+		delete process.env[key];
+	}
+	Object.assign(process.env, env);
+	try {
+		const lines: string[] = [];
+		const errors: string[] = [];
+		const output: CliOutput = { out: (l) => lines.push(l), err: (l) => errors.push(l) };
+		const code = await main(args, output);
+		return { code, output: [...lines, ...errors].join("\n") };
+	} finally {
+		for (const key of envKeys) {
+			if (saved[key] === undefined) delete process.env[key];
+			else process.env[key] = saved[key];
+		}
+	}
 }
 
 // The pty comes from util-linux `script`; skip where it is not installed.
@@ -200,6 +248,94 @@ describe.skipIf(!hasPtyScript)("onboarding proof: clean home to joined device (i
 			expect(JSON.parse(await readFile(join(homeB, ".pi", "sync", "manifest.json"), "utf8")).backendOptions.gistId).toBe("e2e-gist-1");
 		} finally {
 			cliB.child.kill("SIGKILL");
+		}
+	}, 120_000);
+
+	it("a pull with no stored token starts the device flow and stores the token pair (issue #37)", async () => {
+		const stub = await githubStub();
+		const home = await tempDir("pi-sync-onboard-pull-");
+		await writeFile(join(home, "AGENTS.md"), "# agents from A");
+		// Join non-interactively with a hand-written env token: the device is
+		// joined, but no token file was stored (env tokens are never written).
+		const joined = await runCliInProcess(["init", "--yes"], { PI_SYNC_HOME: home, PI_SYNC_TOKEN: "pat-token", PI_SYNC_GITHUB_BASE_URL: stub.url });
+		if (joined.code !== 0) throw new Error(`setup join failed (${joined.code}):\n${joined.output}`);
+		// Now the token is gone: no env token, no file. A tty pull must run the flow.
+		const envPull = { PI_SYNC_HOME: home, PI_SYNC_OAUTH_CLIENT_ID: "e2e-client", PI_SYNC_GITHUB_BASE_URL: stub.url, PI_SYNC_TOKEN: "" };
+		const cli = runCliTty("pull", envPull);
+		try {
+			await cli.waitFor("enter the code WXYZ-9999", "the device flow code prompt");
+			stub.approve();
+			await cli.waitFor("token stored", "the token storage line");
+			const code = await exitCode(cli);
+			expect(code).toBe(0);
+			expect(cli.output()).toContain("pi sync pull");
+			// The returned pair landed in the JSON token file, origin included.
+			const managed = JSON.parse((await readFile(join(home, ".pi", "sync", "token"), "utf8")).trim());
+			expect(managed.origin).toBe("device-flow");
+			expect(managed.accessToken).toBe("e2e-at");
+			expect(managed.refreshToken).toBe("e2e-rt");
+			expect(typeof managed.obtainedMs).toBe("number");
+			expect(managed.expiresMs).toBeGreaterThan(managed.obtainedMs);
+		} finally {
+			cli.child.kill("SIGKILL");
+		}
+	}, 120_000);
+
+	it("an expired code offers retry; the fresh code succeeds; there is no silent retry (issue #37)", async () => {
+		const stub = await githubStub({ firstCode: "expire" });
+		const home = await tempDir("pi-sync-onboard-exp-");
+		await writeFile(join(home, "AGENTS.md"), "# agents from A");
+		const envA = { PI_SYNC_HOME: home, PI_SYNC_OAUTH_CLIENT_ID: "e2e-client", PI_SYNC_GITHUB_BASE_URL: stub.url, PI_SYNC_TOKEN: "" };
+		const cli = runCliTty("init", envA);
+		try {
+			await cli.waitFor("enter the code AAAA-0000", "the first device code");
+			await cli.waitFor("the code expired before it was entered", "the expiry line");
+			await cli.waitFor("Retry the device flow with a fresh code?", "the retry prompt");
+			// The flow asked instead of silently re-polling or re-issuing.
+			expect(stub.deviceCodeRequests()).toBe(1);
+			cli.send("y\n");
+			await cli.waitFor("enter the code WXYZ-0002", "the fresh device code");
+			expect(stub.deviceCodeRequests()).toBe(2);
+			stub.approve();
+			await cli.waitFor("token stored", "the token storage line");
+			await cli.waitFor("Proceed?", "the create confirm");
+			cli.send("y\n");
+			await cli.waitFor("created secret gist", "the created-gist line");
+			const code = await exitCode(cli);
+			expect(code).toBe(0);
+			const managed = JSON.parse((await readFile(join(home, ".pi", "sync", "token"), "utf8")).trim());
+			expect(managed.accessToken).toBe("e2e-at");
+		} finally {
+			cli.child.kill("SIGKILL");
+		}
+	}, 120_000);
+
+	it("a denied code with a cancelled retry stores no token and does nothing (issue #37)", async () => {
+		const stub = await githubStub({ firstCode: "deny" });
+		const home = await tempDir("pi-sync-onboard-deny-");
+		await writeFile(join(home, "AGENTS.md"), "# agents from A");
+		const envA = { PI_SYNC_HOME: home, PI_SYNC_OAUTH_CLIENT_ID: "e2e-client", PI_SYNC_GITHUB_BASE_URL: stub.url, PI_SYNC_TOKEN: "" };
+		const cli = runCliTty("init", envA);
+		try {
+			await cli.waitFor("enter the code AAAA-0000", "the first device code");
+			await cli.waitFor("the code was denied on GitHub", "the denial line");
+			await cli.waitFor("Retry the device flow with a fresh code?", "the retry prompt");
+			expect(stub.deviceCodeRequests()).toBe(1);
+			cli.send("n\n");
+			const code = await exitCode(cli);
+			expect(code).toBe(1);
+			expect(cli.output()).toContain("device flow cancelled");
+			// Nothing was created and no token was stored.
+			expect(stub.gist.files).toEqual({});
+			let tokenRead = "";
+			try {
+				tokenRead = await readFile(join(home, ".pi", "sync", "token"), "utf8");
+			} catch {
+				tokenRead = "";
+			}
+			expect(tokenRead).toBe("");
+		} finally {
+			cli.child.kill("SIGKILL");
 		}
 	}, 120_000);
 
