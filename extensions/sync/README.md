@@ -205,16 +205,24 @@ open a TUI dialog with the full report (in print and RPC modes the
 report goes to the stream); `/sync` alone prints the usage. `/sync init`
 runs the same wizard as the CLI: the device flow as a TUI dialog (it
 only starts in the TUI, never in print or RPC modes), the preview
-confirm as a dialog. On session start, when this device is already
-joined, the extension runs a read-only status in the background
-(5 s timeout) and, on drift, puts a footer status line up:
+confirm as a dialog. On session start the extension runs a read-only
+probe in the background (5 s timeout) and, on drift, puts a footer
+status line up:
 
 ```
 sync: 2 ahead, 1 behind
 ```
 
-No token, not joined, zero drift, or a failed read: the line stays
-empty. Nothing on startup ever mutates the tree or the backend.
+When a token exists but this device has not joined a gist yet, the line
+nudges instead of staying empty:
+
+```
+sync: not joined - run /sync init
+```
+
+No token, zero drift, or a failed read: the line stays empty. The probe
+only reports - it never starts a re-authentication or device flow - and
+nothing on startup ever mutates the tree or the backend.
 
 ## Module map
 

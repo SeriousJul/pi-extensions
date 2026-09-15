@@ -8,7 +8,7 @@ import { FakeBackend, file } from "./fake-backend.ts";
 import { sha256Hex } from "../../extensions/sync/hash.ts";
 import { DEFAULT_MANIFEST, canonicalManifest, canonicalManifestText, parseManifest, serializeManifest } from "../../extensions/sync/manifest.ts";
 import { applyPlan, collectLocalFiles } from "../../extensions/sync/localfs.ts";
-import { runInit, runPull, runPush, runStatus, type SyncRuntime } from "../../extensions/sync/ops.ts";
+import { probeStartup, runInit, runPull, runPush, runStatus, type SyncRuntime } from "../../extensions/sync/ops.ts";
 import { MANIFEST_KEY, type Snapshot, type SyncFile } from "../../extensions/sync/types.ts";
 
 const dirs: string[] = [];
@@ -770,5 +770,81 @@ describe("init / push / pull / status (fake backend)", () => {
 			".pi/web-search.json",
 			"AGENTS.md",
 		]);
+	});
+});
+
+describe("startup probe (issue #36)", () => {
+	let fake: FakeBackend;
+	let a: Device;
+
+	beforeEach(async () => {
+		fake = new FakeBackend({ id: "gist-abc" });
+		a = await makeDevice(fake);
+	});
+
+	it("nudges a device that has not joined, without touching the backend", async () => {
+		// A shared tree exists, but this device never ran init.
+		fake.stored = {
+			manifest: DEFAULT_MANIFEST,
+			base: {},
+			files: [file("AGENTS.md", "x", 1_000)],
+		};
+		const probe = await probeStartup(a.rt);
+		expect(probe).toEqual({ state: "not-joined" });
+		// Read-only: a not-joined probe never builds the backend at all.
+		expect(fake.calls).toEqual([]);
+	});
+
+	it("stays silent for a joined device with zero drift", async () => {
+		await put(a.home, "AGENTS.md", "base", 1_000_000_000_000);
+		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true);
+		expect((await runPush(a.rt)).ok).toBe(true);
+		const probe = await probeStartup(a.rt);
+		expect(probe).toEqual({ state: "silent" });
+	});
+
+	it("reports drift for a joined device", async () => {
+		await put(a.home, "AGENTS.md", "base", 1_000_000_000_000);
+		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true);
+		expect((await runPush(a.rt)).ok).toBe(true);
+		// Diverge: local adds a file; remote edits AGENTS.md.
+		await put(a.home, "VOICE.md", "local voice", 1_000_000_000_100);
+		const remoteMtime = 1_000_000_000_200;
+		fake.stored = {
+			manifest: DEFAULT_MANIFEST,
+			base: { "AGENTS.md": { hash: sha256Hex("remote"), mtimeMs: remoteMtime } },
+			files: [file("AGENTS.md", "remote", remoteMtime)],
+		};
+		const probe = await probeStartup(a.rt);
+		expect(probe).toEqual({ state: "drift", ahead: 1, behind: 1 });
+	});
+
+	it("stays silent when the fetch fails for a joined device", async () => {
+		await put(a.home, "AGENTS.md", "base", 1_000_000_000_000);
+		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true);
+		expect((await runPush(a.rt)).ok).toBe(true);
+		fake.failure = "401: Bad credentials";
+		const probe = await probeStartup(a.rt);
+		expect(probe).toEqual({ state: "silent" });
+	});
+
+	it("stays silent when the local manifest is unreadable", async () => {
+		await put(a.home, "AGENTS.md", "base", 1_000_000_000_000);
+		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true);
+		expect((await runPush(a.rt)).ok).toBe(true);
+		// Corrupt the manifest after joining: a failed local read stays silent.
+		await writeFile(join(a.stateDir, "manifest.json"), "{ not json ");
+		const probe = await probeStartup(a.rt);
+		expect(probe).toEqual({ state: "silent" });
+	});
+
+	it("never starts a device flow: a joined probe only fetches", async () => {
+		await put(a.home, "AGENTS.md", "base", 1_000_000_000_000);
+		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true);
+		expect((await runPush(a.rt)).ok).toBe(true);
+		fake.calls = []; // drop the push's own traffic
+		await probeStartup(a.rt);
+		const methods = fake.calls.map((c) => c.method);
+		expect(methods).toEqual(["fetch"]);
 	});
 });
