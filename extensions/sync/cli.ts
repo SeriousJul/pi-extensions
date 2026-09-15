@@ -182,7 +182,8 @@ export async function main(argv: string[], output: CliOutput = { out: (l) => con
 
 function finish(outcome: SyncOutcome, output: CliOutput): number {
 	if (!outcome.ok) {
-		for (const line of outcome.preview ?? []) output.out(line);
+		// A declined preview was already shown at the prompt; show it only once.
+		if (outcome.preview && !outcome.previewShown) for (const line of outcome.preview) output.out(line);
 		output.err(`pi-sync: ${outcome.error}`);
 		return 1;
 	}

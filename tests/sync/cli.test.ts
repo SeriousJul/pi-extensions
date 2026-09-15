@@ -1,4 +1,5 @@
 import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -165,6 +166,42 @@ describe("pi-sync CLI end-to-end against a loopback Gist stub", () => {
 		expect(init.lines.join("\n")).toContain("preview, nothing written yet");
 		expect(await readFile(join(homeB, "AGENTS.md"), "utf8")).toBe("# agents");
 		expect(await readFile(join(homeB, "OPINIONS.md"), "utf8")).toBe("op");
+
+		await stub.close();
+	});
+
+	// Acceptance criteria, issue #35: a non-tty run requires the explicit
+	// yes flag; without it, nothing is written.
+	it("non-tty init without --yes shows the preview, writes nothing, and exits 1", async () => {
+		const home = await mkdtemp(join(tmpdir(), "pi-sync-cli-notty-"));
+		dirs.push(home);
+		await mkdir(join(home, ".pi", "agent"), { recursive: true });
+		await writeFile(join(home, "AGENTS.md"), "# agents");
+
+		const stub = await gistStub("created-id");
+		setEnv({ PI_SYNC_HOME: home, PI_SYNC_TOKEN: "loopback-token", PI_SYNC_GITHUB_BASE_URL: stub.url });
+
+		const c = capture();
+		expect(await main(["init"], c.output)).toBe(1);
+		expect(c.errors.join("\n")).toContain("no confirmation given");
+		// The preview is still shown, so the user sees what would have happened.
+		expect(c.lines.join("\n")).toContain("preview, nothing written yet");
+		expect(c.lines.join("\n")).toContain("AGENTS.md");
+		// Nothing was written locally.
+		expect(existsSync(join(home, ".pi", "sync"))).toBe(false);
+
+		// With --yes the create runs, then a second device joining by id is
+		// gated the same way.
+		expect(await main(["init", "--yes"], capture().output)).toBe(0);
+		const homeB = await mkdtemp(join(tmpdir(), "pi-sync-cli-notty-b-"));
+		dirs.push(homeB);
+		setEnv({ PI_SYNC_HOME: homeB, PI_SYNC_TOKEN: "loopback-token", PI_SYNC_GITHUB_BASE_URL: stub.url });
+		const b = capture();
+		expect(await main(["init", "created-id"], b.output)).toBe(1);
+		expect(b.errors.join("\n")).toContain("no confirmation given");
+		expect(b.lines.join("\n")).toContain("preview, nothing written yet");
+		expect(existsSync(join(homeB, ".pi", "sync"))).toBe(false);
+		expect(existsSync(join(homeB, "AGENTS.md"))).toBe(false);
 
 		await stub.close();
 	});
