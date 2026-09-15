@@ -66,7 +66,8 @@ interface SessionState {
 export async function createAuthSession(sessionEnv: AuthSessionEnv): Promise<{ session?: AuthSession; error?: string }> {
 	const home = homeFor(sessionEnv.env);
 	const stateDir = stateDirFor(home, sessionEnv.env);
-	const baseUrl = sessionEnv.env[GITHUB_BASE_URL_ENV] ?? "https://api.github.com";
+	// The OAuth endpoints live on the web host, not the API host.
+	const baseUrl = sessionEnv.env[GITHUB_BASE_URL_ENV] ?? "https://github.com";
 	const flow = sessionEnv.deviceFlow;
 
 	const flowState = (accessToken: string, refreshToken: string, obtainedMs: number, expiresMs: number): SessionState => ({

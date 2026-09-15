@@ -87,6 +87,41 @@ describe("runDeviceFlow (issue #37)", () => {
 		expect(stored?.refreshToken).toBe("rt");
 	});
 
+	it("posts the device endpoints to the web host (github.com), not the API host", async () => {
+		const home = await tempDir("pi-sync-df-host-");
+		const stateDir = stateDirFor(home, {});
+		const urls: string[] = [];
+		const transport: OAuthTransport = {
+			async request(_method, url) {
+				urls.push(url);
+				if (url.endsWith("/login/device/code")) {
+					return { status: 200, text: JSON.stringify({ device_code: "dc", user_code: "ABCD-1234", verification_uri: "https://github.com/login/device", expires_in: 900, interval: 0.01 }) };
+				}
+				return { status: 200, text: JSON.stringify({ access_token: "at", refresh_token: "rt", expires_in: 28800 }) };
+			},
+		};
+		const result = await runDeviceFlow({ stateDir, clientId: "client-1", transport, onStatus: () => undefined, askRetry: async () => false });
+		expect(result.ok).toBe(true);
+		// api.github.com answers the OAuth endpoints with a 404; the flow
+		// must target the web host.
+		expect(urls).toEqual(["https://github.com/login/device/code", "https://github.com/login/oauth/access_token"]);
+	});
+
+	it("surfaces GitHub's error when the device code request is refused", async () => {
+		const home = await tempDir("pi-sync-df-disabled-");
+		const stateDir = stateDirFor(home, {});
+		const { transport } = stubOAuth({
+			deviceResponses: [{ status: 400, json: { error: "device_flow_disabled", error_description: "Device Flow must be explicitly enabled for this App" } }],
+			tokenResponses: [],
+		});
+		const result = await runDeviceFlow({ stateDir, clientId: "client-1", transport, onStatus: () => undefined, askRetry: async () => false });
+		expect(result.ok).toBe(false);
+		// The error names what GitHub said, so an app without the device-flow
+		// opt-in is fixable from the message.
+		expect(result.error).toContain("device_flow_disabled");
+		expect(result.error).toContain("Device Flow must be explicitly enabled for this App");
+	});
+
 	it("slow_down raises the polling interval by 5 seconds (RFC 8628)", async () => {
 		vi.useFakeTimers();
 		try {
