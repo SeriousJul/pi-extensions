@@ -133,6 +133,26 @@ or grep.
 _Avoid_: header (the file headers stay root-relative and unchanged), banner,
 project line
 
+### Initial context
+
+**Initial context**:
+The context resent to the model on every LLM call: the system prompt and the
+tool definitions. Everything else (user messages, tool results, assistant
+replies) is the session context, which grows with the conversation.
+_Avoid_: system prompt (only one part), base prompt, fixed context
+
+**Prompt injection**:
+Text another extension appends to the system prompt via
+`before_agent_start`. It is distinguished from a modified prompt, where the
+extension replaced or rewrote the prompt and no suffix can be detected.
+_Avoid_: prompt modification (too generic), suffix
+
+**Provider reference**:
+The input tokens the provider reported on the first assistant message of the
+session. Display only: the bars and percentages stay on the estimator's
+character scale, so the reference stays comparable with the rows.
+_Avoid_: true token count, ground truth, correction
+
 ### Quota
 
 **Quota window**:
