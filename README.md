@@ -295,6 +295,29 @@ integer or is at or below `compaction.reserveTokens`. See
 [`extensions/context-cap/README.md`](extensions/context-cap/README.md) and
 [ADR 0004](docs/adr/0004-context-window-cap-via-provider-reregistration.md).
 
+# initial-context extension
+
+The token breakdown of the running agent's initial context: the system
+prompt and the tool definitions, resent to the model on every LLM call.
+`/ctx` shows one row per prompt section (base, append, project files,
+skills, cwd) and one row per tool, each with its token count, its share of
+the initial context total, its share of the context window, and a bar. Rows
+expand to the exact text and copy to the clipboard. A footer status line
+(`ctx: 45,230 (11.3% of window)`) keeps the total visible without opening
+the view. When other extensions append to the prompt, an injection row
+shows the suffix; any other change is flagged `modified by extension`.
+
+Prompt rows come from the same structured inputs pi uses to build the
+system prompt. Tool rows come from the tool entries actually sent to the
+provider, captured read-only from the last request payload; before the
+first call, built-in schemas are rebuilt from pi's exported tool factories.
+Token counts use pi's own estimator. The input tokens the provider reported
+on the first call appear as a reference line, display only. The extension
+adds no tools, no prompt text, and no prompt notes of its own, so its own
+overhead is zero. Print and RPC modes get the same breakdown as plain
+text. See
+[`extensions/initial-context/README.md`](extensions/initial-context/README.md).
+
 # model-router extension
 
 Recovers a session from a provider usage-limit (quota) halt, so an
