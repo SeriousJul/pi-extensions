@@ -13,6 +13,11 @@ export interface BackendEnv {
 	/** Transport override (Gist backend). Tests stub it. */
 	transport?: GistTransport;
 	signal?: AbortSignal;
+	/**
+	 * Gist backend only: the auth session's one-shot renewal, called after a
+	 * 401/403 (never a 404). See GistBackendOptions.onAuthFailure.
+	 */
+	onAuthFailure?: () => Promise<string | undefined>;
 }
 
 export function createBackend(manifest: SyncManifest, env: BackendEnv, extra?: { gistId?: string }): { backend?: Backend; error?: string } {
@@ -20,7 +25,7 @@ export function createBackend(manifest: SyncManifest, env: BackendEnv, extra?: {
 	switch (manifest.backend) {
 		case GIST_BACKEND_NAME: {
 			const gistId = extra?.gistId ?? (options.gistId ? options.gistId : undefined);
-			return { backend: createGistBackend({ gistId, token: env.token, baseUrl: env.githubBaseUrl, transport: env.transport, signal: env.signal }) };
+			return { backend: createGistBackend({ gistId, token: env.token, baseUrl: env.githubBaseUrl, transport: env.transport, signal: env.signal, onAuthFailure: env.onAuthFailure }) };
 		}
 		default:
 			return { error: `unknown sync backend: ${manifest.backend} (the sync extension ships: ${GIST_BACKEND_NAME})` };

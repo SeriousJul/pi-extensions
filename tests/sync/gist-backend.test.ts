@@ -132,7 +132,7 @@ describe("GistBackend against a stubbed GistTransport (no network)", () => {
 		expect(body.files[GIST_BASE_FILE]).toBeDefined();
 	});
 
-	it("push PUTs the snapshot and deletes a file the Base state marks deleted", async () => {
+	it("push PATCHes the snapshot and deletes a file the Base state marks deleted", async () => {
 		const canned = makeTransport([
 			{
 				status: 200,
@@ -155,7 +155,7 @@ describe("GistBackend against a stubbed GistTransport (no network)", () => {
 
 		const [get, put] = canned.requests;
 		expect(get.method).toBe("GET");
-		expect(put.method).toBe("PUT");
+		expect(put.method).toBe("PATCH");
 		const body = JSON.parse(put.body!);
 		expect(body.files["AGENTS.md"].content).toBe("# agents v2");
 		expect(body.files["OPINIONS.md"]).toBeNull();
@@ -183,7 +183,7 @@ describe("GistBackend against a stubbed GistTransport (no network)", () => {
 
 		const [, put] = canned.requests;
 		const body = JSON.parse(put.body!);
-		// The hand-added file is absent from the PUT body: GitHub leaves it in place.
+		// The hand-added file is absent from the PATCH body: GitHub leaves it in place.
 		expect(body.files["notes/hand-added.md"]).toBeUndefined();
 	});
 

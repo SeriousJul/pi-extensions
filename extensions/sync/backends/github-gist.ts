@@ -24,7 +24,7 @@ export const GIST_DESCRIPTION = "pi sync: cross-device pi config (managed by pi-
 
 export interface GistTransport {
 	request(
-		method: "GET" | "POST" | "PUT",
+		method: "GET" | "POST" | "PATCH",
 		url: string,
 		options: { headers: Record<string, string>; body?: string; signal?: AbortSignal },
 	): Promise<{ status: number; text: string }>;
@@ -53,6 +53,13 @@ export interface GistBackendOptions {
 	baseUrl?: string;
 	transport?: GistTransport;
 	signal?: AbortSignal;
+	/**
+	 * Called after a 401/403 (never after a 404): the auth session may
+	 * refresh the token or re-run the device flow. A returned token retries
+	 * the request exactly once; undefined fails cleanly. Bound by the
+	 * session: at most one refresh, one re-run, one retry per run.
+	 */
+	onAuthFailure?: () => Promise<string | undefined>;
 }
 
 interface GistFileShape {
@@ -70,11 +77,14 @@ interface GistShape {
 export function createGistBackend(options: GistBackendOptions): Backend {
 	const baseUrl = (options.baseUrl ?? "https://api.github.com").replace(/\/$/, "");
 	const transport = options.transport ?? createFetchTransport();
+	// The token changes on renewal; it lives here, never in the options
+	// object, which callers keep as a stable identity.
+	let token = options.token;
 
-	async function github<T>(method: "GET" | "POST" | "PUT", path: string, body?: unknown): Promise<T> {
+	async function github<T>(method: "GET" | "POST" | "PATCH", path: string, body?: unknown, renewed = false): Promise<T> {
 		const response = await transport.request(method, `${baseUrl}${path}`, {
 			headers: {
-				Authorization: `Bearer ${options.token}`,
+				Authorization: `Bearer ${token}`,
 				Accept: "application/vnd.github+json",
 				"User-Agent": "pi-sync",
 				...(body === undefined ? {} : { "Content-Type": "application/json" }),
@@ -92,7 +102,20 @@ export function createGistBackend(options: GistBackendOptions): Backend {
 			throw new GistError("not-found", `HTTP 404`);
 		}
 		if (response.status === 401 || response.status === 403) {
-			throw new GistError("error", `GitHub rejected the token (HTTP ${response.status}). Check that it is valid and has gist scope.`);
+			// One renewal, one retry (issue #38): a dead token triggers the
+			// auth session's refresh / device-flow re-run, then the request
+			// runs once more. A 404 never enters this path.
+			if (options.onAuthFailure && !renewed) {
+				const newToken = await options.onAuthFailure();
+				if (newToken && newToken !== token) {
+					token = newToken;
+					return github<T>(method, path, body, true);
+				}
+			}
+			const message = renewed
+				? `GitHub still rejected the token after a renewal attempt (HTTP ${response.status}). Re-run pi-sync in a terminal to re-authenticate, or update the token file / PI_SYNC_TOKEN.`
+				: `GitHub rejected the token (HTTP ${response.status}). Check that it is valid and has gist scope.`;
+			throw new GistError("error", message);
 		}
 		if (response.status < 200 || response.status >= 300) {
 			const detail =
@@ -109,7 +132,7 @@ export function createGistBackend(options: GistBackendOptions): Backend {
 		if (file.content !== undefined && file.content !== null) return file.content;
 		if (!file.raw_url) return "";
 		const response = await transport.request("GET", file.raw_url, {
-			headers: { Authorization: `Bearer ${options.token}`, "User-Agent": "pi-sync" },
+			headers: { Authorization: `Bearer ${token}`, "User-Agent": "pi-sync" },
 			signal: options.signal,
 		});
 		if (response.status < 200 || response.status >= 300) {
@@ -168,7 +191,7 @@ export function createGistBackend(options: GistBackendOptions): Backend {
 					kept.push(name);
 				}
 			}
-			const updated = await github<GistShape>("PUT", `/gists/${options.gistId}`, { files: payload.files });
+			const updated = await github<GistShape>("PATCH", `/gists/${options.gistId}`, { files: payload.files });
 			if (typeof updated.id !== "string") throw new GistError("error", "GitHub updated a gist but returned no id");
 			return { ok: true, value: { id: updated.id, kept } };
 		} catch (err) {

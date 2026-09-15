@@ -38,7 +38,7 @@ describe("pi-sync CLI argument handling", () => {
 		const c = capture();
 		const code = await main(["help"], c.output);
 		expect(code).toBe(0);
-		expect(c.lines.join("\n")).toContain("pi-sync init <gist-id>");
+		expect(c.lines.join("\n")).toContain("pi-sync init [gist-id] [--yes] [--force]");
 	});
 
 	it("prints usage with exit 2 when no command is given", async () => {
@@ -48,11 +48,13 @@ describe("pi-sync CLI argument handling", () => {
 		expect(c.lines.join("\n")).toContain("usage:");
 	});
 
-	it("rejects init without a gist id", async () => {
-		setEnv({});
+	it("init without a gist id is the create path; without a token it explains the device flow", async () => {
+		const home = await mkdtemp(join(tmpdir(), "pi-sync-cli-notoken-"));
+		dirs.push(home);
+		setEnv({ PI_SYNC_HOME: home });
 		const c = capture();
-		expect(await main(["init"], c.output)).toBe(2);
-		expect(c.errors.join("\n")).toContain("usage: pi-sync init <gist-id>");
+		expect(await main(["init"], c.output)).toBe(1);
+		expect(c.errors.join("\n")).toContain("PI_SYNC_TOKEN");
 	});
 
 	it("rejects an unknown command", async () => {
@@ -73,7 +75,7 @@ describe("pi-sync CLI argument handling", () => {
 });
 
 /**
- * A stateful secret gist over loopback HTTP: POST stores, PUT replaces, GET
+ * A stateful secret gist over loopback HTTP: POST stores, PATCH replaces, GET
  * returns the current files. The real Gist transport runs against it; no
  * network is involved.
  */
@@ -103,7 +105,7 @@ function gistStub(id: string): Promise<{ url: string; close: () => Promise<void>
 			});
 			return;
 		}
-		if (req.method === "PUT" && req.url === `/gists/${id}`) {
+		if (req.method === "PATCH" && req.url === `/gists/${id}`) {
 			let body = "";
 			req.on("data", (chunk) => (body += chunk));
 			req.on("end", () => {
@@ -127,7 +129,7 @@ function gistStub(id: string): Promise<{ url: string; close: () => Promise<void>
 }
 
 describe("pi-sync CLI end-to-end against a loopback Gist stub", () => {
-	it("first push creates the gist; status and pull then work against it", async () => {
+	it("init without an id creates the gist; status then works; a second device joins by id", async () => {
 		const home = await mkdtemp(join(tmpdir(), "pi-sync-cli-e2e-"));
 		dirs.push(home);
 		await mkdir(join(home, ".pi", "agent"), { recursive: true });
@@ -137,10 +139,12 @@ describe("pi-sync CLI end-to-end against a loopback Gist stub", () => {
 		const stub = await gistStub("created-id");
 		setEnv({ PI_SYNC_HOME: home, PI_SYNC_TOKEN: "loopback-token", PI_SYNC_GITHUB_BASE_URL: stub.url });
 
-		const push = capture();
-		expect(await main(["push"], push.output)).toBe(0);
-		expect(push.lines.join("\n")).toContain("created secret gist created-id");
-		expect(push.lines.join("\n")).toContain("pi sync init created-id");
+		const initA = capture();
+		expect(await main(["init", "--yes"], initA.output)).toBe(0);
+		// --yes confirms ahead, but the preview is still shown.
+		expect(initA.lines.join("\n")).toContain("preview, nothing written yet");
+		expect(initA.lines.join("\n")).toContain("created secret gist created-id");
+		expect(initA.lines.join("\n")).toContain("pi-sync init created-id");
 
 		// The local manifest records the gist id.
 		const manifest = JSON.parse(await readFile(join(home, ".pi", "sync", "manifest.json"), "utf8"));
@@ -156,7 +160,9 @@ describe("pi-sync CLI end-to-end against a loopback Gist stub", () => {
 		dirs.push(homeB);
 		setEnv({ PI_SYNC_HOME: homeB, PI_SYNC_TOKEN: "loopback-token", PI_SYNC_GITHUB_BASE_URL: stub.url });
 		const init = capture();
-		expect(await main(["init", "created-id"], init.output)).toBe(0);
+		expect(await main(["init", "created-id", "--yes"], init.output)).toBe(0);
+		// The join preview is shown too.
+		expect(init.lines.join("\n")).toContain("preview, nothing written yet");
 		expect(await readFile(join(homeB, "AGENTS.md"), "utf8")).toBe("# agents");
 		expect(await readFile(join(homeB, "OPINIONS.md"), "utf8")).toBe("op");
 

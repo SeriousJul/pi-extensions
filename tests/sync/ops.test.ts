@@ -73,13 +73,13 @@ describe("init / push / pull / status (fake backend)", () => {
 		a = await makeDevice(fake);
 	});
 
-	it("first push creates the gist with only the manifest-selected files and records the base state", async () => {
+	it("init without an id creates the gist (the create path) with only the manifest-selected files and records the base state", async () => {
 		await put(a.home, "AGENTS.md", "# agents a");
 		await put(a.home, ".pi/agent/settings.json", '{"model":"gpt"}');
 		await put(a.home, ".pi/agent/skills/demo/SKILL.md", "# demo");
 		await put(a.home, ".pi/agent/auth.json", '{"token":"SECRET"}');
 
-		const outcome = await runPush(a.rt);
+		const outcome = await runInit(a.rt, undefined, { yes: true });
 		expect(outcome.ok).toBe(true);
 		if (!outcome.ok) return;
 		expect(outcome.report.gistId).toBe("gist-abc");
@@ -98,14 +98,32 @@ describe("init / push / pull / status (fake backend)", () => {
 		expect(parsed.ok).toBe(true);
 		if (parsed.ok) expect(parsed.manifest.backendOptions.gistId).toBe("gist-abc");
 	});
+	it("a bare push never creates the gist and points at init", async () => {
+		await put(a.home, "AGENTS.md", "# agents a");
+		const outcome = await runPush(a.rt);
+		expect(outcome.ok).toBe(false);
+		if (outcome.ok) return;
+		expect(outcome.error).toContain("pi-sync init");
+	});
+
+	it("init create without consent writes nothing and returns the preview", async () => {
+		await put(a.home, "AGENTS.md", "# agents a");
+		const outcome = await runInit(a.rt, undefined, {});
+		expect(outcome.ok).toBe(false);
+		if (outcome.ok) return;
+		expect(outcome.error).toContain("nothing was written");
+		expect(outcome.preview).toBeDefined();
+		expect(outcome.preview!.join("\n")).toContain("AGENTS.md");
+		expect(fake.stored).toBeNull();
+	});
 
 	it("init on a fresh device joins by id and applies the snapshot", async () => {
 		await put(a.home, "AGENTS.md", "shared");
 		await put(a.home, ".pi/agent/settings.json", "{}");
-		expect((await runPush(a.rt)).ok).toBe(true);
+		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true); // the create path
 
 		const b = await makeDevice(fake);
-		const outcome = await runInit(b.rt, "gist-abc");
+		const outcome = await runInit(b.rt, "gist-abc", { yes: true });
 		expect(outcome.ok).toBe(true);
 		if (!outcome.ok) return;
 		expect(await get(b.home, "AGENTS.md")).toBe("shared");
@@ -115,6 +133,68 @@ describe("init / push / pull / status (fake backend)", () => {
 		if (parsed.ok) expect(parsed.manifest.backendOptions.gistId).toBe("gist-abc");
 	});
 
+	it("joining with a pre-written manifest and no base adopts the shared tree; the first push keeps the shared files", async () => {
+		// Device A creates the gist with three files.
+		await put(a.home, "AGENTS.md", "agents", 1_000_000_000_000);
+		await put(a.home, "OPINIONS.md", "opinions", 1_000_000_000_000);
+		await put(a.home, "VOICE.md", "voice", 1_000_000_000_000);
+		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true); // the create path
+
+		// Device B is a real onboarding state: a hand-written manifest and a
+		// local AGENTS.md, but no base record (it never synced) and no
+		// OPINIONS.md or VOICE.md.
+		const b = await makeDevice(fake);
+		await mkdir(b.stateDir, { recursive: true });
+		await writeFile(join(b.stateDir, "manifest.json"), canonicalManifestText(DEFAULT_MANIFEST));
+		await put(b.home, "AGENTS.md", "agents", 1_000_000_000_000);
+
+		const init = await runInit(b.rt, "gist-abc", { yes: true });
+		expect(init.ok).toBe(true);
+		if (!init.ok) return;
+		// The join preview lists the files that arrive (F2), not just a count.
+		const preview = init.preview!.join("\n");
+		expect(preview).toContain("arriving: 2 new file(s) from the shared tree");
+		expect(preview).toContain("  OPINIONS.md");
+		expect(preview).toContain("  VOICE.md");
+		// The never-held shared files are adopted locally, not read as deletions.
+		expect(await has(b.home, "OPINIONS.md")).toBe(true);
+		expect(await has(b.home, "VOICE.md")).toBe(true);
+
+		// The first push must not delete the shared files this device never
+		// held: they survive in the gist and the base carries no deletion.
+		const pushed = await runPush(b.rt);
+		expect(pushed.ok).toBe(true);
+		expect(fake.stored!.files.map((f) => f.path).sort()).toEqual(["AGENTS.md", "OPINIONS.md", "VOICE.md"]);
+		expect(fake.stored!.base?.["OPINIONS.md"]?.deleted).not.toBe(true);
+		expect(fake.stored!.base?.["VOICE.md"]?.deleted).not.toBe(true);
+	});
+
+	it("init join without consent writes nothing and returns the preview", async () => {
+		await put(a.home, "AGENTS.md", "shared");
+		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true);
+		const b = await makeDevice(fake);
+		const outcome = await runInit(b.rt, "gist-abc", {});
+		expect(outcome.ok).toBe(false);
+		if (outcome.ok) return;
+		expect(outcome.error).toContain("nothing was written");
+		expect(outcome.preview!.join("\n")).toContain("AGENTS.md");
+		expect(await has(b.home, "AGENTS.md")).toBe(false);
+	});
+
+	it("init with yes succeeds and still carries the preview for the caller to show", async () => {
+		await put(a.home, "AGENTS.md", "shared");
+		const created = await runInit(a.rt, undefined, { yes: true });
+		expect(created.ok).toBe(true);
+		if (created.ok) {
+			expect(created.preview!.join("\n")).toContain("preview, nothing written yet");
+			expect(created.preview!.join("\n")).toContain("AGENTS.md");
+		}
+		const b = await makeDevice(fake);
+		const joined = await runInit(b.rt, "gist-abc", { yes: true });
+		expect(joined.ok).toBe(true);
+		if (joined.ok) expect(joined.preview!.join("\n")).toContain("preview, nothing written yet");
+	});
+
 	it("init fails for a gist without a tool-managed manifest", async () => {
 		fake.stored = {
 			manifest: null,
@@ -122,7 +202,7 @@ describe("init / push / pull / status (fake backend)", () => {
 			base: null,
 		};
 		const b = await makeDevice(fake);
-		const outcome = await runInit(b.rt, "gist-abc");
+		const outcome = await runInit(b.rt, "gist-abc", { yes: true });
 		expect(outcome.ok).toBe(false);
 		if (outcome.ok) return;
 		expect(outcome.error).toContain("no tool-managed sync manifest");
@@ -142,7 +222,7 @@ describe("init / push / pull / status (fake backend)", () => {
 
 	it("pull takes a remote-only change and a remote-only file", async () => {
 		await put(a.home, "AGENTS.md", "base", 1_000_000_000_000);
-		expect((await runPush(a.rt)).ok).toBe(true);
+		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true); // the create path
 		const baseMs = 1_000_000_000_000;
 
 		// Device B edits AGENTS.md and adds a skill directory, then pushes.
@@ -167,7 +247,7 @@ describe("init / push / pull / status (fake backend)", () => {
 	it("push sends a local-only change without touching remote-only work", async () => {
 		await put(a.home, "AGENTS.md", "base", 1_000_000_000_000);
 		await put(a.home, "OPINIONS.md", "base op", 1_000_000_000_000);
-		expect((await runPush(a.rt)).ok).toBe(true);
+		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true); // the create path
 
 		// Device B edits AGENTS.md (newer than the base).
 		const remoteMtime = 1_000_000_000_100;
@@ -195,7 +275,7 @@ describe("init / push / pull / status (fake backend)", () => {
 
 	it("pull on a both-sides change takes the newer mtime and keeps the loser as a .bak in the same directory", async () => {
 		await put(a.home, "AGENTS.md", "base", 1_000_000_000_000);
-		expect((await runPush(a.rt)).ok).toBe(true);
+		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true); // the create path
 
 		const remoteMtime = 1_000_000_000_200;
 		const localMtime = 1_000_000_000_100;
@@ -218,7 +298,7 @@ describe("init / push / pull / status (fake backend)", () => {
 
 	it("pull on an mtime tie keeps local (the edit just made wins)", async () => {
 		await put(a.home, "AGENTS.md", "base", 1_000_000_000_000);
-		expect((await runPush(a.rt)).ok).toBe(true);
+		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true); // the create path
 
 		const sameMtime = 1_000_000_000_500;
 		fake.stored = {
@@ -236,7 +316,7 @@ describe("init / push / pull / status (fake backend)", () => {
 	it("pull applies a remote deletion of an unchanged file", async () => {
 		await put(a.home, "AGENTS.md", "base", 1_000_000_000_000);
 		await put(a.home, "OPINIONS.md", "to delete", 1_000_000_000_000);
-		expect((await runPush(a.rt)).ok).toBe(true);
+		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true); // the create path
 
 		// Device B deletes OPINIONS.md and pushes: the base carries the marker.
 		fake.stored = {
@@ -256,7 +336,7 @@ describe("init / push / pull / status (fake backend)", () => {
 
 	it("pull on a delete-vs-modify keeps the modified local copy as a .bak and deletes the file", async () => {
 		await put(a.home, "AGENTS.md", "base", 1_000_000_000_000);
-		expect((await runPush(a.rt)).ok).toBe(true);
+		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true); // the create path
 
 		fake.stored = {
 			manifest: DEFAULT_MANIFEST,
@@ -276,7 +356,7 @@ describe("init / push / pull / status (fake backend)", () => {
 	it("a backup file never enters the snapshot on the next push", async () => {
 		await put(a.home, "AGENTS.md", "base", 1_000_000_000_000);
 		await put(a.home, "AGENTS.md.stale.bak", "old loser", 1_000_000_000_000);
-		expect((await runPush(a.rt)).ok).toBe(true);
+		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true); // the create path
 		const paths = fake.stored!.files.map((f) => f.path);
 		expect(paths).toContain("AGENTS.md");
 		expect(paths).not.toContain("AGENTS.md.stale.bak");
@@ -285,7 +365,7 @@ describe("init / push / pull / status (fake backend)", () => {
 	it("a local deletion is removed from the snapshot on push", async () => {
 		await put(a.home, "AGENTS.md", "base", 1_000_000_000_000);
 		await put(a.home, "OPINIONS.md", "bye", 1_000_000_000_000);
-		expect((await runPush(a.rt)).ok).toBe(true);
+		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true); // the create path
 
 		await rm(join(a.home, "OPINIONS.md"));
 		expect((await runPush(a.rt)).ok).toBe(true);
@@ -295,7 +375,7 @@ describe("init / push / pull / status (fake backend)", () => {
 
 	it("pull adopts a changed sync manifest from the remote (tool-managed)", async () => {
 		await put(a.home, "AGENTS.md", "base", 1_000_000_000_000);
-		expect((await runPush(a.rt)).ok).toBe(true);
+		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true); // the create path
 
 		// Device B widens the include list and pushes.
 		const wide = { ...DEFAULT_MANIFEST, include: [...DEFAULT_MANIFEST.include, ".pi/agent/tools/**"] };
@@ -325,7 +405,7 @@ describe("init / push / pull / status (fake backend)", () => {
 
 	it("status reports ahead/behind without moving anything", async () => {
 		await put(a.home, "AGENTS.md", "base", 1_000_000_000_000);
-		expect((await runPush(a.rt)).ok).toBe(true);
+		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true); // the create path
 
 		// Diverge: local adds a file; remote edits AGENTS.md.
 		await put(a.home, "VOICE.md", "local voice", 1_000_000_000_100);
@@ -348,7 +428,7 @@ describe("init / push / pull / status (fake backend)", () => {
 
 	it("a network failure aborts pull before local files are touched", async () => {
 		await put(a.home, "AGENTS.md", "base", 1_000_000_000_000);
-		expect((await runPush(a.rt)).ok).toBe(true);
+		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true); // the create path
 		const before = (await stat(join(a.home, "AGENTS.md"))).mtimeMs;
 
 		fake.failure = "401: Bad credentials";
@@ -362,7 +442,7 @@ describe("init / push / pull / status (fake backend)", () => {
 
 	it("a push upload failure leaves the local tree untouched and the old snapshot in place", async () => {
 		await put(a.home, "AGENTS.md", "base", 1_000_000_000_000);
-		expect((await runPush(a.rt)).ok).toBe(true);
+		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true); // the create path
 
 		// Remote work that would be merged in locally.
 		const remoteMtime = 1_000_000_000_200;
@@ -383,19 +463,19 @@ describe("init / push / pull / status (fake backend)", () => {
 
 	it("pull after init on a device with pre-existing local files keeps the local edit", async () => {
 		await put(a.home, "AGENTS.md", "shared base", 1_000_000_000_000);
-		expect((await runPush(a.rt)).ok).toBe(true);
+		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true); // the create path
 
 		// A second device joins late but already has a local edit.
 		const b = await makeDevice(fake);
 		await put(b.home, "AGENTS.md", "b local edit", 1_000_000_000_500);
-		const init = await runInit(b.rt, "gist-abc");
+		const init = await runInit(b.rt, "gist-abc", { yes: true });
 		expect(init.ok).toBe(true);
 		expect(await get(b.home, "AGENTS.md")).toBe("b local edit");
 	});
 
 	it("a hand-added gist file survives push: it stays in the target and is reported", async () => {
 		await put(a.home, "AGENTS.md", "base", 1_000_000_000_000);
-		expect((await runPush(a.rt)).ok).toBe(true);
+		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true); // the create path
 
 		// Someone hand-adds a file to the gist that no include pattern covers.
 		const hand = file("notes/hand.md", "hand", 1_000_000_000_500);
@@ -405,7 +485,7 @@ describe("init / push / pull / status (fake backend)", () => {
 		// locally (the manifest does not cover it), and its later push must
 		// not delete it from the gist.
 		const b = await makeDevice(fake);
-		expect((await runInit(b.rt, "gist-abc")).ok).toBe(true);
+		expect((await runInit(b.rt, "gist-abc", { yes: true })).ok).toBe(true);
 		expect(await has(b.home, "notes/hand.md")).toBe(false);
 
 		const outcome = await runPush(b.rt);
@@ -418,7 +498,7 @@ describe("init / push / pull / status (fake backend)", () => {
 
 	it.skipIf(isRoot)("push records the device base only after the local apply succeeds", async () => {
 		await put(a.home, "AGENTS.md", "base", 1_000_000_000_000);
-		expect((await runPush(a.rt)).ok).toBe(true);
+		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true); // the create path
 		const baseBefore = await readFile(join(a.stateDir, "base-state.json"), "utf8");
 
 		// Remote work that the merge would apply locally.
@@ -446,6 +526,7 @@ describe("init / push / pull / status (fake backend)", () => {
 	it.skipIf(isRoot)("an unreadable in-scope file is skipped with a warning line", async () => {
 		await put(a.home, "AGENTS.md", "base", 1_000_000_000_000);
 		await put(a.home, "OPINIONS.md", "locked", 1_000_000_000_000);
+		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true); // the create path
 		await chmod(join(a.home, "OPINIONS.md"), 0o000);
 		try {
 			const outcome = await runPush(a.rt);
@@ -463,7 +544,7 @@ describe("init / push / pull / status (fake backend)", () => {
 		await put(a.home, "AGENTS.md", "agents", 1_000_000_000_000);
 		await put(a.home, ".pi/agent/skills/demo/reporting.md", "reporting", 1_000_000_000_000);
 		await put(a.home, ".pi/web-search.json", '{"provider":"brave"}', 1_000_000_000_000);
-		expect((await runPush(a.rt)).ok).toBe(true);
+		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true); // the create path
 
 		const fresh = await collectLocalFiles(DEFAULT_MANIFEST, a.home);
 		const asSnapshot: SyncFile[] = fresh.files;

@@ -34,10 +34,74 @@ export interface SyncReport {
 	warnings: string[];
 }
 
-export type SyncOutcome = { ok: true; report: SyncReport } | { ok: false; error: string };
+export type SyncOutcome =
+	| { ok: true; report: SyncReport; /** The preview, present when consent was given ahead of time (--yes, --force) and the caller still owes the user a look. */ preview?: string[] }
+	| { ok: false; error: string; preview?: string[] };
 
-function fail(message: string): SyncOutcome {
-	return { ok: false, error: message };
+function fail(message: string, preview?: string[]): SyncOutcome {
+	return preview ? { ok: false, error: message, preview } : { ok: false, error: message };
+}
+
+/**
+ * The consent options for init (issue #35). No confirmation, no write:
+ * a TUI or tty shows the preview and asks; a non-tty run needs the explicit
+ * yes flag. Re-init on an already-joined device confirms as well; the force
+ * flag bypasses the confirm.
+ */
+export interface InitOptions {
+	/** Explicit consent: the CLI --yes flag, or the TUI confirm button. */
+	yes?: boolean;
+	/** Bypass the confirm on a re-init of an already-joined device. */
+	force?: boolean;
+	/**
+	 * Interactive consent: shows the preview and asks. Absent on non-tty
+	 * runs and print/RPC pi modes; without it and without yes, nothing is
+	 * written and the failure carries the preview for the report.
+	 */
+	ask?: (previewLines: string[]) => Promise<boolean>;
+}
+
+async function obtainConsent(preview: string[], opts: InitOptions, forceAllowed: boolean): Promise<{ ok: true; previewShown: boolean } | { ok: false; error: string }> {
+	// Consent given ahead of time: the caller must still show the preview;
+	// the preview is part of the consent, never skippable.
+	if (opts.yes || (forceAllowed && opts.force)) return { ok: true, previewShown: false };
+	if (opts.ask) {
+		const yes = await opts.ask(preview);
+		return yes ? { ok: true, previewShown: true } : { ok: false, error: "init declined; nothing was written" };
+	}
+	return { ok: false, error: "no confirmation given; nothing was written. Run in a terminal to confirm at the prompt, or pass --yes." };
+}
+
+/** The preview for the create path: what would go into the new secret gist. */
+function createPreview(manifest: SyncManifest, files: SyncFile[]): string[] {
+	const lines = [
+		"pi sync init (new gist) - preview, nothing written yet",
+		`in scope: ${manifest.include.length} include pattern(s): ${manifest.include.join(", ")}`,
+		`sending: ${files.length} file(s) to the new secret gist`,
+	];
+	if (files.length > 0) lines.push(...files.map((f) => `  ${f.path}`));
+	lines.push("no local files will be replaced or deleted");
+	return lines;
+}
+
+/** The preview for the join path: what arrives and what it does locally. */
+function joinPreview(gistId: string, manifest: SyncManifest, arriving: string[], replaced: string[], deleted: string[]): string[] {
+	const lines = [
+		`pi sync init (gist ${gistId}) - preview, nothing written yet`,
+		`in scope: ${manifest.include.length} include pattern(s): ${manifest.include.join(", ")}`,
+	];
+	if (arriving.length > 0) {
+		lines.push(`arriving: ${arriving.length} new file(s) from the shared tree`, ...arriving.map((p) => `  ${p}`));
+	} else {
+		lines.push("no new files from the shared tree");
+	}
+	if (replaced.length > 0) {
+		lines.push("will replace local:", ...replaced.map((p) => `  ${p}`));
+	} else {
+		lines.push("no local files will be replaced");
+	}
+	if (deleted.length > 0) lines.push("will delete local:", ...deleted.map((p) => `  ${p}`));
+	return lines;
 }
 
 interface LocalSide {
@@ -233,34 +297,88 @@ function reportFor(operation: SyncReport["operation"], gistId: string | undefine
 }
 
 /**
- * Join a new device: fetch by gist id, adopt the remote manifest, and apply
- * the full Snapshot. A fresh device has no local side, so the merge
- * degenerates to a plain apply. Existing local files are backed up first.
+ * The init step of the Sync wizard (issues #35, #37, #39).
+ *
+ * With a gist id it pairs: fetch the shared tree, preview what arrives,
+ * confirm, then adopt. Without an id it creates: use the local manifest when
+ * one exists in the state dir, else the default, preview what would be sent,
+ * confirm, then create the secret gist. There is exactly one create path, and
+ * it always goes through the preview-and-confirm step; no confirmation, no
+ * write. Re-init on an already-joined device confirms as well.
  */
-export async function runInit(rt: SyncRuntime, gistId: string): Promise<SyncOutcome> {
+export async function runInit(rt: SyncRuntime, gistId: string | undefined, opts: InitOptions = {}): Promise<SyncOutcome> {
+	const existing = await readLocalManifest(rt.stateDir);
+	if (existing.error) return fail(existing.error);
+
+	// ---- The create path: no gist id given. ----
+	if (!gistId) {
+		const localGistId = existing.manifest?.backendOptions.gistId;
+		if (existing.manifest && localGistId) {
+			return fail(`this device already joined gist ${localGistId}. Use pi-sync init <gist-id> to re-join, or pi-sync push to sync.`);
+		}
+		// The local manifest wins when present (for example a hand-tuned
+		// include list), else the default (issue #39).
+		const manifest = existing.manifest ?? DEFAULT_MANIFEST;
+		const collected = await collectLocalFiles(manifest, rt.home);
+		const preview = createPreview(manifest, collected.files);
+		const consent = await obtainConsent(preview, opts, false);
+		if (!consent.ok) return fail(consent.error, preview);
+
+		const backend = rt.buildBackend(manifest);
+		const base = baseStateOf(collected.files, manifest, null, 0);
+		const created = await backend.create({ manifest: canonicalManifest(manifest), base, files: collected.files, updatedAtMs: undefined });
+		if (!created.ok) return fail(`init failed while creating the gist: ${created.message}`);
+		await writeLocalManifest(rt.stateDir, {
+			...manifest,
+			backendOptions: { ...manifest.backendOptions, gistId: created.value },
+		});
+		await writeLocalBase(rt.stateDir, base);
+		const lines = [
+			"pi sync init (new gist)",
+			`created secret gist ${created.value}`,
+			`pushed ${collected.files.length} file(s)`,
+			`on each other device, join with: pi-sync init ${created.value}`,
+		];
+		return { ok: true, report: reportFor("init", created.value, emptyPlan(), lines, [...collected.warnings, ...refWarningLines(collected.files)]), preview: consent.previewShown ? undefined : preview };
+	}
+
+	// ---- The join (pairing) path: fetch, preview, confirm, adopt. ----
 	const backend = rt.buildBackend(DEFAULT_MANIFEST, { gistId });
 	const remote = await loadRemote(backend, gistId);
 	if ("error" in remote) return fail(remote.error);
 
-	// Capture freshness before the adopted manifest makes this device look joined.
-	const existing = await readLocalManifest(rt.stateDir);
-	if (existing.error) return fail(existing.error);
-	const fresh = existing.manifest === undefined;
+	const local = await loadLocal(rt, remote.manifest);
+	if ("error" in local) return fail(local.error);
+	// The manifest was just adopted from the remote: it is not a local change.
+	local.manifestFile = null;
+	// Fresh = this device has never synced (no base record), not "no
+	// manifest": a device with a pre-written manifest still adopts the shared
+	// tree. A shared file it has never held is an adoption, never a local
+	// deletion - reading it as one would delete it from every device on the
+	// first push.
+	const fresh = local.base === null;
+
+	const plan = planMerge(remote.base, local, remote, fresh);
+	const localPaths = new Set(local.files.map((f) => f.path));
+	const arriving: string[] = [];
+	const replaced: string[] = [];
+	const deleted: string[] = [];
+	for (const action of plan.actions) {
+		if (action.path === MANIFEST_KEY) continue;
+		if (action.kind === "write") (localPaths.has(action.path) ? replaced : arriving).push(action.path);
+		if (action.kind === "delete") deleted.push(action.path);
+	}
+	const preview = joinPreview(gistId, remote.manifest, arriving, replaced, deleted);
+	const consent = await obtainConsent(preview, opts, true);
+	if (!consent.ok) return fail(consent.error, preview);
 
 	// The shared manifest carries no device-local gist id; record this device's.
 	await writeLocalManifest(rt.stateDir, {
 		...remote.manifest,
 		backendOptions: { ...remote.manifest.backendOptions, gistId },
 	});
-	const local = await loadLocal(rt, remote.manifest);
-	if ("error" in local) return fail(local.error);
-	// The manifest was just adopted from the remote: it is not a local change.
-	local.manifestFile = null;
-
-	const plan = planMerge(remote.base, local, remote, fresh);
-	const applied = planMutatesLocal(plan);
 	let apply: ApplyResult = { backups: [] };
-	if (applied) {
+	if (planMutatesLocal(plan)) {
 		try {
 			apply = await applyPlan(plan, rt.home, rt.stateDir);
 		} catch (err) {
@@ -274,7 +392,7 @@ export async function runInit(rt: SyncRuntime, gistId: string): Promise<SyncOutc
 	lines.push(...(planReport.length > 0 ? planReport : ["no local changes needed"]));
 	lines.push(`${remote.files.length} files in the snapshot; manifest adopted`);
 	const warnings = [...local.collectWarnings, ...refWarningLines(local.files)];
-	return { ok: true, report: reportFor("init", gistId, plan, lines, warnings) };
+	return { ok: true, report: reportFor("init", gistId, plan, lines, warnings), preview: consent.previewShown ? undefined : preview };
 }
 
 /** Pull: fetch, three-way merge against the Base state, apply to the local tree. */
@@ -325,9 +443,12 @@ export async function runPush(rt: SyncRuntime): Promise<SyncOutcome> {
 
 	if (!fetched.ok) {
 		if (fetched.code === "not-found" && !local.hasLocalManifest) {
-			return firstPush(rt, local);
+			// A bare push never creates the gist (issue #39): the create path
+			// is init, which always walks the token and the preview steps.
+			return fail(`this device has not joined a gist yet. Create the shared gist with: pi-sync init`);
 		}
-		const suffix = fetched.code === "not-found" ? ` The gist may have been deleted, or the id in the manifest is wrong.` : "";
+		// A 404 stays a plain error: no re-authentication loop (issue #38).
+		const suffix = fetched.code === "not-found" ? ` The gist may have been deleted, or the id in the manifest is wrong. Check the id and the account.` : "";
 		return fail(`${fetched.message}.${suffix}`);
 	}
 
@@ -379,27 +500,6 @@ export async function runPush(rt: SyncRuntime): Promise<SyncOutcome> {
 	const kept = pushed.value.kept.map((name) => `warning: the gist keeps ${name}, which is not part of the synced tree; delete it in the GitHub UI if it is not wanted`);
 	const warnings = [...local.collectWarnings, ...refWarningLines(local.files), ...kept];
 	return { ok: true, report: reportFor("push", gistId, plan, lines, warnings) };
-}
-
-async function firstPush(rt: SyncRuntime, local: LocalSide): Promise<SyncOutcome> {
-	const backend = rt.buildBackend(local.manifest);
-	const manifest = local.manifest;
-	const base = baseStateOf(local.files, manifest, null, 0);
-	// The shared gist manifest carries no device-local gist id.
-	const created = await backend.create({ manifest: canonicalManifest(manifest), base, files: local.files, updatedAtMs: undefined });
-	if (!created.ok) return fail(created.message);
-	await writeLocalManifest(rt.stateDir, {
-		...manifest,
-		backendOptions: { ...manifest.backendOptions, gistId: created.value },
-	});
-	await writeLocalBase(rt.stateDir, base);
-	const lines: string[] = [
-		`pi sync push`,
-		`created secret gist ${created.value}`,
-		`pushed ${local.files.length} files`,
-		`on each other device, join with: pi sync init ${created.value}`,
-	];
-	return { ok: true, report: reportFor("push", created.value, emptyPlan(), lines, local.collectWarnings) };
 }
 
 /**
