@@ -185,10 +185,11 @@ export function createGistBackend(options: GistBackendOptions): Backend {
 			const kept: string[] = [];
 			for (const name of Object.keys(current.files ?? {}).sort()) {
 				if (name in payload.files) continue;
-				if (snapshot.base?.[name]?.deleted === true) {
+				const path = decodeGistName(name); // the Base state is keyed by path, not gist name
+				if (snapshot.base?.[path]?.deleted === true) {
 					payload.files[name] = null;
 				} else {
-					kept.push(name);
+					kept.push(path);
 				}
 			}
 			const updated = await github<GistShape>("PATCH", `/gists/${options.gistId}`, { files: payload.files });
@@ -224,19 +225,62 @@ function mapError(err: unknown, gistId: string): BackendResult<never> {
 	return { ok: false, code: "error", message: `GitHub request failed: ${err instanceof Error ? err.message : String(err)}` };
 }
 
-/** Build the gist file map for a Snapshot: paths as-is, tool-managed at the root. */
+/**
+ * Gist file names are flat: GitHub rejects a name that contains "/". A
+ * synced path keeps its full home-relative form by percent-encoding every
+ * character outside [A-Za-z0-9._-], so ".pi/agent/settings.json" travels as
+ * ".pi%2Fagent%2Fsettings.json". The mapping is one-to-one and
+ * decodeGistName inverts it. Root files with safe names (AGENTS.md) travel
+ * unchanged, so the gist stays readable in the GitHub UI.
+ */
+export function encodeGistName(path: string): string {
+	let out = "";
+	for (const ch of path) {
+		if (/^[A-Za-z0-9._-]$/.test(ch)) {
+			out += ch;
+		} else {
+			for (const byte of Buffer.from(ch, "utf8")) out += `%${byte.toString(16).toUpperCase().padStart(2, "0")}`;
+		}
+	}
+	return out;
+}
+
+/** Invert encodeGistName. A stray percent sequence decodes as itself. */
+export function decodeGistName(name: string): string {
+	const bytes: number[] = [];
+	for (let i = 0; i < name.length; i++) {
+		const ch = name[i];
+		if (ch === "%" && i + 3 <= name.length && /^[0-9A-Fa-f]{2}$/.test(name.slice(i + 1, i + 3))) {
+			bytes.push(Number.parseInt(name.slice(i + 1, i + 3), 16));
+			i += 2;
+		} else if (ch.charCodeAt(0) < 0x80) {
+			bytes.push(ch.charCodeAt(0));
+		} else {
+			for (const byte of Buffer.from(ch, "utf8")) bytes.push(byte);
+		}
+	}
+	return Buffer.from(bytes).toString("utf8");
+}
+
+/**
+ * Build the gist file map for a Snapshot. Each path travels under its
+ * encoded name (encodeGistName); the tool-managed files stay at the root
+ * under their exact names. Empty content is unrepresentable in a gist: an
+ * empty file is absent (on a PATCH, GitHub deletes a file set to "").
+ */
 export function toGistPayload(snapshot: Snapshot): { files: Record<string, { content: string } | null>; totalBytes: number } {
 	const files: Record<string, { content: string } | null> = {};
 	let totalBytes = 0;
 	for (const file of snapshot.files) {
-		files[file.path] = { content: file.content };
+		if (file.content === "") continue; // an empty file is absent from the gist
+		files[encodeGistName(file.path)] = { content: file.content };
 		totalBytes += Buffer.byteLength(file.content, "utf8");
 	}
 	// The shared gist manifest is the canonical form: no device-local gist id.
 	const manifestText = snapshot.manifest ? canonicalManifestText(snapshot.manifest) : "";
 	const baseText = snapshot.base ? `${JSON.stringify(snapshot.base, null, 2)}\n` : "";
-	files[GIST_MANIFEST_FILE] = { content: manifestText };
-	files[GIST_BASE_FILE] = { content: baseText };
+	if (manifestText) files[GIST_MANIFEST_FILE] = { content: manifestText };
+	if (baseText) files[GIST_BASE_FILE] = { content: baseText };
 	totalBytes += Buffer.byteLength(manifestText, "utf8") + Buffer.byteLength(baseText, "utf8");
 	return { files, totalBytes };
 }
@@ -291,8 +335,9 @@ export async function snapshotFromGist(
 	for (const [name, file] of Object.entries(files)) {
 		if (name === GIST_MANIFEST_FILE || name === GIST_BASE_FILE) continue;
 		const content = await readContent(file);
-		const entry = base?.[name];
-		syncFiles.push({ path: name as SyncPath, content, mtimeMs: entry?.mtimeMs ?? fallbackMtime, hash: sha256Hex(content) });
+		const path = decodeGistName(name);
+		const entry = base?.[path];
+		syncFiles.push({ path: path as SyncPath, content, mtimeMs: entry?.mtimeMs ?? fallbackMtime, hash: sha256Hex(content) });
 	}
 	syncFiles.sort((a, b) => a.path.localeCompare(b.path));
 	return { manifest, base, files: syncFiles, updatedAtMs: Date.parse(gist.updated_at ?? "") || undefined };

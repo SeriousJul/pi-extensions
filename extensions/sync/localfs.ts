@@ -15,6 +15,7 @@
  */
 import { mkdir, readdir, readFile, rename, stat, unlink, utimes, writeFile } from "node:fs/promises";
 import { dirname, join, sep } from "node:path";
+import { GIST_BASE_FILE, GIST_MANIFEST_FILE } from "./backends/github-gist.ts";
 import { isUtf8, sha256Hex } from "./hash.ts";
 import { canonicalManifestText, isPathIncluded, parseManifest, serializeManifest, walkRoots } from "./manifest.ts";
 import type { MergePlan } from "./merge.ts";
@@ -86,6 +87,12 @@ async function walk(dir: string, home: string, manifest: SyncManifest, files: Sy
 async function collectFile(full: string, home: string, manifest: SyncManifest, files: SyncFile[], warnings: string[]): Promise<void> {
 	const relative = toHomeRelative(full, home);
 	if (relative.endsWith(".bak")) return; // the tool's own backups never sync
+	// A root file that takes a tool-managed gist name would overwrite the
+	// shared manifest or Base state on the next push.
+	if (relative === GIST_MANIFEST_FILE || relative === GIST_BASE_FILE) {
+		warnings.push(`skipped file that collides with a tool-managed gist file: ${relative}`);
+		return;
+	}
 	if (!isPathIncluded(relative, manifest)) return;
 	let buffer: Buffer;
 	let mtimeMs: number;
@@ -100,6 +107,13 @@ async function collectFile(full: string, home: string, manifest: SyncManifest, f
 	}
 	if (!isUtf8(buffer)) {
 		warnings.push(`skipped non-text file (gists are text only): ${relative}`);
+		return;
+	}
+	if (buffer.length === 0) {
+		// Gist files cannot hold empty content, and an empty file has nothing
+		// to carry. It is absent from the Snapshot; truncating a file to
+		// empty reads as a deletion in the three-way merge.
+		warnings.push(`skipped empty file (gist files must be non-empty): ${relative}`);
 		return;
 	}
 	const content = buffer.toString("utf8");

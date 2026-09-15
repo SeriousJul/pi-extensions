@@ -229,6 +229,8 @@ _Avoid_: config (too generic), include list (only half of it), sync config
 
 **Snapshot**:
 The full set of files one sync run moves, selected by the Sync manifest.
+An empty file is absent from the Snapshot: the shared tree carries no
+empty files, and truncating a file to empty reads as a deletion.
 _Avoid_: backup (a backup exists to restore after loss), export, bundle
 
 **Backend**:

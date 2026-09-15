@@ -8,7 +8,7 @@
  * preview confirm with y. A second clean device joins by id the same way.
  * The run is opt-in live against real GitHub: tests/sync/e2e-gist.mjs.
  */
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -82,12 +82,26 @@ function githubStub(options: { firstCode?: "expire" | "deny" } = {}): Promise<{
 			if (!state.approved) return send(400, { error: "authorization_pending" });
 			return send(200, { access_token: "e2e-at", refresh_token: "e2e-rt", expires_in: 28800 });
 		}
+		// GitHub's real gist rules (issue #50): names are flat (no "/"), and a
+		// file cannot hold empty content. Enforce them so the loop catches
+		// payload drift the unit stubs would swallow. On create an empty
+		// content is a 422; on update GitHub deletes the file instead.
+		const validationFailure = (files: Record<string, { content: string } | null>): string | null => {
+			for (const [name, file] of Object.entries(files)) {
+				if (file === null) continue;
+				if (name.includes("/")) return `files.${name}: invalid name`;
+				if (file.content === "") return `files.${name}: missing content`;
+			}
+			return null;
+		};
 		if (req.method === "GET" && req.url === `/gists/${gist.id}`) {
 			if (!gistExists) return send(404, { message: "Not Found" });
 			return send(200, { id: gist.id, updated_at: "2026-01-01T00:00:00Z", files: Object.fromEntries(Object.entries(gist.files).map(([n, c]) => [n, { content: c }])) });
 		}
 		if (req.method === "POST" && req.url === "/gists") {
 			const parsed = JSON.parse((await readBody(req)) || "{}") as { files?: Record<string, { content: string } | null> };
+			const failure = validationFailure(parsed.files ?? {});
+			if (failure) return send(422, { message: "Validation Failed", errors: [{ resource: "Gist", code: "invalid", field: "files" }], detail: failure });
 			for (const [name, file] of Object.entries(parsed.files ?? {})) {
 				if (file !== null) gist.files[name] = file.content;
 			}
@@ -97,7 +111,7 @@ function githubStub(options: { firstCode?: "expire" | "deny" } = {}): Promise<{
 		if (req.method === "PATCH" && req.url === `/gists/${gist.id}`) {
 			const parsed = JSON.parse((await readBody(req)) || "{}") as { files?: Record<string, { content: string } | null> };
 			for (const [name, file] of Object.entries(parsed.files ?? {})) {
-				if (file === null) delete gist.files[name];
+				if (file === null || file.content === "") delete gist.files[name];
 				else gist.files[name] = file.content;
 			}
 			return send(200, { id: gist.id });
@@ -200,6 +214,11 @@ describe.skipIf(!hasPtyScript)("onboarding proof: clean home to joined device (i
 		const stub = await githubStub();
 		const homeA = await tempDir("pi-sync-onboard-a-");
 		await writeFile(join(homeA, "AGENTS.md"), "# agents from A");
+		// A nested file (gist names must stay flat) and an empty file (gists
+		// cannot store empty content) ride along with the create (issue #50).
+		await mkdir(join(homeA, ".pi", "agent"), { recursive: true });
+		await writeFile(join(homeA, ".pi", "agent", "settings.json"), '{"t":true}');
+		await writeFile(join(homeA, "OPINIONS.md"), "");
 		const envA = { PI_SYNC_HOME: homeA, PI_SYNC_OAUTH_CLIENT_ID: "e2e-client", PI_SYNC_GITHUB_BASE_URL: stub.url };
 
 		const cli = runCliTty("init", envA);
@@ -216,7 +235,7 @@ describe.skipIf(!hasPtyScript)("onboarding proof: clean home to joined device (i
 			await cli.waitFor("created secret gist e2e-gist-1", "the created-gist line");
 			const code = await Promise.race([cli.waitExit(), new Promise<number>((r) => setTimeout(() => r(-9999), 15_000))]);
 			expect(code).toBe(0);
-			expect(cli.output()).toContain("pushed 1 file(s)");
+			expect(cli.output()).toContain("pushed 2 file(s)");
 			expect(cli.output()).toContain("pi-sync init e2e-gist-1");
 
 			// The clean home is now a joined device: managed token, manifest, base.
@@ -228,6 +247,8 @@ describe.skipIf(!hasPtyScript)("onboarding proof: clean home to joined device (i
 			const manifest = JSON.parse(await readFile(join(homeA, ".pi", "sync", "manifest.json"), "utf8"));
 			expect(manifest.backendOptions.gistId).toBe("e2e-gist-1");
 			expect(stub.gist.files["AGENTS.md"]).toBe("# agents from A");
+			expect(stub.gist.files[".pi%2Fagent%2Fsettings.json"]).toBe('{"t":true}');
+			expect(stub.gist.files["OPINIONS.md"]).toBeUndefined();
 			expect(stub.gist.files[".pi-sync-manifest.json"]).toBeDefined();
 		} finally {
 			cli.child.kill("SIGKILL");
@@ -245,6 +266,7 @@ describe.skipIf(!hasPtyScript)("onboarding proof: clean home to joined device (i
 			const code = await Promise.race([cliB.waitExit(), new Promise<number>((r) => setTimeout(() => r(-9999), 15_000))]);
 			expect(code).toBe(0);
 			expect(await readFile(join(homeB, "AGENTS.md"), "utf8")).toBe("# agents from A");
+			expect(await readFile(join(homeB, ".pi", "agent", "settings.json"), "utf8")).toBe('{"t":true}');
 			expect(JSON.parse(await readFile(join(homeB, ".pi", "sync", "manifest.json"), "utf8")).backendOptions.gistId).toBe("e2e-gist-1");
 		} finally {
 			cliB.child.kill("SIGKILL");

@@ -19,7 +19,7 @@
  *   node tests/sync/e2e-gist.mjs [--device-flow]
  */
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -97,6 +97,11 @@ const homeB = newHome("pi-sync-e2e-b-");
 try {
 	// 1. Device A onboards: auth, then create the shared tree.
 	writeFileSync(join(homeA, "AGENTS.md"), "# agents e2e\n");
+	// A nested file and an empty file: the shapes GitHub's flat, text-only
+	// gists reject (issue #50), so the live run covers them too.
+	mkdirSync(join(homeA, ".pi", "agent"), { recursive: true });
+	writeFileSync(join(homeA, ".pi", "agent", "settings.json"), '{"t":true}\n');
+	writeFileSync(join(homeA, "OPINIONS.md"), "");
 	if (deviceFlow) {
 		humanAction("in the browser, enter the device code the wizard prints (approve the pi sync app)");
 		humanAction("confirm the create preview (type y)");
@@ -120,6 +125,7 @@ try {
 		if (!out.includes("manifest adopted")) fail(`join report missing the adoption line:\n${out}`);
 	}
 	if (readFileSync(join(homeB, "AGENTS.md"), "utf8") !== "# agents e2e\n") fail("device B did not adopt AGENTS.md");
+	if (readFileSync(join(homeB, ".pi", "agent", "settings.json"), "utf8") !== '{"t":true}\n') fail("device B did not adopt the nested settings file");
 	console.log("ok: device B joined and adopted the tree");
 
 	// 3. Device A edits and pushes; device B pulls. Machine actions only.

@@ -53,7 +53,7 @@ describe("GistBackend against a stubbed GistTransport (no network)", () => {
 	it("fetch maps a recorded gist response to a Snapshot with base-recorded mtimes", async () => {
 		const fixture = gistJson({
 			"AGENTS.md": { content: "# agents" },
-			".pi/agent/settings.json": { content: "{}", raw_url: "https://gistcdn/settings.json" },
+			".pi%2Fagent%2Fsettings.json": { content: "{}", raw_url: "https://gistcdn/settings.json" },
 			[GIST_MANIFEST_FILE]: { content: JSON.stringify(DEFAULT_MANIFEST) },
 			[GIST_BASE_FILE]: { content: JSON.stringify({ "AGENTS.md": { hash: sha256Hex("# agents"), mtimeMs: 123 } }) },
 		});
@@ -162,13 +162,13 @@ describe("GistBackend against a stubbed GistTransport (no network)", () => {
 		expect(body.files[GIST_MANIFEST_FILE]).toBeDefined();
 	});
 
-	it("push keeps a hand-added gist file (not in the snapshot, not deleted in the base) and reports it", async () => {
+	it("push keeps a hand-added gist file (not in the snapshot, not deleted in the base) and reports it as a path", async () => {
 		const canned = makeTransport([
 			{
 				status: 200,
 				json: gistJson({
 					"AGENTS.md": { content: "old" },
-					"notes/hand-added.md": { content: "hand" },
+					"notes%2Fhand-added.md": { content: "hand" },
 					[GIST_MANIFEST_FILE]: { content: "{}" },
 					[GIST_BASE_FILE]: { content: "{}" },
 				}),
@@ -184,7 +184,69 @@ describe("GistBackend against a stubbed GistTransport (no network)", () => {
 		const [, put] = canned.requests;
 		const body = JSON.parse(put.body!);
 		// The hand-added file is absent from the PATCH body: GitHub leaves it in place.
-		expect(body.files["notes/hand-added.md"]).toBeUndefined();
+		expect(body.files["notes%2Fhand-added.md"]).toBeUndefined();
+	});
+
+	describe("gist name encoding (issue #50): GitHub gists are flat and text", () => {
+		it("create sends nested paths as flat percent-encoded names", async () => {
+			const canned = makeTransport([{ status: 201, json: gistJson({}, "new-id") }]);
+			const backend = createGistBackend({ token: "tok", transport: canned.transport });
+			const result = await backend.create(snapshotOf("# agents", ".pi/agent/settings.json"));
+			expect(result.ok).toBe(true);
+
+			const body = JSON.parse(canned.requests[0].body!);
+			// No file name may carry a slash: gists are flat.
+			for (const name of Object.keys(body.files)) expect(name).not.toContain("/");
+			expect(body.files[".pi%2Fagent%2Fsettings.json"].content).toBe("# agents");
+		});
+
+		it("fetch decodes encoded names back to home-relative paths", async () => {
+			const canned = makeTransport([{ status: 200, json: gistJson({ "AGENTS.md": { content: "a" }, ".pi%2Fagent%2Fsettings.json": { content: "{}" } }) }]);
+			const backend = createGistBackend({ gistId: "gid-1", token: "tok", transport: canned.transport });
+			const result = await backend.fetch();
+			expect(result.ok).toBe(true);
+			if (!result.ok) return;
+			expect(result.value.files.map((f) => f.path).sort()).toEqual([".pi/agent/settings.json", "AGENTS.md"]);
+		});
+
+		it("push deletes under the encoded name and looks the Base up by path", async () => {
+			const canned = makeTransport([
+				{
+					status: 200,
+					json: gistJson({
+						"AGENTS.md": { content: "old" },
+						"dir%2Fdropped.md": { content: "x" },
+						[GIST_MANIFEST_FILE]: { content: "{}" },
+						[GIST_BASE_FILE]: { content: "{}" },
+					}),
+				},
+				{ status: 200, json: gistJson({ "AGENTS.md": { content: "old" } }, "gid-1") },
+			]);
+			const backend = createGistBackend({ gistId: "gid-1", token: "tok", transport: canned.transport });
+			const snapshot = snapshotOf("# agents v2");
+			snapshot.base!["dir/dropped.md"] = { hash: sha256Hex("x"), mtimeMs: 1_000, deleted: true };
+			const result = await backend.push(snapshot);
+			expect(result.ok).toBe(true);
+			if (result.ok) {
+				const body = JSON.parse(canned.requests[1].body!);
+				expect(body.files["dir%2Fdropped.md"]).toBeNull();
+				expect(result.value.kept).toEqual([]);
+			}
+		});
+
+		it("omits empty content: GitHub cannot store an empty gist file", () => {
+			const snapshot: Snapshot = {
+				manifest: DEFAULT_MANIFEST,
+				base: {},
+				files: [
+					{ path: "EMPTY.md", content: "", mtimeMs: 0, hash: sha256Hex("") },
+					{ path: "B.md", content: "x", mtimeMs: 0, hash: sha256Hex("x") },
+				],
+			};
+			const payload = toGistPayload(snapshot);
+			expect(payload.files["EMPTY.md"]).toBeUndefined();
+			expect(payload.files["B.md"]).toBeDefined();
+		});
 	});
 
 	it("rejects a snapshot that exceeds the gist file limit before any API call", async () => {
