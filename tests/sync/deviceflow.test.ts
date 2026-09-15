@@ -3,12 +3,13 @@
  * refresh of a managed token, and the auth session that bounds them.
  * A stub OAuth transport keeps every test off the network.
  */
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createAuthSession, type DeviceFlowHooks } from "../../extensions/sync/auth.ts";
+import { createGistBackend, type GistTransport } from "../../extensions/sync/backends/github-gist.ts";
 import { runDeviceFlow, type OAuthTransport } from "../../extensions/sync/deviceflow.ts";
 import { needsProactiveRefresh, refreshAccessToken } from "../../extensions/sync/refresh.ts";
 import { parseManagedToken, stateDirFor, tokenPathFor, writeManagedToken } from "../../extensions/sync/token.ts";
@@ -296,6 +297,24 @@ describe("the auth session (issue #38)", () => {
 		expect(await built.session?.renew()).toBeUndefined(); // hand-written: never refreshed
 	});
 
+	it("never refreshes or re-runs a hand-written plain-file token either", async () => {
+		const home = await tempDir("pi-sync-auth-plainfile-");
+		const stateDir = stateDirFor(home, {});
+		await mkdir(stateDir, { recursive: true });
+		await writeFile(tokenPathFor(stateDir), "plain-file-token\n", { mode: 0o600 });
+		const { transport, calls } = stubOAuth({ tokenResponses: [{ status: 200, json: { access_token: "at", refresh_token: "rt", expires_in: 28800 } }] });
+		const built = await createAuthSession({
+			env: { PI_SYNC_HOME: home, PI_SYNC_OAUTH_CLIENT_ID: "client-1" },
+			oauthTransport: transport,
+			deviceFlow: { run: () => runDeviceFlow({ stateDir, clientId: "client-1", transport, onStatus: hooks.onStatus, askRetry: hooks.askRetry }) },
+		});
+		expect(built.session?.token).toBe("plain-file-token");
+		expect(built.session?.source).toBe("plain-file");
+		expect(await built.session?.renew()).toBeUndefined(); // hand-written: never managed
+		expect(calls).toHaveLength(0); // no refresh or device flow ever attempted
+		expect((await readFile(tokenPathFor(stateDir), "utf8")).trim()).toBe("plain-file-token"); // untouched
+	});
+
 	it("reports the fix instead of starting a flow when no token exists in a non-interactive context", async () => {
 		const home = await tempDir("pi-sync-auth-none-");
 		const built = await createAuthSession({ env: { PI_SYNC_HOME: home } });
@@ -322,6 +341,30 @@ describe("the auth session (issue #38)", () => {
 		});
 		expect(built.session?.token).toBe("at");
 		expect(built.session?.source).toBe("managed-file");
+	});
+
+	it("proactively re-runs the device flow in an interactive context when the stored refresh token is dead", async () => {
+		const home = await tempDir("pi-sync-auth-proactive-dead-");
+		const stateDir = stateDirFor(home, {});
+		const soon = Date.now() + 60_000; // inside the 5-minute skew: proactive refresh triggers
+		await writeManagedToken(stateDir, { accessToken: "old", refreshToken: "rt-dead", obtainedMs: soon - 28_740_000, expiresMs: soon });
+		// First token-endpoint call is the refresh (rejected: dead); the
+		// second is the device-flow poll (granted a fresh pair).
+		const { transport } = stubOAuth({
+			tokenResponses: [
+				{ status: 400, json: { error: "bad_verification_code" } },
+				{ status: 200, json: { access_token: "flow-at", refresh_token: "flow-rt", expires_in: 28800 } },
+			],
+		});
+		const built = await createAuthSession({
+			env: { PI_SYNC_HOME: home, PI_SYNC_OAUTH_CLIENT_ID: "client-1" },
+			oauthTransport: transport,
+			deviceFlow: { run: () => runDeviceFlow({ stateDir, clientId: "client-1", transport, onStatus: hooks.onStatus, askRetry: hooks.askRetry }) },
+		});
+		expect(built.session?.token).toBe("flow-at");
+		const stored = parseManagedToken((await readFile(tokenPathFor(stateDir), "utf8")).trim());
+		expect(stored?.accessToken).toBe("flow-at");
+		expect(stored?.refreshToken).toBe("flow-rt");
 	});
 
 	it("proactively refreshes a managed token inside the skew window", async () => {
@@ -396,5 +439,42 @@ describe("the auth session (issue #38)", () => {
 			// stored pair is dead: the device flow is the way back.
 			expect(result.refreshDead).toBe(true);
 		}
+	});
+
+	it("a mid-operation 401 walks one refresh attempt, one device-flow re-run, and one retry", async () => {
+		const home = await tempDir("pi-sync-auth-chain-");
+		const stateDir = stateDirFor(home, {});
+		const far = Date.now() + 6 * 3_600_000; // outside the skew: no proactive refresh
+		await writeManagedToken(stateDir, { accessToken: "old", refreshToken: "rt-dead", obtainedMs: far - 28_800_000, expiresMs: far });
+		// First token-endpoint call is the mid-operation refresh (rejected:
+		// dead); the second is the device-flow poll (granted a fresh pair).
+		const { transport: oauth } = stubOAuth({
+			tokenResponses: [
+				{ status: 400, json: { error: "bad_verification_code" } },
+				{ status: 200, json: { access_token: "flow-at", refresh_token: "flow-rt", expires_in: 28800 } },
+			],
+		});
+		const built = await createAuthSession({
+			env: { PI_SYNC_HOME: home, PI_SYNC_OAUTH_CLIENT_ID: "client-1" },
+			oauthTransport: oauth,
+			deviceFlow: { run: () => runDeviceFlow({ stateDir, clientId: "client-1", transport: oauth, onStatus: hooks.onStatus, askRetry: hooks.askRetry }) },
+		});
+		expect(built.session?.token).toBe("old");
+		// The gist side: 401 with the stale token, success with the flow token.
+		const gistAuth: string[] = [];
+		const gistTransport: GistTransport = {
+			async request(_method, _url, opts) {
+				gistAuth.push(opts.headers.Authorization ?? "");
+				return gistAuth.length === 1
+					? { status: 401, text: "" }
+					: { status: 200, text: JSON.stringify({ id: "gid-1", updated_at: "2026-01-01T00:00:00Z", files: {} }) };
+			},
+		};
+		const backend = createGistBackend({ gistId: "gid-1", token: built.session!.token, transport: gistTransport, onAuthFailure: built.session!.renew });
+		const result = await backend.fetch();
+		expect(result.ok).toBe(true);
+		expect(gistAuth).toEqual(["Bearer old", "Bearer flow-at"]); // one retry, with the re-issued token
+		const stored = parseManagedToken((await readFile(tokenPathFor(stateDir), "utf8")).trim());
+		expect(stored?.accessToken).toBe("flow-at"); // the re-issued pair is persisted
 	});
 });
