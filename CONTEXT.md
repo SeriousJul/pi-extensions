@@ -1,8 +1,9 @@
 # Pi Extensions
 
-Extensions for the pi coding agent. Three today: Codegraph (semantic code
-search over the current project), Quota (subscription quota monitor), and
-Model router (automatic recovery from quota exhaustion).
+Extensions for the pi coding agent. Five today: Codegraph (semantic code
+search over the current project), Quota (subscription quota monitor), Model
+router (automatic recovery from quota exhaustion), Sync (device file
+sync), and Usage (token and cost reporting across all sessions).
 
 ## Language
 
@@ -246,3 +247,31 @@ shared Base lives in the Backend and advances with every push. A device
 that lost its cache falls back to the shared Base.
 _Avoid_: metadata (generic), manifest (clashes with Sync manifest), state
 (too generic)
+
+### Usage
+
+**Usage event**:
+One LLM call's recorded usage in a session file: the token counts, cost,
+provider, model, and time of a single assistant reply, a tool's nested LLM
+work, or a compaction summary.
+_Avoid_: request (implies network), sample, token count (that is one field)
+
+**Usage scan**:
+One pass over every session file that extracts every Usage event exactly
+once. A forked session copies its parent's history byte-identical, so an
+event is counted by its full line and a fork never double-counts its
+parent's past.
+_Avoid_: indexer (implies stored state), crawl, telemetry
+
+**Canonical identity**:
+The (provider, model) pair after the alias rules: spelling variants of one
+provider merge to one name, and a model ID is folded (lowercased, quantization
+suffix dropped, `-GGUF` infix dropped). A name no rule touches stays raw.
+_Avoid_: normalization (generic), dedup (the scan's job), account (a Quota word)
+
+**Usage report**:
+A bucketed, grouped view of LLM token and cost usage across all sessions:
+one row per time bucket and Canonical identity, with the token columns, cost,
+and a grand total. Derived on demand by a Usage scan; never stored.
+_Avoid_: usage log (codegraph's per-call log), usage snapshot (Quota's plan
+read), metrics (implies stored aggregates)
