@@ -117,9 +117,10 @@ describe("runDeviceFlow (issue #37)", () => {
 		const result = await runDeviceFlow({ stateDir, clientId: "client-1", transport, onStatus: () => undefined, askRetry: async () => false });
 		expect(result.ok).toBe(false);
 		// The error names what GitHub said, so an app without the device-flow
-		// opt-in is fixable from the message.
+		// opt-in is fixable from the message: it points at the settings page.
 		expect(result.error).toContain("device_flow_disabled");
 		expect(result.error).toContain("Device Flow must be explicitly enabled for this App");
+		expect(result.error).toContain("https://github.com/settings/developers");
 	});
 
 	it("slow_down raises the polling interval by 5 seconds (RFC 8628)", async () => {

@@ -135,7 +135,13 @@ export async function runDeviceFlow(deps: DeviceFlowDeps): Promise<DeviceFlowRes
 				const ghError = typeof device.error === "string" ? device.error : undefined;
 				const ghDescription = typeof device.error_description === "string" ? device.error_description : undefined;
 				const reason = ghError ? `GitHub reported ${ghError}${ghDescription === undefined ? "" : `: ${ghDescription}`}` : `HTTP ${deviceRequest.status}`;
-				return { ok: false, error: `could not start the device flow (${reason}). Check the OAuth client id config.` };
+				// A disabled device flow is an app-settings fix, not a config
+			// fix: point at the settings page instead of the client id config.
+				const hint =
+					ghError === "device_flow_disabled"
+						? `Open ${new URL(baseUrl).origin}/settings/developers, pick the app, and check the device flow opt-in box.`
+						: "Check the OAuth client id config.";
+				return { ok: false, error: `could not start the device flow (${reason}). ${hint}` };
 			}
 			const verificationUrl = typeof device.verification_uri === "string" && device.verification_uri !== "" ? device.verification_uri : DEVICE_VERIFICATION_URL;
 			const expiresIn = typeof device.expires_in === "number" ? device.expires_in : 900;
