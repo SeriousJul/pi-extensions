@@ -100,7 +100,7 @@ and as CLI verbs (same code, `extensions/sync/ops.ts`):
 | Verb | Effect |
 | --- | --- |
 | `pi-sync init` (no id) | The create path: on auth, preview, and confirm, it creates the shared secret gist from this device's tree. |
-| `pi-sync init <gist-id>` | The join path: on auth, preview, and confirm, this device adopts the shared tree and records the gist id. |
+| `pi-sync init <gist-id>` | The join path: on auth, preview, and confirm, this device adopts the shared tree and records the gist id. On an already-joined device it re-adopts like a pull (the preview lists what will be replaced; local edits are kept) and confirms again; `--force` skips the confirm. |
 | `pi-sync push` | Merge local + remote, upload the merged tree, then apply the merge to the local tree. On a device that never ran `init`, push is a plain error pointing at `pi-sync init`: it never creates. |
 | `pi-sync pull` | Merge local + remote and apply to the local tree. |
 | `pi-sync status` | The merge without side effects: ahead / behind / conflict. |

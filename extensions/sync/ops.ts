@@ -36,10 +36,16 @@ export interface SyncReport {
 
 export type SyncOutcome =
 	| { ok: true; report: SyncReport; /** The preview, present when consent was given ahead of time (--yes, --force) and the caller still owes the user a look. */ preview?: string[] }
-	| { ok: false; error: string; preview?: string[] };
+	| {
+			ok: false;
+			error: string;
+			preview?: string[];
+			/** The preview was already shown to the user (the confirm prompt); the caller must not show it again. */
+			previewShown?: boolean;
+		};
 
-function fail(message: string, preview?: string[]): SyncOutcome {
-	return preview ? { ok: false, error: message, preview } : { ok: false, error: message };
+function fail(message: string, preview?: string[], previewShown?: boolean): SyncOutcome {
+	return preview ? { ok: false, error: message, preview, previewShown } : { ok: false, error: message };
 }
 
 /**
@@ -61,15 +67,20 @@ export interface InitOptions {
 	ask?: (previewLines: string[]) => Promise<boolean>;
 }
 
-async function obtainConsent(preview: string[], opts: InitOptions, forceAllowed: boolean): Promise<{ ok: true; previewShown: boolean } | { ok: false; error: string }> {
+async function obtainConsent(
+	preview: string[],
+	opts: InitOptions,
+	forceAllowed: boolean,
+): Promise<{ ok: true; previewShown: boolean } | { ok: false; error: string; previewShown: boolean }> {
 	// Consent given ahead of time: the caller must still show the preview;
 	// the preview is part of the consent, never skippable.
 	if (opts.yes || (forceAllowed && opts.force)) return { ok: true, previewShown: false };
 	if (opts.ask) {
 		const yes = await opts.ask(preview);
-		return yes ? { ok: true, previewShown: true } : { ok: false, error: "init declined; nothing was written" };
+		// The prompt already showed the preview: the failure must not show it again.
+		return yes ? { ok: true, previewShown: true } : { ok: false, error: "init declined; nothing was written", previewShown: true };
 	}
-	return { ok: false, error: "no confirmation given; nothing was written. Run in a terminal to confirm at the prompt, or pass --yes." };
+	return { ok: false, error: "no confirmation given; nothing was written. Run in a terminal to confirm at the prompt, or pass --yes.", previewShown: false };
 }
 
 /** The preview for the create path: what would go into the new secret gist. */
@@ -322,7 +333,7 @@ export async function runInit(rt: SyncRuntime, gistId: string | undefined, opts:
 		const collected = await collectLocalFiles(manifest, rt.home);
 		const preview = createPreview(manifest, collected.files);
 		const consent = await obtainConsent(preview, opts, false);
-		if (!consent.ok) return fail(consent.error, preview);
+		if (!consent.ok) return fail(consent.error, preview, consent.previewShown);
 
 		const backend = rt.buildBackend(manifest);
 		const base = baseStateOf(collected.files, manifest, null, 0);
@@ -356,9 +367,18 @@ export async function runInit(rt: SyncRuntime, gistId: string | undefined, opts:
 	// tree. A shared file it has never held is an adoption, never a local
 	// deletion - reading it as one would delete it from every device on the
 	// first push.
-	const fresh = local.base === null;
-
-	const plan = planMerge(remote.base, local, remote, fresh);
+	const sameGist = existing.manifest?.backendOptions.gistId === gistId;
+	// A re-init of the same gist merges against this device's last-synced
+	// Base, like a pull: the shared tree is re-adopted (its newer files
+	// replace the local ones, which is what the preview lists), and local
+	// edits are kept or resolved by mtime. Merging against the remote Base
+	// instead would read the device's behind files as local edits and advance
+	// the Base under a stale tree. A Base belongs to the gist it was recorded
+	// against: joining a different gist starts fresh.
+	const base = local.base !== null && sameGist ? local.base : null;
+	// Fresh follows the chosen Base: with no Base of this gist, every shared
+	// file the device does not hold is an adoption.
+	const plan = planMerge(base ?? remote.base, local, remote, base === null);
 	const localPaths = new Set(local.files.map((f) => f.path));
 	const arriving: string[] = [];
 	const replaced: string[] = [];
@@ -370,7 +390,7 @@ export async function runInit(rt: SyncRuntime, gistId: string | undefined, opts:
 	}
 	const preview = joinPreview(gistId, remote.manifest, arriving, replaced, deleted);
 	const consent = await obtainConsent(preview, opts, true);
-	if (!consent.ok) return fail(consent.error, preview);
+	if (!consent.ok) return fail(consent.error, preview, consent.previewShown);
 
 	// The shared manifest carries no device-local gist id; record this device's.
 	await writeLocalManifest(rt.stateDir, {

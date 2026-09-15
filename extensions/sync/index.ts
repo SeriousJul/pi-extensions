@@ -241,7 +241,9 @@ export default function (pi: ExtensionAPI): void {
 				return;
 		}
 		if (!outcome.ok) {
-			show(ctx, [...(outcome.preview ?? []), outcome.error], true);
+			// A declined preview was already shown in the confirm dialog; show it only once.
+			const preview = outcome.preview && !outcome.previewShown ? outcome.preview : [];
+			show(ctx, [...preview, outcome.error], true);
 			return;
 		}
 		// The token warning (loose token file mode) rides with every report, the same as in the CLI.

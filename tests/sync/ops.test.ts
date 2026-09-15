@@ -261,6 +261,157 @@ describe("init / push / pull / status (fake backend)", () => {
 		if (joined.ok) expect(joined.preview!.join("\n")).toContain("preview, nothing written yet");
 	});
 
+	// Acceptance criteria, issue #35: preview content, confirm-before-write,
+	// decline leaves the tree untouched, re-init confirms, force bypasses.
+
+	/** Device A creates a gist with two files; device B joins and confirms. */
+	async function joinedPair(): Promise<Device> {
+		await put(a.home, "AGENTS.md", "agents base", 1_000_000_000_000);
+		await put(a.home, "OPINIONS.md", "opinions base", 1_000_000_000_000);
+		expect((await runInit(a.rt, undefined, { yes: true })).ok).toBe(true); // the create path
+		const b = await makeDevice(fake);
+		expect((await runInit(b.rt, "gist-abc", { yes: true })).ok).toBe(true);
+		return b;
+	}
+
+	/** Remote work on top of the joined pair: OPINIONS.md changed, VOICE.md new. */
+	function remoteWork(): number {
+		const t = 1_000_000_001_000;
+		fake.stored = {
+			manifest: DEFAULT_MANIFEST,
+			base: {
+				"AGENTS.md": { hash: sha256Hex("agents base"), mtimeMs: 1_000_000_000_000 },
+				"OPINIONS.md": { hash: sha256Hex("opinions remote"), mtimeMs: t },
+				"VOICE.md": { hash: sha256Hex("voice remote"), mtimeMs: t },
+			},
+			files: [
+				file("AGENTS.md", "agents base", 1_000_000_000_000),
+				file("OPINIONS.md", "opinions remote", t),
+				file("VOICE.md", "voice remote", t),
+			],
+			updatedAtMs: t,
+		};
+		return t;
+	}
+
+	it("the join preview lists the in-scope paths, the arriving file count, and the local files that will be replaced", async () => {
+		const b = await joinedPair();
+		remoteWork();
+
+		let asked: string[] | null = null;
+		const outcome = await runInit(b.rt, "gist-abc", { ask: async (lines) => ((asked = lines), false) });
+		expect(asked).not.toBeNull();
+		const preview = asked!.join("\n");
+		// The in-scope paths: the manifest summary.
+		expect(preview).toContain(`in scope: ${DEFAULT_MANIFEST.include.length} include pattern(s): ${DEFAULT_MANIFEST.include.join(", ")}`);
+		// The arriving files, by count and by name.
+		expect(preview).toContain("arriving: 1 new file(s) from the shared tree");
+		expect(preview).toContain("  VOICE.md");
+		// The local files that will be replaced, named exactly.
+		expect(preview).toContain("will replace local:");
+		expect(preview).toContain("  OPINIONS.md");
+		expect(preview).not.toContain("  AGENTS.md"); // unchanged locally: not touched
+		expect(outcome.ok).toBe(false);
+	});
+
+	it("a declined confirm leaves the local tree and the gist untouched", async () => {
+		const b = await joinedPair();
+		remoteWork();
+
+		const outcome = await runInit(b.rt, "gist-abc", { ask: async () => false });
+		expect(outcome.ok).toBe(false);
+		if (!outcome.ok) {
+			expect(outcome.error).toContain("declined");
+			// The prompt already showed the preview; the report must not owe it again.
+			expect(outcome.previewShown).toBe(true);
+		}
+		// The tree is exactly as it was before the prompt.
+		expect(await get(b.home, "OPINIONS.md")).toBe("opinions base");
+		expect(await get(b.home, "AGENTS.md")).toBe("agents base");
+		expect(await has(b.home, "VOICE.md")).toBe(false);
+		expect((await readdir(b.home)).filter((name) => name.endsWith(".bak"))).toHaveLength(0);
+		// Nothing left in the state dir beyond the original join, nothing uploaded.
+		expect(fake.calls.every((c) => c.method === "fetch" || c.method === "create")).toBe(true);
+	});
+
+	it("no local write happens before the confirm prompt (create path)", async () => {
+		await put(a.home, "AGENTS.md", "# agents a");
+		let atPrompt: { stateDirExists: boolean } | null = null;
+		const outcome = await runInit(a.rt, undefined, {
+			ask: async (lines) => {
+				expect(lines.join("\n")).toContain("AGENTS.md");
+				atPrompt = { stateDirExists: existsSync(a.stateDir) };
+				return true;
+			},
+		});
+		expect(outcome.ok).toBe(true);
+		expect(atPrompt).not.toBeNull();
+		expect(atPrompt!.stateDirExists).toBe(false); // the first write comes after the confirm
+		expect(existsSync(join(a.stateDir, "manifest.json"))).toBe(true);
+	});
+
+	it("re-init on an already-joined device confirms again", async () => {
+		const b = await joinedPair();
+		remoteWork();
+		let asks = 0;
+		const outcome = await runInit(b.rt, "gist-abc", { ask: async () => ((asks += 1), true) });
+		expect(outcome.ok).toBe(true);
+		expect(asks).toBe(1); // the confirm is not skipped because the device is joined
+		expect(await get(b.home, "OPINIONS.md")).toBe("opinions remote"); // the confirmed re-init applied
+	});
+
+	it("the force flag bypasses the confirm on a re-init, and nothing runs without it", async () => {
+		const b = await joinedPair();
+		remoteWork();
+
+		let asks = 0;
+		const forced = await runInit(b.rt, "gist-abc", { force: true, ask: async () => ((asks += 1), true) });
+		expect(forced.ok).toBe(true);
+		expect(asks).toBe(0); // never prompted
+		expect(await get(b.home, "OPINIONS.md")).toBe("opinions remote");
+
+		// The same re-init without force or yes does not run at all.
+		const refused = await runInit(b.rt, "gist-abc", {});
+		expect(refused.ok).toBe(false);
+	});
+
+	it("joining a different gist with an existing base record starts fresh: it adopts the new tree", async () => {
+		const b = await joinedPair(); // b holds a base record of gist-abc
+
+		// A different shared tree (as fetched for another gist id). VOICE.md is
+		// in scope but a file b has never held.
+		const t = 1_000_000_002_000;
+		fake.stored = {
+			manifest: DEFAULT_MANIFEST,
+			base: {
+				"AGENTS.md": { hash: sha256Hex("other agents"), mtimeMs: t },
+				"VOICE.md": { hash: sha256Hex("other voice"), mtimeMs: t },
+			},
+			files: [file("AGENTS.md", "other agents", t), file("VOICE.md", "other voice", t)],
+			updatedAtMs: t,
+		};
+
+		const outcome = await runInit(b.rt, "gist-xyz", { yes: true });
+		expect(outcome.ok).toBe(true);
+		// The file the device never held is adopted (a stale base of another
+		// gist must not be read as a local deletion).
+		expect(await has(b.home, "VOICE.md")).toBe(true);
+		// The local edit-free file is kept as a local change, not clobbered.
+		expect(await get(b.home, "AGENTS.md")).toBe("agents base");
+		// The manifest now points at the new gist.
+		const parsed = parseManifest(await localManifestOf(b));
+		expect(parsed.ok).toBe(true);
+		if (parsed.ok) expect(parsed.manifest.backendOptions.gistId).toBe("gist-xyz");
+	});
+
+	it("force does not bypass the confirm on the create path", async () => {
+		await put(a.home, "AGENTS.md", "# agents a");
+		const outcome = await runInit(a.rt, undefined, { force: true });
+		expect(outcome.ok).toBe(false);
+		if (!outcome.ok) expect(outcome.error).toContain("no confirmation given");
+		expect(fake.stored).toBeNull();
+	});
+
 	it("init fails for a gist without a tool-managed manifest", async () => {
 		fake.stored = {
 			manifest: null,
