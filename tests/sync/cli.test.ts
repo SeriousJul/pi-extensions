@@ -72,6 +72,22 @@ describe("pi-sync CLI argument handling", () => {
 		expect(await main(["status"], c.output)).toBe(1);
 		expect(c.errors.join("\n")).toContain("PI_SYNC_TOKEN");
 	});
+
+	it("a non-tty run never starts the device flow: init, push, and pull print the fix (issue #37)", async () => {
+		const home = await mkdtemp(join(tmpdir(), "pi-sync-cli-nontty-"));
+		dirs.push(home);
+		// The base URL points at a dead port: if a flow or request ever
+		// started, the failure would not be the token fix.
+		setEnv({ PI_SYNC_HOME: home, PI_SYNC_OAUTH_CLIENT_ID: "client-1", PI_SYNC_GITHUB_BASE_URL: "http://127.0.0.1:1" });
+		for (const command of ["init", "push", "pull"]) {
+			const c = capture();
+			expect(await main([command], c.output), command).toBe(1);
+			const fix = c.errors.join("\n");
+			expect(fix, command).toContain("terminal (tty)");
+			expect(fix, command).toContain("device flow");
+			expect(fix, command).toContain("PI_SYNC_TOKEN");
+		}
+	});
 });
 
 /**
