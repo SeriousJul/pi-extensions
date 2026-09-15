@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { FakeBackend, file } from "./fake-backend.ts";
 import { sha256Hex } from "../../extensions/sync/hash.ts";
-import { DEFAULT_MANIFEST, canonicalManifest, canonicalManifestText, parseManifest } from "../../extensions/sync/manifest.ts";
+import { DEFAULT_MANIFEST, canonicalManifest, canonicalManifestText, parseManifest, serializeManifest } from "../../extensions/sync/manifest.ts";
 import { applyPlan, collectLocalFiles } from "../../extensions/sync/localfs.ts";
 import { runInit, runPull, runPush, runStatus, type SyncRuntime } from "../../extensions/sync/ops.ts";
 import { MANIFEST_KEY, type Snapshot, type SyncFile } from "../../extensions/sync/types.ts";
@@ -104,6 +104,72 @@ describe("init / push / pull / status (fake backend)", () => {
 		expect(outcome.ok).toBe(false);
 		if (outcome.ok) return;
 		expect(outcome.error).toContain("pi-sync init");
+	});
+
+	// Acceptance criteria, issue #39.
+
+	it("init without an id reports the new gist id and the join command for the other devices", async () => {
+		await put(a.home, "AGENTS.md", "# agents a");
+		const outcome = await runInit(a.rt, undefined, { yes: true });
+		expect(outcome.ok).toBe(true);
+		if (!outcome.ok) return;
+		const lines = outcome.report.lines.join("\n");
+		expect(lines).toContain("created secret gist gist-abc");
+		expect(lines).toContain("pi-sync init gist-abc");
+	});
+
+	it("init without an id uses the local manifest from the state dir when present", async () => {
+		// A hand-tuned manifest: only AGENTS.md syncs, OPINIONS.md is excluded.
+		const custom = { ...DEFAULT_MANIFEST, include: ["AGENTS.md"], exclude: ["OPINIONS.md"] };
+		await put(a.home, "AGENTS.md", "# agents a");
+		await put(a.home, "OPINIONS.md", "op");
+		await put(a.home, ".pi/agent/settings.json", '{"model":"gpt"}');
+		await mkdir(a.stateDir, { recursive: true });
+		await writeFile(join(a.stateDir, "manifest.json"), serializeManifest(custom), { mode: 0o600 });
+
+		const outcome = await runInit(a.rt, undefined, { yes: true });
+		expect(outcome.ok).toBe(true);
+		if (!outcome.ok) return;
+
+		// The create path collected under the local manifest, not the default.
+		const stored = fake.stored!;
+		expect(stored.files.map((f) => f.path)).toEqual(["AGENTS.md"]);
+		expect(stored.manifest).toEqual(canonicalManifest(custom));
+
+		// The local manifest kept its include list and gained the gist id.
+		const parsed = parseManifest(await localManifestOf(a));
+		expect(parsed.ok).toBe(true);
+		if (parsed.ok) {
+			expect(parsed.manifest.include).toEqual(["AGENTS.md"]);
+			expect(parsed.manifest.backendOptions.gistId).toBe("gist-abc");
+		}
+	});
+
+	it("init without an id uses the default manifest when the state dir has none", async () => {
+		await put(a.home, "AGENTS.md", "# agents a");
+		await put(a.home, ".pi/agent/settings.json", '{"model":"gpt"}');
+		const outcome = await runInit(a.rt, undefined, { yes: true });
+		expect(outcome.ok).toBe(true);
+		if (!outcome.ok) return;
+		expect(fake.stored!.files.map((f) => f.path).sort()).toEqual([".pi/agent/settings.json", "AGENTS.md"]);
+		expect(fake.stored!.manifest).toEqual(canonicalManifest(DEFAULT_MANIFEST));
+	});
+
+	it("init without an id on an already-joined device refuses and creates no gist", async () => {
+		const joined = {
+			...DEFAULT_MANIFEST,
+			backendOptions: { ...DEFAULT_MANIFEST.backendOptions, gistId: "old-gist" },
+		};
+		await mkdir(a.stateDir, { recursive: true });
+		await writeFile(join(a.stateDir, "manifest.json"), serializeManifest(joined), { mode: 0o600 });
+		await put(a.home, "AGENTS.md", "# agents a");
+
+		const outcome = await runInit(a.rt, undefined, { yes: true });
+		expect(outcome.ok).toBe(false);
+		if (outcome.ok) return;
+		expect(outcome.error).toContain("old-gist");
+		expect(fake.stored).toBeNull();
+		expect(fake.calls.some((c) => c.method === "create")).toBe(false);
 	});
 
 	it("init create without consent writes nothing and returns the preview", async () => {
