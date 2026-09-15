@@ -42,7 +42,7 @@ banner() {
   printf '\n%s%s  %s%s\n' "$BOLD" "$BLUE" "$1" "$RESET"
   printf '%s  %s stages%s\n\n' "$DIM" "$TOTAL_STAGES" "$RESET"
   printf '%s  You drive the browser; this wizard tells you exactly what to do and\n' "$DIM"
-  printf '  captures the values you copy back. Stop any time with Ctrl-C and re-run\n' "$DIM"
+  printf '  captures the values you copy back. Stop any time with Ctrl-C and re-run\n'
   printf '  later, since it remembers values already saved.%s\n' "$RESET"
   pause "Ready to start?"
 }
@@ -207,6 +207,7 @@ open_url "https://github.com/settings/developers"
 step "Click 'New OAuth App' (the green button, upper right)."
 step "Name: pi sync. Description: optional."
 step "Authorization callback URL: http://127.0.0.1 (the device flow never uses it, but GitHub requires one)."
+step "Check 'Use expiring tokens': pi sync renews an 8-hour token with its refresh token (ADR 0007)."
 step "Leave 'Delete unapproved apps' unchecked, then click 'Register application'."
 step "On the app's settings page, copy the Client ID (20 or more hex characters)."
 if [[ -n "$EXISTING_ID" ]]; then
@@ -221,6 +222,26 @@ if [[ ! "$CLIENT_ID" =~ ^[0-9a-fA-F]{10,40}$ ]]; then
   if ! confirm "Store it anyway?"; then
     exit 1
   fi
+fi
+
+# Verify the id against GitHub before storing it: a live id gets a throwaway
+# device code (harmless; it expires if never used), a typo gets
+# invalid_client. Offline, or without curl, it degrades to a warning and a
+# confirm. PI_SYNC_GITHUB_BASE_URL points the check at a test stub.
+BASE_URL="${PI_SYNC_GITHUB_BASE_URL:-https://github.com}"
+if command -v curl >/dev/null 2>&1; then
+  response=$(curl -fsS -m 10 -X POST "${BASE_URL}/login/device/code" \
+    -H "Accept: application/json" --data "client_id=${CLIENT_ID}&scope=gist" 2>/dev/null) || response=""
+  if printf '%s' "$response" | grep -q '"user_code"'; then
+    printf '  %s✓ verified against GitHub: the client id is live%s\n' "$GREEN" "$RESET"
+  else
+    warn "GitHub did not accept that client id (typo, or no network)."
+    if ! confirm "Store it anyway?"; then
+      exit 1
+    fi
+  fi
+else
+  note "curl is not installed; skipping the live check against GitHub."
 fi
 
 # ── Stage 2: store the client id where the tool reads it ──────────────────
