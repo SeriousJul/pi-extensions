@@ -13,7 +13,7 @@ import { createServer, type IncomingMessage, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AddressInfo } from "node:net";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 
 const CLI_PATH = join(import.meta.dirname, "..", "..", "extensions", "sync", "cli.mjs");
@@ -137,12 +137,22 @@ function runCliTty(args: string, env: Record<string, string>): PtySession {
 	};
 }
 
-describe("onboarding proof: clean home to joined device (issue #40)", () => {
+// The pty comes from util-linux `script`; skip where it is not installed.
+const hasPtyScript = (() => {
+	try {
+		execFileSync("script", ["--version"], { stdio: "ignore" });
+		return true;
+	} catch {
+		return false;
+	}
+})();
+
+describe.skipIf(!hasPtyScript)("onboarding proof: clean home to joined device (issue #40)", () => {
 	it("walks the full wizard: device flow, create, preview confirm, joined second device", async () => {
 		const stub = await githubStub();
 		const homeA = await tempDir("pi-sync-onboard-a-");
 		await writeFile(join(homeA, "AGENTS.md"), "# agents from A");
-		const envA = { PI_SYNC_HOME: homeA, PI_SYNC_OAUTH_CLIENT_ID: "e2e-client", PI_SYNC_GITHUB_BASE_URL: stub.url, PI_SYNC_NO_BROWSER: "1" };
+		const envA = { PI_SYNC_HOME: homeA, PI_SYNC_OAUTH_CLIENT_ID: "e2e-client", PI_SYNC_GITHUB_BASE_URL: stub.url };
 
 		const cli = runCliTty("init", envA);
 		try {
@@ -177,7 +187,7 @@ describe("onboarding proof: clean home to joined device (issue #40)", () => {
 
 		// The second clean device joins by id, the same wizard way.
 		const homeB = await tempDir("pi-sync-onboard-b-");
-		const envB = { PI_SYNC_HOME: homeB, PI_SYNC_OAUTH_CLIENT_ID: "e2e-client", PI_SYNC_GITHUB_BASE_URL: stub.url, PI_SYNC_NO_BROWSER: "1" };
+		const envB = { PI_SYNC_HOME: homeB, PI_SYNC_OAUTH_CLIENT_ID: "e2e-client", PI_SYNC_GITHUB_BASE_URL: stub.url };
 		const cliB = runCliTty(`init e2e-gist-1`, envB);
 		try {
 			await cliB.waitFor("arriving", "the join preview");
@@ -197,7 +207,7 @@ describe("onboarding proof: clean home to joined device (issue #40)", () => {
 		const stub = await githubStub();
 		const homeA = await tempDir("pi-sync-onboard-n-");
 		await writeFile(join(homeA, "AGENTS.md"), "# agents");
-		const envA = { PI_SYNC_HOME: homeA, PI_SYNC_OAUTH_CLIENT_ID: "e2e-client", PI_SYNC_GITHUB_BASE_URL: stub.url, PI_SYNC_NO_BROWSER: "1" };
+		const envA = { PI_SYNC_HOME: homeA, PI_SYNC_OAUTH_CLIENT_ID: "e2e-client", PI_SYNC_GITHUB_BASE_URL: stub.url };
 		const cli = runCliTty("init", envA);
 		try {
 			await cli.waitFor("enter the code WXYZ-9999", "the device flow code prompt");

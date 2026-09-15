@@ -15,8 +15,8 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Box, Text, matchesKey } from "@earendil-works/pi-tui";
 
-import { buildSyncRuntime } from "./cli.ts";
-import { createAuthSession, type AuthSession, type DeviceFlowHooks } from "./auth.ts";
+import { buildSyncRuntime, parseInitArgs } from "./cli.ts";
+import { createAuthSession, type AuthSession } from "./auth.ts";
 import { resolveClientId } from "./config.ts";
 import { runDeviceFlow, type DeviceFlowResult } from "./deviceflow.ts";
 import { runInit, runPull, runPush, runStatus, type SyncOutcome, type SyncRuntime } from "./ops.ts";
@@ -43,20 +43,12 @@ interface ParsedArgs {
 	error?: string;
 }
 
+/** The /sync arg line: a command, then the shared init parser. */
 function parseArgs(args: string): ParsedArgs {
 	const parts = args.trim().split(/\s+/).filter(Boolean);
 	const [command, ...rest] = parts;
-	let gistId: string | undefined;
-	let yes = false;
-	let force = false;
-	for (const arg of rest) {
-		if (arg === "--yes") yes = true;
-		else if (arg === "--force") force = true;
-		else if (arg.startsWith("-")) return { command: command ?? "", gistId, yes, force, error: `unknown flag: ${arg}` };
-		else if (gistId === undefined) gistId = arg;
-		else return { command: command ?? "", gistId, yes, force, error: `unexpected argument: ${arg}` };
-	}
-	return { command: command ?? "", gistId, yes, force };
+	const init = parseInitArgs(rest);
+	return { command: command ?? "", gistId: init.gistId, yes: init.yes, force: init.force, error: init.error };
 }
 
 export default function (pi: ExtensionAPI): void {
@@ -148,7 +140,7 @@ export default function (pi: ExtensionAPI): void {
 			box.addChild(new Text(theme.fg("accent", "pi sync: device flow"), 0, 0));
 			const status = new Text(statusLine, 0, 0);
 			box.addChild(status);
-			box.addChild(new Text(theme.fg("dim", "Esc cancels"), 0, 0));
+			box.addChild(new Text(theme.fg("dim", "Enter or Esc cancels"), 0, 0));
 			const settle = (result: DeviceFlowResult): void => {
 				if (settled) return;
 				settled = true;
@@ -197,13 +189,7 @@ export default function (pi: ExtensionAPI): void {
 	 * shown instead). Renewal (refresh) is always wired for the backend.
 	 */
 	function makeSession(ctx: ExtensionContext): Promise<{ session?: AuthSession; error?: string }> {
-		const deviceFlow: { hooks: DeviceFlowHooks; run: (hooks: DeviceFlowHooks) => Promise<DeviceFlowResult> } | undefined =
-			ctx.hasUI && ctx.mode === "tui"
-				? {
-						hooks: { onStatus: (line: string) => console.log(`sync: ${line}`), askRetry: async () => false },
-						run: (_hooks: DeviceFlowHooks) => deviceFlowDialog(ctx),
-					}
-				: undefined;
+		const deviceFlow: { run: () => Promise<DeviceFlowResult> } | undefined = ctx.hasUI && ctx.mode === "tui" ? { run: () => deviceFlowDialog(ctx) } : undefined;
 		return createAuthSession({ env: process.env, deviceFlow });
 	}
 
@@ -259,7 +245,8 @@ export default function (pi: ExtensionAPI): void {
 			return;
 		}
 		// The token warning (loose token file mode) rides with every report, the same as in the CLI.
-		show(ctx, [...outcome.report.lines, ...(sessionWarning ? [sessionWarning] : []), ...outcome.report.warnings], false);
+		// --yes and --force consent still show the preview, before the report.
+		show(ctx, [...(outcome.preview ?? []), ...outcome.report.lines, ...(sessionWarning ? [sessionWarning] : []), ...outcome.report.warnings], false);
 	}
 
 	pi.on("session_start", (_event, ctx) => {

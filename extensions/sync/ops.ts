@@ -34,7 +34,9 @@ export interface SyncReport {
 	warnings: string[];
 }
 
-export type SyncOutcome = { ok: true; report: SyncReport } | { ok: false; error: string; preview?: string[] };
+export type SyncOutcome =
+	| { ok: true; report: SyncReport; /** The preview, present when consent was given ahead of time (--yes, --force) and the caller still owes the user a look. */ preview?: string[] }
+	| { ok: false; error: string; preview?: string[] };
 
 function fail(message: string, preview?: string[]): SyncOutcome {
 	return preview ? { ok: false, error: message, preview } : { ok: false, error: message };
@@ -59,11 +61,13 @@ export interface InitOptions {
 	ask?: (previewLines: string[]) => Promise<boolean>;
 }
 
-async function obtainConsent(preview: string[], opts: InitOptions, forceAllowed: boolean): Promise<{ ok: true } | { ok: false; error: string }> {
-	if (opts.yes || (forceAllowed && opts.force)) return { ok: true };
+async function obtainConsent(preview: string[], opts: InitOptions, forceAllowed: boolean): Promise<{ ok: true; previewShown: boolean } | { ok: false; error: string }> {
+	// Consent given ahead of time: the caller must still show the preview;
+	// the preview is part of the consent, never skippable.
+	if (opts.yes || (forceAllowed && opts.force)) return { ok: true, previewShown: false };
 	if (opts.ask) {
 		const yes = await opts.ask(preview);
-		return yes ? { ok: true } : { ok: false, error: "init declined; nothing was written" };
+		return yes ? { ok: true, previewShown: true } : { ok: false, error: "init declined; nothing was written" };
 	}
 	return { ok: false, error: "no confirmation given; nothing was written. Run in a terminal to confirm at the prompt, or pass --yes." };
 }
@@ -331,7 +335,7 @@ export async function runInit(rt: SyncRuntime, gistId: string | undefined, opts:
 			`pushed ${collected.files.length} file(s)`,
 			`on each other device, join with: pi-sync init ${created.value}`,
 		];
-		return { ok: true, report: reportFor("init", created.value, emptyPlan(), lines, [...collected.warnings, ...refWarningLines(collected.files)]) };
+		return { ok: true, report: reportFor("init", created.value, emptyPlan(), lines, [...collected.warnings, ...refWarningLines(collected.files)]), preview: consent.previewShown ? undefined : preview };
 	}
 
 	// ---- The join (pairing) path: fetch, preview, confirm, adopt. ----
@@ -379,7 +383,7 @@ export async function runInit(rt: SyncRuntime, gistId: string | undefined, opts:
 	lines.push(...(planReport.length > 0 ? planReport : ["no local changes needed"]));
 	lines.push(`${remote.files.length} files in the snapshot; manifest adopted`);
 	const warnings = [...local.collectWarnings, ...refWarningLines(local.files)];
-	return { ok: true, report: reportFor("init", gistId, plan, lines, warnings) };
+	return { ok: true, report: reportFor("init", gistId, plan, lines, warnings), preview: consent.previewShown ? undefined : preview };
 }
 
 /** Pull: fetch, three-way merge against the Base state, apply to the local tree. */

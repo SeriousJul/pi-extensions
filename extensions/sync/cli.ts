@@ -25,7 +25,7 @@ usage:
   pi-sync init [gist-id] [--yes] [--force]
       no id:   create the shared secret gist from this device's tree
       with id: join this device to an existing gist
-      --yes    confirm the preview without prompting (non-tty runs need this)
+      --yes    confirm the preview without prompting; the preview is still shown (non-tty runs need this)
       --force  re-init an already-joined device without prompting
   pi-sync push             resolve the merge, then upload this device's tree
   pi-sync pull             fetch and three-way merge the remote into this tree
@@ -84,13 +84,6 @@ export function ttyFlowHooks(output: CliOutput): DeviceFlowHooks {
 	};
 }
 
-function defaultOpenBrowser(url: string): void {
-	if (process.env.PI_SYNC_NO_BROWSER) return;
-	void import("open")
-		.then((m) => (m.default ?? m)(url))
-		.catch(() => undefined); // no browser available: the URL is already shown
-}
-
 /**
  * The device flow for a CLI on a tty. Non-tty runs never start the flow
  * (issue #37): the caller gets a fix instead of a prompt.
@@ -105,18 +98,18 @@ export async function cliDeviceFlow(env: NodeJS.ProcessEnv, hooks: DeviceFlowHoo
 		signal: undefined,
 		onStatus: (line) => hooks.onStatus(line),
 		askRetry: () => hooks.askRetry(),
-		openBrowser: defaultOpenBrowser,
 	});
 }
 
-interface ParsedInitArgs {
+export interface ParsedInitArgs {
 	gistId?: string;
 	yes: boolean;
 	force: boolean;
 	error?: string;
 }
 
-function parseInitArgs(rest: string[]): ParsedInitArgs {
+/** The shared init parser: [gist-id] plus the --yes and --force flags. */
+export function parseInitArgs(rest: string[]): ParsedInitArgs {
 	let gistId: string | undefined;
 	let yes = false;
 	let force = false;
@@ -137,9 +130,7 @@ export async function main(argv: string[], output: CliOutput = { out: (l) => con
 
 		const withSession = async (run: (rt: SyncRuntime) => Promise<SyncOutcome>): Promise<SyncOutcome> => {
 			// The device flow only starts on a tty; a non-tty run gets the fix.
-			const deviceFlow = interactive
-				? { hooks: ttyFlowHooks(output), run: (hooks: DeviceFlowHooks) => cliDeviceFlow(process.env, hooks) }
-				: undefined;
+			const deviceFlow = interactive ? { run: () => cliDeviceFlow(process.env, ttyFlowHooks(output)) } : undefined;
 			const built = await createAuthSession({ env: process.env, deviceFlow });
 			if (!built.session) return { ok: false, error: built.error ?? "could not open the auth session" };
 			const session = built.session;
@@ -195,6 +186,8 @@ function finish(outcome: SyncOutcome, output: CliOutput): number {
 		output.err(`pi-sync: ${outcome.error}`);
 		return 1;
 	}
+	// Consent given with --yes or --force still gets the preview.
+	for (const line of outcome.preview ?? []) output.out(line);
 	for (const line of outcome.report.lines) output.out(line);
 	for (const warning of outcome.report.warnings) output.out(warning);
 	return 0;

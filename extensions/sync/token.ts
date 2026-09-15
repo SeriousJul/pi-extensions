@@ -12,7 +12,7 @@
  *   run. Respected, but never managed: the tool never refreshes, rotates,
  *   or re-issues a token it did not create.
  */
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -152,11 +152,3 @@ export function noTokenMessage(tokenPath: string): string {
 	);
 }
 
-/** Read the token file as async text for callers that need it. */
-export async function readTokenText(stateDir: string): Promise<string | null> {
-	try {
-		return await readFile(tokenPathFor(stateDir), "utf8");
-	} catch {
-		return null;
-	}
-}

@@ -145,7 +145,21 @@ describe("init / push / pull / status (fake backend)", () => {
 		expect(await has(b.home, "AGENTS.md")).toBe(false);
 	});
 
-		it("init fails for a gist without a tool-managed manifest", async () => {
+	it("init with yes succeeds and still carries the preview for the caller to show", async () => {
+		await put(a.home, "AGENTS.md", "shared");
+		const created = await runInit(a.rt, undefined, { yes: true });
+		expect(created.ok).toBe(true);
+		if (created.ok) {
+			expect(created.preview!.join("\n")).toContain("preview, nothing written yet");
+			expect(created.preview!.join("\n")).toContain("AGENTS.md");
+		}
+		const b = await makeDevice(fake);
+		const joined = await runInit(b.rt, "gist-abc", { yes: true });
+		expect(joined.ok).toBe(true);
+		if (joined.ok) expect(joined.preview!.join("\n")).toContain("preview, nothing written yet");
+	});
+
+	it("init fails for a gist without a tool-managed manifest", async () => {
 		fake.stored = {
 			manifest: null,
 			files: [file("README.md", "handmade", 1_000)],

@@ -6,7 +6,7 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createAuthSession, type DeviceFlowHooks } from "../../extensions/sync/auth.ts";
 import { runDeviceFlow, type OAuthTransport } from "../../extensions/sync/deviceflow.ts";
@@ -64,7 +64,7 @@ describe("runDeviceFlow (issue #37)", () => {
 		const { transport, calls } = stubOAuth({
 			tokenResponses: [
 				{ status: 200, json: { error: "authorization_pending" } },
-				{ status: 200, json: { error: "slow_down" } },
+				{ status: 200, json: { error: "authorization_pending" } },
 				{ status: 200, json: { access_token: "at", refresh_token: "rt", expires_in: 28800 } },
 			],
 		});
@@ -84,6 +84,32 @@ describe("runDeviceFlow (issue #37)", () => {
 		const stored = parseManagedToken((await readFile(tokenPathFor(stateDir), "utf8")).trim());
 		expect(stored?.accessToken).toBe("at");
 		expect(stored?.refreshToken).toBe("rt");
+	});
+
+	it("slow_down raises the polling interval by 5 seconds (RFC 8628)", async () => {
+		vi.useFakeTimers();
+		try {
+			const home = await tempDir("pi-sync-df-slow-");
+			const stateDir = stateDirFor(home, {});
+			// The stub device answer polls every 10 ms; a slow_down must hold
+			// the next poll back to 5 s 10 ms.
+			const { transport, calls } = stubOAuth({
+				tokenResponses: [
+					{ status: 200, json: { error: "slow_down" } },
+					{ status: 200, json: { access_token: "at", refresh_token: "rt", expires_in: 28800 } },
+				],
+			});
+			const pending = runDeviceFlow({ stateDir, clientId: "client-1", transport, onStatus: () => undefined, askRetry: async () => false });
+			await vi.advanceTimersByTimeAsync(100);
+			const polls = () => calls.filter((c) => c.path === "/login/oauth/access_token").length;
+			expect(polls()).toBe(1); // still sleeping the raised interval
+			await vi.advanceTimersByTimeAsync(5_000);
+			const result = await pending;
+			expect(result.ok).toBe(true);
+			expect(polls()).toBe(2);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("offers a fresh code on expired_token and re-runs from the top", async () => {
@@ -243,7 +269,7 @@ describe("the auth session (issue #38)", () => {
 		const home = await tempDir("pi-sync-auth-noclient-");
 		const built = await createAuthSession({
 			env: { PI_SYNC_HOME: home },
-			deviceFlow: { hooks, run: async () => ({ ok: false, error: "should not run" }) },
+			deviceFlow: { run: async () => ({ ok: false, error: "should not run" }) },
 		});
 		expect(built.session).toBeUndefined();
 		expect(built.error).toContain("setup-sync-wizard.sh");
@@ -254,7 +280,7 @@ describe("the auth session (issue #38)", () => {
 		const { transport } = stubOAuth({ tokenResponses: [{ status: 200, json: { access_token: "at", refresh_token: "rt", expires_in: 28800 } }] });
 		const built = await createAuthSession({
 			env: { PI_SYNC_HOME: home, PI_SYNC_OAUTH_CLIENT_ID: "client-1" },
-			deviceFlow: { hooks, run: (h) => runDeviceFlow({ stateDir: stateDirFor(home, { PI_SYNC_HOME: home }), clientId: "client-1", transport, onStatus: h.onStatus, askRetry: h.askRetry }) },
+			deviceFlow: { run: () => runDeviceFlow({ stateDir: stateDirFor(home, { PI_SYNC_HOME: home }), clientId: "client-1", transport, onStatus: hooks.onStatus, askRetry: hooks.askRetry }) },
 		});
 		expect(built.session?.token).toBe("at");
 		expect(built.session?.source).toBe("managed-file");
@@ -312,7 +338,7 @@ describe("the auth session (issue #38)", () => {
 		const built = await createAuthSession({
 			env: { PI_SYNC_HOME: home, PI_SYNC_OAUTH_CLIENT_ID: "client-1" },
 			oauthTransport: transport,
-			deviceFlow: { hooks, run: (h) => runDeviceFlow({ stateDir, clientId: "client-1", transport, onStatus: h.onStatus, askRetry: h.askRetry }) },
+			deviceFlow: { run: () => runDeviceFlow({ stateDir, clientId: "client-1", transport, onStatus: hooks.onStatus, askRetry: hooks.askRetry }) },
 		});
 		expect(built.session?.token).toBe("old");
 		const renewed = await built.session?.renew();

@@ -208,7 +208,7 @@ different concept)
 ### Sync
 
 **Sync wizard**:
-The guided first run that makes a device useful: secure a Gist-only token, then create the shared tree or join an existing one, preview the local changes, confirm them, and report. Re-running it on a joined device is a plain error unless the user passes --force.
+The guided first run that makes a device useful: secure a Gist-only token, then create the shared tree or join an existing one, preview the local changes, confirm them, and report. Re-running it with no id on a joined device is always a plain error. Re-running it with a gist id on a joined device re-joins the tree behind the preview confirm; --force skips only that confirm.
 _Avoid_: setup (generic), install, first run
 
 **Pairing**:

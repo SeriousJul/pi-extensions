@@ -1,6 +1,6 @@
 /**
- * The OAuth device flow (ADR 0007): the tool shows a one-time code at
- * github.com/login/device, opens the browser, and polls every few seconds.
+ * The OAuth device flow (ADR 0007): the tool shows a one-time code and the
+ * verification URL at github.com/login/device, and polls every few seconds.
  * When the user enters the code, GitHub hands the tool a gist-scoped token
  * pair: an 8-hour access token plus a rolling refresh token. The pair is
  * stored in the managed JSON token file the moment it arrives.
@@ -54,8 +54,6 @@ export interface DeviceFlowDeps {
 	onStatus: (line: string) => void;
 	/** Asked when the code expired or was denied. False cancels the flow. */
 	askRetry: () => Promise<boolean>;
-	/** Open the browser at the verification URL. Optional: the URL is always shown. */
-	openBrowser?: (url: string) => void;
 }
 
 export interface DeviceFlowResult {
@@ -128,13 +126,8 @@ export async function runDeviceFlow(deps: DeviceFlowDeps): Promise<DeviceFlowRes
 			const verificationUrl = typeof device.verification_uri === "string" && device.verification_uri !== "" ? device.verification_uri : DEVICE_VERIFICATION_URL;
 			const expiresIn = typeof device.expires_in === "number" ? device.expires_in : 900;
 			deps.onStatus(`Open ${verificationUrl} and enter the code ${device.user_code} (it expires in ${Math.round(expiresIn / 60)} minutes)`);
-			try {
-				deps.openBrowser?.(verificationUrl);
-			} catch {
-				// No browser available: the URL above is the fallback.
-			}
 
-			const intervalMs = typeof device.interval === "number" && device.interval > 0 ? device.interval * 1000 : DEVICE_POLL_INTERVAL_MS;
+			let intervalMs = typeof device.interval === "number" && device.interval > 0 ? device.interval * 1000 : DEVICE_POLL_INTERVAL_MS;
 			for (;;) {
 				const tokenRequest = await post<TokenEndpointResponse>("/login/oauth/access_token", {
 					grant_type: "urn:ietf:params:oauth:grant-type:device_code",
@@ -153,8 +146,10 @@ export async function runDeviceFlow(deps: DeviceFlowDeps): Promise<DeviceFlowRes
 				const error = typeof json.error === "string" ? json.error : undefined;
 				switch (error) {
 					case "authorization_pending":
-					case "slow_down":
 						break; // keep polling on the same cadence
+					case "slow_down":
+						intervalMs += 5_000; // RFC 8628: raise the interval by 5 seconds
+						break;
 					case "expired_token":
 						deps.onStatus("the code expired before it was entered");
 						if (!(await deps.askRetry())) return { ok: false, cancelled: true };

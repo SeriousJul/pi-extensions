@@ -30,11 +30,11 @@ export interface AuthSessionEnv {
 	/**
 	 * Present when this context can show the device flow (CLI on a tty, pi
 	 * TUI dialog). Absent for non-tty runs and background work: the flow
-	 * never starts and the fix is printed instead.
+	 * never starts and the fix is printed instead. The flow owns its own
+	 * hooks (status lines, retry prompt); the wiring only supplies the run.
 	 */
 	deviceFlow?: {
-		hooks: DeviceFlowHooks;
-		run: (hooks: DeviceFlowHooks) => Promise<DeviceFlowResult>;
+		run: () => Promise<DeviceFlowResult>;
 	};
 	/** OAuth transport for the refresh calls (tests stub it). */
 	oauthTransport?: OAuthTransport;
@@ -76,8 +76,8 @@ export async function createAuthSession(sessionEnv: AuthSessionEnv): Promise<{ s
 	});
 
 	async function tryFlow(): Promise<{ state?: SessionState; error?: string }> {
-		if (!flow?.run || !flow.hooks) return { error: "the device flow is not available in this context" };
-		const result = await flow.run(flow.hooks);
+		if (!flow?.run) return { error: "the device flow is not available in this context" };
+		const result = await flow.run();
 		if (result.ok) return { state: flowState(result.token!.accessToken, result.token!.refreshToken, result.token!.obtainedMs, result.token!.expiresMs) };
 		if (result.cancelled) return { error: "device flow cancelled; nothing was done" };
 		return { error: result.error };

@@ -141,6 +141,8 @@ describe("pi-sync CLI end-to-end against a loopback Gist stub", () => {
 
 		const initA = capture();
 		expect(await main(["init", "--yes"], initA.output)).toBe(0);
+		// --yes confirms ahead, but the preview is still shown.
+		expect(initA.lines.join("\n")).toContain("preview, nothing written yet");
 		expect(initA.lines.join("\n")).toContain("created secret gist created-id");
 		expect(initA.lines.join("\n")).toContain("pi-sync init created-id");
 
@@ -159,6 +161,8 @@ describe("pi-sync CLI end-to-end against a loopback Gist stub", () => {
 		setEnv({ PI_SYNC_HOME: homeB, PI_SYNC_TOKEN: "loopback-token", PI_SYNC_GITHUB_BASE_URL: stub.url });
 		const init = capture();
 		expect(await main(["init", "created-id", "--yes"], init.output)).toBe(0);
+		// The join preview is shown too.
+		expect(init.lines.join("\n")).toContain("preview, nothing written yet");
 		expect(await readFile(join(homeB, "AGENTS.md"), "utf8")).toBe("# agents");
 		expect(await readFile(join(homeB, "OPINIONS.md"), "utf8")).toBe("op");
 

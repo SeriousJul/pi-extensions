@@ -34,12 +34,12 @@ pi-sync init <gist-id>    # every later device: joins that gist
 What `init` does, step by step:
 
 1. **Auth.** With no token on the device, the CLI runs the GitHub
-   **OAuth device flow** (ADR 0007): it prints a short code, opens
-   `github.com/login/device` in the browser (set `PI_SYNC_NO_BROWSER=1`
-   to skip), and polls until you enter the code. The token it stores
-   carries only the `gist` scope. On expiry or denial it offers exactly
-   one fresh retry, or cancels. It never fails silently and never
-   retries without you.
+   **OAuth device flow** (ADR 0007): it prints a short code and the
+   verification URL (`github.com/login/device`), and polls. You open
+   the URL in a browser and enter the code; the token it stores carries
+   only the `gist` scope. On expiry or denial it offers exactly one
+   fresh retry, or cancels. It never fails silently and never retries
+   without you.
 2. **Preview.** Before anything is written, the wizard prints the
    preview: which files are in scope, which files would be sent or
    replaced, and which files would arrive. The gist is created, and a
@@ -56,7 +56,7 @@ is a TUI dialog, and the preview confirm is a TUI dialog.
 
 | Flag | Effect |
 | --- | --- |
-| `--yes` | Confirm the preview without prompting. Non-tty runs (CI, scripts) need this. |
+| `--yes` | Confirm the preview without prompting; the preview is still shown. Non-tty runs (CI, scripts) need this. |
 | `--force` | Re-init an already-joined device without prompting. The shared tree re-adopts; the local manifest keeps its gist id. |
 
 ### The token lifecycle (ADR 0007)
@@ -193,7 +193,6 @@ dangle after a sync.
 | `~/.pi/sync/manifest.json` | The device's manifest copy (carries the local gist id). |
 | `~/.pi/sync/base-state.json` | The device's last-synced Base (owner-only). |
 | `PI_SYNC_HOME` / `PI_SYNC_STATE_DIR` / `PI_SYNC_GITHUB_BASE_URL` | Relocate home, state dir, and API base for scripted runs. |
-| `PI_SYNC_NO_BROWSER=1` | Do not open a browser during the device flow. |
 
 ## pi integration
 
