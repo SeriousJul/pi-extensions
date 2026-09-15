@@ -209,7 +209,8 @@ step "Name: pi sync. Description: optional."
 step "Authorization callback URL: http://127.0.0.1 (the device flow never uses it, but GitHub requires one)."
 step "Check 'Use expiring tokens': pi sync renews an 8-hour token with its refresh token (ADR 0007)."
 step "Leave 'Delete unapproved apps' unchecked, then click 'Register application'."
-step "On the app's settings page, copy the Client ID (20 or more hex characters)."
+step "On the app's settings page, check the device flow opt-in box: GitHub refuses device-code requests for an app that leaves it off."
+step "Copy the Client ID from the same page (20 or more hex characters)."
 if [[ -n "$EXISTING_ID" ]]; then
   printf '  %s%s%s %s[Enter keeps %s]%s ' "$BOLD" "Paste the client id:" "$RESET" "$DIM" "$EXISTING_ID" "$RESET"
 else
@@ -226,14 +227,22 @@ fi
 
 # Verify the id against GitHub before storing it: a live id gets a throwaway
 # device code (harmless; it expires if never used), a typo gets
-# invalid_client. Offline, or without curl, it degrades to a warning and a
-# confirm. PI_SYNC_GITHUB_BASE_URL points the check at a test stub.
+# invalid_client, and an app without the device-flow opt-in gets
+# device_flow_disabled. Without -f, curl keeps the error body so the check
+# can name the refusal. Offline, or without curl, it degrades to a warning
+# and a confirm. PI_SYNC_GITHUB_BASE_URL points the check at a test stub.
 BASE_URL="${PI_SYNC_GITHUB_BASE_URL:-https://github.com}"
 if command -v curl >/dev/null 2>&1; then
-  response=$(curl -fsS -m 10 -X POST "${BASE_URL}/login/device/code" \
-    -H "Accept: application/json" --data "client_id=${CLIENT_ID}&scope=gist" 2>/dev/null) || response=""
+  response=$(curl -sS -m 10 -X POST "${BASE_URL}/login/device/code" \
+    -H "Accept: application/json" --data "client_id=${CLIENT_ID}&scope=gist" 2>/dev/null) || true
   if printf '%s' "$response" | grep -q '"user_code"'; then
     printf '  %s✓ verified against GitHub: the client id is live%s\n' "$GREEN" "$RESET"
+  elif printf '%s' "$response" | grep -q 'device_flow_disabled'; then
+    warn "GitHub refused the device code: device flow is disabled for that app."
+    step "Open the app's settings page, check the device flow opt-in box, then re-run this wizard to re-verify."
+    if ! confirm "Store the client id anyway?"; then
+      exit 1
+    fi
   else
     warn "GitHub did not accept that client id (typo, or no network)."
     if ! confirm "Store it anyway?"; then

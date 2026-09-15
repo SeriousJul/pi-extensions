@@ -211,6 +211,7 @@ describe("scripts/setup-sync-wizard.sh (issue #34)", () => {
 			"New OAuth App",
 			"Use expiring tokens",
 			"http://127.0.0.1",
+			"device flow opt-in box",
 			"verified against GitHub",
 		]) {
 			expect(run.output, `missing "${line}"`).toContain(line);
@@ -230,6 +231,17 @@ describe("scripts/setup-sync-wizard.sh (issue #34)", () => {
 		expect(run.status).toBe(1);
 		expect(run.output).toContain("GitHub did not accept that client id");
 		expect(readClientId(stateDir)).toBeUndefined();
+	});
+
+	it("names the fix when GitHub says the app has the device flow disabled", async () => {
+		const stateDir = await tempDir("pi-sync-wiz-disabled-");
+		const binDir = await wizardBinDir(true);
+		const stub = await deviceCodeStub(() => ({ status: 400, json: { error: "device_flow_disabled", error_description: "Device Flow must be explicitly enabled for this App" } }));
+		const run = await runWizard(["", "abcdef0123456789abcdef0123456789", "y"], WIZARD_ENV(stateDir, stub.url, binDir));
+		expect(run.status).toBe(0);
+		expect(run.output).toContain("device flow is disabled for that app");
+		expect(run.output).toContain("device flow opt-in box");
+		expect(readClientId(stateDir)).toBe("abcdef0123456789abcdef0123456789");
 	});
 
 	it("stores anyway when the human accepts an id GitHub rejected", async () => {

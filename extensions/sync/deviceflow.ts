@@ -72,6 +72,8 @@ interface DeviceCodeResponse {
 	verification_uri?: unknown;
 	expires_in?: unknown;
 	interval?: unknown;
+	error?: unknown;
+	error_description?: unknown;
 }
 
 interface TokenEndpointResponse {
@@ -83,7 +85,9 @@ interface TokenEndpointResponse {
 
 /** Run the device flow until it yields a token, is cancelled, or fails. */
 export async function runDeviceFlow(deps: DeviceFlowDeps): Promise<DeviceFlowResult> {
-	const baseUrl = (deps.baseUrl ?? "https://api.github.com").replace(/\/$/, "");
+	// The OAuth device endpoints live on the web host (github.com), not the
+	// API host (api.github.com answers them with a 404).
+	const baseUrl = (deps.baseUrl ?? "https://github.com").replace(/\/$/, "");
 	const transport = deps.transport ?? createFetchOAuthTransport();
 
 	async function post<T>(path: string, body: Record<string, string>): Promise<{ status: number; json: T }> {
@@ -125,7 +129,13 @@ export async function runDeviceFlow(deps: DeviceFlowDeps): Promise<DeviceFlowRes
 			const deviceRequest = await post<DeviceCodeResponse>("/login/device/code", { client_id: deps.clientId, scope: DEVICE_FLOW_SCOPE });
 			const device = deviceRequest.json;
 			if (deviceRequest.status < 200 || deviceRequest.status >= 300 || typeof device.device_code !== "string" || typeof device.user_code !== "string") {
-				return { ok: false, error: `could not start the device flow (HTTP ${deviceRequest.status}). Check the OAuth client id config.` };
+				// Name what GitHub said when it says something (a wrong id gets
+				// invalid_client, an app without the device-flow opt-in gets
+				// device_flow_disabled); a bare status code hides both.
+				const ghError = typeof device.error === "string" ? device.error : undefined;
+				const ghDescription = typeof device.error_description === "string" ? device.error_description : undefined;
+				const reason = ghError ? `GitHub reported ${ghError}${ghDescription === undefined ? "" : `: ${ghDescription}`}` : `HTTP ${deviceRequest.status}`;
+				return { ok: false, error: `could not start the device flow (${reason}). Check the OAuth client id config.` };
 			}
 			const verificationUrl = typeof device.verification_uri === "string" && device.verification_uri !== "" ? device.verification_uri : DEVICE_VERIFICATION_URL;
 			const expiresIn = typeof device.expires_in === "number" ? device.expires_in : 900;

@@ -36,7 +36,8 @@ export function needsProactiveRefresh(managed: { expiresMs: number }, now: numbe
 
 /** Refresh the access token with the rolling refresh token; persist the pair. */
 export async function refreshAccessToken(deps: RefreshDeps): Promise<RefreshResult> {
-	const baseUrl = (deps.baseUrl ?? "https://api.github.com").replace(/\/$/, "");
+	// The OAuth token endpoint lives on the web host, not the API host.
+	const baseUrl = (deps.baseUrl ?? "https://github.com").replace(/\/$/, "");
 	const transport = deps.transport ?? createFetchOAuthTransport();
 	let response: { status: number; text: string };
 	try {
