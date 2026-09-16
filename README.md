@@ -35,8 +35,10 @@ See the [pi packages docs](https://github.com/earendil-works/pi/blob/main/packag
 
 ## Skills
 
-The package ships a skill tree under `skills/`; pi loads it automatically
-when the package is installed. Layout is the manifest:
+The package ships a skill tree under `skills/`; pi loads it through the
+`skills` entry in the `pi` manifest in `package.json` when the package is
+installed (convention directories are not auto-discovered while a `pi`
+manifest is present). Layout is the manifest:
 
 - `skills/mattpocock/<bucket>/<name>` - skills tracked against the upstream
   [mattpocock/skills](https://github.com/mattpocock/skills) repo, mirroring
