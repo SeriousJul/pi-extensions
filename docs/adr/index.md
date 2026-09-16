@@ -21,3 +21,4 @@ chosen option, and the options that were considered.
 | [0014](/adr/0014-tool-usage-counts-cached-session-scan) | Tool usage counts are derived from a session scan with a per-file stat-keyed cache. |
 | [0015](/adr/0015-compression-is-a-request-time-view) | Compression is a request-time view; the compressed form is text. |
 | [0016](/adr/0016-dependency-indexes-build-on-first-query) | Dependency indexes build on first query, with streamed progress. |
+| [0017](/adr/0017-docs-screenshots-render-by-capture-pipeline) | Docs screenshots render by a capture pipeline; none is taken by hand. |

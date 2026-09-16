@@ -461,3 +461,27 @@ cache. User instructions inside the span appear in it verbatim.
 _Avoid_: summary (a summary is what compaction writes into the session), gist
 (gist tokens are the research form of soft-prompt compression; this works in
 text), digest
+
+### Docs
+
+**Screenshot**:
+A PNG of one extension's UI in the docs site: a TUI view, a footer line,
+or a CLI's output. Always produced by the Capture script, never taken by
+hand. Referenced from the extension's own docs page.
+_Avoid_: image, picture, capture (capture names the act, not the artifact)
+
+**Capture script**:
+The program that renders every Screenshot from the extension's real UI
+code and the Fixture data. It replaces hand-retaken images: a UI change
+is a script re-run, and CI fails when a committed Screenshot no longer
+matches.
+_Avoid_: test (tests assert behavior, this produces docs artifacts),
+screenshot tool
+
+**Fixture data**:
+Fixed fictional data the Capture script renders: a fake account, fixed
+percentages, a small sample repo. Deterministic, so a Screenshot is
+byte-stable and the capture runs on any machine with no login.
+_Avoid_: sample (implies real data, thinned down), mock (a mock stands
+in for a dependency in a test; fixture data is the data itself),
+dummy
