@@ -13,7 +13,9 @@ size. /ctx opens interactively: the dialog must render while the scan runs,
 and a window switch (30d, 90d, all) must not re-scan. The cache stores, per
 file, the all-time counts, the `(ts, tool)` events inside the newest 90
 days, and the hashes of the lines that carried a tool call (the dedupe keys,
-surviving across scan passes so a fork never double-counts after a restart).
+surviving across scan passes so a fork never double-counts after a restart). The cache
+carries a format version; a mismatch reads as an empty cache, so a scan change that
+adds count keys invalidates every existing cache at once.
 
 The cache is a pure function of the session files. Every entry is invalid
 the moment its file's mtime or size changes, a file that leaves the tree
