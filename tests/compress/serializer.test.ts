@@ -119,6 +119,23 @@ describe("serializeTurn", () => {
 		expect(text).not.toContain("middle characters cut");
 	});
 
+	it("keeps short failure results verbatim", () => {
+		const error = "Error: boom (exit code 1)\n    at run (src/foo.ts:10:5)";
+		const text = serializeTurn([user("run it"), assistant("running"), toolResult(error, true)]);
+		expect(text).toContain(error);
+		expect(text).not.toContain("middle characters cut");
+	});
+
+	it("cuts long failure results head plus tail: the tail keeps the error line", () => {
+		const head = "build output line 0";
+		const middle = "x".repeat(4000);
+		const tail = "Error: boom (exit code 1)";
+		const text = serializeTurn([user("run it"), assistant("running"), toolResult(`${head}\n${middle}\n${tail}`, true)]);
+		expect(text).toContain(head);
+		expect(text).toContain(tail);
+		expect(text).toContain("middle characters cut");
+	});
+
 	it("skips non-LLM messages", () => {
 		const bashExecution = {
 			role: "bashExecution",

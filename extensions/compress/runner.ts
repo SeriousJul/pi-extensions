@@ -4,8 +4,8 @@
  * The call is a normal, fresh conversation: a new session ID and no cache
  * retention, so the session's prompt cache is never touched and the call
  * bills on its own. `maxTokens` caps the form at the span cap (in tokens);
- * the token estimator is chars/4, so the maxTokens bound is the cap times
- * four.
+ * a form that hits the cap is truncated by the provider, which is the
+ * intended behavior of a hard cap.
  *
  * The runner is constructed with the resolved model, so the core and the
  * tests never see the registry.
@@ -14,9 +14,6 @@ import { randomUUID } from "node:crypto";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { Api, AssistantMessage, Model, UserMessage, Usage } from "@earendil-works/pi-ai";
 import type { CompressionJob } from "./core.ts";
-
-/** The chars/4 estimator: one token is four characters. */
-export const CHARS_PER_TOKEN = 4;
 
 /** The system prompt, with the form's token cap filled in. */
 export function compressionSystemPrompt(capTokens: number): string {
@@ -27,11 +24,12 @@ export function compressionSystemPrompt(capTokens: number): string {
 		"Output exactly these four sections, in order, as plain text:",
 		"What was asked: the user's instructions from this turn, reproduced verbatim.",
 		"What was done: files touched, commands run, tools used.",
-		"Key results: the outcomes, with exact error strings from any failure.",
+		"Key results: the outcomes, with the error strings from any failure, quoted as shown in the input.",
 		"Open items: anything unfinished or needing follow-up.",
 		"",
 		"Rules:",
-		"- Reproduce user instructions and error strings verbatim.",
+		"- Reproduce user instructions verbatim.",
+		"- Quote error strings exactly as shown in the input; never invent or shorten them.",
 		"- Be dense and factual; no pleasantries, no commentary.",
 		`- Stay within about ${capTokens} tokens.`,
 	].join("\n");
@@ -66,7 +64,7 @@ export function createModelRunner(model: Model<Api>, registry: ModelRegistry): C
 					messages: [{ role: "user", content: job.input, timestamp: Date.now() } as UserMessage],
 				},
 				{
-					maxTokens: job.capTokens * CHARS_PER_TOKEN,
+					maxTokens: job.capTokens,
 					cacheRetention: "none",
 					sessionId: randomUUID(),
 				},

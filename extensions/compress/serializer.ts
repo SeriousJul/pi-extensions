@@ -5,7 +5,10 @@
  * pi's role-labeled conversation serializer (the one compaction feeds its
  * summarizer) produces the input. Tool results are pre-cut to head + tail,
  * 2000 characters total, before serialization: pi's own cut is head-only,
- * and a failure's last lines (the actual error) are the useful part.
+ * and a failure's last lines (the actual error) are the useful part, so
+ * failure results get the same head-plus-tail cut. A result whose full text
+ * fits the budget (most failures) reaches the model verbatim; pi's own
+ * cut only ever fires on text longer than the budget.
  */
 import { serializeConversation } from "@earendil-works/pi-coding-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";

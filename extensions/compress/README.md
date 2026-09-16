@@ -18,9 +18,10 @@ is set with `/compression-model`.
   span that is at least `minSpanTokens` tokens, one call at a time in the
   background. Small spans never earn a call.
 - **The form.** One call to the compression model: the turn serialized with
-  pi's role labels, tool results cut to head + tail (2000 characters
-  total), and a prompt that keeps user instructions and error strings
-  verbatim. `maxTokens` caps the form at `spanCapTokens`.
+  pi's role labels, every tool result cut to head + tail (2000 characters
+  total, so a failure's error line at the tail survives), and a prompt that
+  keeps user instructions verbatim and quotes error strings exactly as
+  shown. `maxTokens` caps the form at `spanCapTokens`.
 - **The swap.** The next outgoing request replaces each cached span with one
   user message: a fixed lossy-view frame, then the form. The extension
   rewrites a request only when it can rebuild pi's exact message list from
