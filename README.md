@@ -305,7 +305,8 @@ the initial context total, its share of the context window, and a bar. Tool
 rows also show the tool's call count in a usage window (`w` cycles 30d,
 90d, and all; the headless modes take `/ctx 90d`), counted from the
 session files with a per-file cache so later opens are near instant
-(ADR 0014). Rows expand to the exact text and copy to the clipboard. A
+(ADR 0014). Skill rows show how often the agent loaded the skill's
+SKILL.md. Rows expand to the exact text and copy to the clipboard. A
 footer status line (`ctx: 45,230 (11.3% of window)`) keeps the total
 visible without opening the view. When other extensions append to the prompt, an injection row
 shows the suffix; any other change is flagged `modified by extension`.

@@ -17,8 +17,10 @@ and each tool. Rows are sorted by size, largest first.
 Every row shows its source (builtin, settings, file, skill, or
 extension; a tool is builtin or the extension that added it), its token
 count, its share of the initial context total, its share of the context
-window, and a bar. Tool rows additionally show their call count in the
-usage window; section rows show `-`, and TOTAL sums the tool calls.
+window, and a bar. Tool rows additionally show their call count in the usage
+window. Skill rows show how often the agent loaded that skill's SKILL.md
+(a rough proxy: it counts the load, not the outcome). The other section
+rows show `-`, and TOTAL sums the tool calls.
 
 The usage window is the last 30 days by default. `w` cycles
 30d → 90d → all. In headless modes the command takes the window as an
@@ -66,7 +68,9 @@ suffix; anything else that changes the prompt is flagged
 
 The counts are derived from the session files: a tool call is a `toolCall`
 item inside an assistant message, and a fork-copied line counts once
-(ADR 0009). The scan runs in the background on the first `/ctx`; the
+(ADR 0009). A skill load is a tool call whose arguments reference the
+skill's SKILL.md, by path; the skill name is read off the directory that
+holds the file. The scan runs in the background on the first `/ctx`; the
 dialog shows a counting state until it settles. A per-file cache keyed on
 mtime and size (`~/.pi/agent/tool-usage-cache.json`, override
 `PI_TOOL_USAGE_CACHE`) makes every later open near instant and window

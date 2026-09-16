@@ -93,7 +93,7 @@ export function createContextTui(deps: ContextTuiDeps): ContextTuiComponent {
 		if (!row) return [];
 		const out: string[] = [];
 		const snapshot = deps.usage.snapshot();
-		if (row.kind === "tool" && snapshot.phase === "ready") {
+		if ((row.kind === "tool" || row.kind === "skill") && snapshot.phase === "ready") {
 			const counts = snapshot.counts ?? {};
 			out.push(`uses (${snapshot.window}): ${usesForLabel(row.label, row.kind, counts) ?? 0}`);
 			if (row.label === "mcp") {

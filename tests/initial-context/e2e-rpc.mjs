@@ -50,7 +50,7 @@ const sessionsDir = join(projectDir, "sessions");
 mkdirSync(join(sessionsDir, "proj"), { recursive: true });
 const nowMs = Date.now();
 const DAY = 86_400_000;
-const call = (name) => ({ type: "toolCall", id: "x", name, arguments: {} });
+const call = (name, args) => ({ type: "toolCall", id: "x", name, arguments: args ?? {} });
 const msg = (id, daysAgo, calls) =>
 	JSON.stringify({
 		type: "message",
@@ -62,6 +62,8 @@ const msg = (id, daysAgo, calls) =>
 const aLines = [
 	msg("a1", 1, [call("bash"), call("bash"), call("read")]),
 	msg("a2", 40, [call("write")]),
+	// A recent skill load: the e2e-skill row must show 1.
+	msg("a3", 1, [call("read", { path: join(projectDir, "e2e-skill", "SKILL.md") })]),
 ].join("\n");
 writeFileSync(join(sessionsDir, "proj", "a.jsonl"), aLines);
 // The fork copies a's lines byte-identical and adds one own bash call.
@@ -205,8 +207,9 @@ try {
 	if (firstMessage.includes("injection")) fail(`/ctx (first) should not flag an injection:\n${firstMessage}`);
 	console.log("ok: /ctx before the first call breaks down the prompt and lists built-in tool schemas");
 
-	// The uses column: bash 3 (the fork's copy counts once), read 1, write 0
-	// in 30d, and TOTAL 4.
+	// The uses column: bash 3 (the fork's copy counts once), read 2 (one of
+	// them loads e2e-skill, so the skill row shows 1 too), write 0 in 30d,
+	// and TOTAL 5 (tool calls only).
 	const rowLine = (message, name) => {
 		const line = message.split("\n").find((l) => l.trim().startsWith(name));
 		if (!line) fail(`/ctx (first) missing the ${name} row:\n${message}`);
@@ -214,10 +217,11 @@ try {
 	};
 	if (!firstMessage.includes("uses(30d)")) fail(`/ctx (first) missing the uses(30d) header:\n${firstMessage}`);
 	if (!rowLine(firstMessage, "bash").match(/ 3(  \u2588+)?\s*$/)) fail(`/ctx (first) bash row does not end in 3:\n${rowLine(firstMessage, "bash")}`);
-	if (!rowLine(firstMessage, "read").match(/ 1(  \u2588+)?\s*$/)) fail(`/ctx (first) read row does not end in 1:\n${rowLine(firstMessage, "read")}`);
+	if (!rowLine(firstMessage, "read").match(/ 2(  \u2588+)?\s*$/)) fail(`/ctx (first) read row does not end in 2:\n${rowLine(firstMessage, "read")}`);
 	if (!rowLine(firstMessage, "write").match(/ 0(  \u2588+)?\s*$/)) fail(`/ctx (first) write row does not end in 0:\n${rowLine(firstMessage, "write")}`);
-	if (!rowLine(firstMessage, "TOTAL").match(/ 4  \u2588/)) fail(`/ctx (first) TOTAL row does not sum to 4:\n${rowLine(firstMessage, "TOTAL")}`);
-	console.log("ok: the uses column counts the fixture tree, fork copies once, 30d window");
+	if (!rowLine(firstMessage, "e2e-skill").match(/ 1(  \u2588+)?\s*$/)) fail(`/ctx (first) e2e-skill row does not end in 1:\n${rowLine(firstMessage, "e2e-skill")}`);
+	if (!rowLine(firstMessage, "TOTAL").match(/ 5  \u2588/)) fail(`/ctx (first) TOTAL row does not sum to 5:\n${rowLine(firstMessage, "TOTAL")}`);
+	console.log("ok: the uses column counts the fixture tree, fork copies once, skill loads count, 30d window");
 
 	const status = await waitFor(
 		() => rpc.statuses[rpc.statuses.length - 1],
@@ -268,7 +272,7 @@ try {
 		return line;
 	};
 	if (!rowLine90("write").match(/ 1(  \u2588+)?\s*$/)) fail(`/ctx (second) write row does not end in 1:\n${rowLine90("write")}`);
-	if (!rowLine90("TOTAL").match(/ 5  \u2588/)) fail(`/ctx (second) TOTAL row does not sum to 5:\n${rowLine90("TOTAL")}`);
+	if (!rowLine90("TOTAL").match(/ 6  \u2588/)) fail(`/ctx (second) TOTAL row does not sum to 6:\n${rowLine90("TOTAL")}`);
 	console.log("ok: /ctx after the first call shows captured tools and the provider reference, with no injection");
 	console.log("ok: /ctx 90d switches the window and admits the older call");
 } finally {

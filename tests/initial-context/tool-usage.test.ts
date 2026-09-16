@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	createToolUsageSource,
+	skillKeysFor,
 	toolCallKey,
 	parseToolUsageWindow,
 	usesForLabel,
@@ -42,12 +43,15 @@ function makeTree(): string {
 		});
 
 	// a.jsonl: three bash (recent), one mcp subtool (recent), one mcp meta op
-	// (40 days ago), one read (50 days ago).
+	// (40 days ago), one read (50 days ago), a skill load (recent), and a
+	// skill load via bash (50 days ago).
 	const a = [
 		msg("a1", iso(1), [call("bash"), call("bash"), call("bash")]),
 		msg("a2", iso(2), [call("mcp", { tool: "list_windows", args: "{}" })]),
 		msg("a3", iso(40), [call("mcp", { connect: "computer-use-linux" })]),
 		msg("a4", iso(50), [call("read")]),
+		msg("a5", iso(1), [call("read", { path: "/home/u/.pi/agent/skills/domain-modeling/SKILL.md" })]),
+		msg("a6", iso(50), [call("bash", { command: "cat /home/u/.pi/agent/skills/grilling/SKILL.md" })]),
 		"this is not json but mentions \"toolCall\" in text",
 	].join("\n");
 	writeFileSync(join(proj, "a.jsonl"), a);
@@ -97,13 +101,24 @@ describe("windowStart", () => {
 });
 
 describe("usesForLabel", () => {
-	it("counts tool rows, folds mcp subtools in, and skips sections", () => {
-		const counts = { mcp: 1, "mcp:list_windows": 8, bash: 3 };
+	it("counts tool rows, folds mcp subtools in, counts skill loads, skips sections", () => {
+		const counts = { mcp: 1, "mcp:list_windows": 8, bash: 3, "skill:grilling": 2 };
 		expect(usesForLabel("mcp", "tool", counts)).toBe(9);
 		expect(usesForLabel("bash", "tool", counts)).toBe(3);
 		expect(usesForLabel("edit", "tool", counts)).toBe(0);
+		expect(usesForLabel("grilling", "skill", counts)).toBe(2);
+		expect(usesForLabel("prototype", "skill", counts)).toBe(0);
 		expect(usesForLabel("base prompt", "base", counts)).toBeUndefined();
 		expect(usesForLabel("bash", "tool", undefined)).toBeUndefined();
+	});
+});
+
+describe("skillKeysFor", () => {
+	it("extracts the skill name from a SKILL.md reference in the arguments", () => {
+		expect(skillKeysFor({ path: "/home/u/.pi/agent/skills/domain-modeling/SKILL.md" })).toEqual(["skill:domain-modeling"]);
+		expect(skillKeysFor({ command: "cat /a/skills/grilling/SKILL.md && cat /a/skills/grilling/SKILL.md" })).toEqual(["skill:grilling"]);
+		expect(skillKeysFor({ path: "/tmp/notes.txt" })).toEqual([]);
+		expect(skillKeysFor(undefined)).toEqual([]);
 	});
 });
 
@@ -124,19 +139,40 @@ describe("createToolUsageSource", () => {
 
 		const all = await source.counts();
 		expect(all.window).toBe("30d");
-		// 30d: the three bash plus the fork's own bash, and the mcp subtool.
-		expect(all.counts).toEqual({ bash: 4, "mcp:list_windows": 1 });
+		// 30d: the three bash plus the fork's own bash, the mcp subtool, the
+		// recent read, and the recent skill load.
+		expect(all.counts).toEqual({
+			bash: 4,
+			"mcp:list_windows": 1,
+			read: 1,
+			"skill:domain-modeling": 1,
+		});
 
 		source.setWindow("90d");
 		const w90 = await source.counts();
 		expect(w90.window).toBe("90d");
-		// 90d adds the 40-day mcp meta op and the 50-day read.
-		expect(w90.counts).toEqual({ bash: 4, "mcp:list_windows": 1, mcp: 1, read: 1 });
+		// 90d adds the 40-day mcp meta op, the 50-day read, and the 50-day
+		// skill load via bash (the bash call counts for both keys).
+		expect(w90.counts).toEqual({
+			bash: 5,
+			"mcp:list_windows": 1,
+			mcp: 1,
+			read: 2,
+			"skill:domain-modeling": 1,
+			"skill:grilling": 1,
+		});
 
 		source.setWindow("all");
 		const wAll = await source.counts();
 		// all adds the 120-day bash. The fork's copied lines count once.
-		expect(wAll.counts).toEqual({ bash: 5, "mcp:list_windows": 1, mcp: 1, read: 1 });
+		expect(wAll.counts).toEqual({
+			bash: 6,
+			"mcp:list_windows": 1,
+			mcp: 1,
+			read: 2,
+			"skill:domain-modeling": 1,
+			"skill:grilling": 1,
+		});
 	});
 
 	it("serves unchanged files from the cache and re-scans a changed file", async () => {
@@ -168,7 +204,13 @@ describe("createToolUsageSource", () => {
 		const rescan = await next.counts();
 		expect(rescan.scanned).toBe(1);
 		// The appended call is in; the copied fork history is not counted twice.
-		expect(rescan.counts).toEqual({ bash: 4, "mcp:list_windows": 1, edit: 1 });
+		expect(rescan.counts).toEqual({
+			bash: 4,
+			"mcp:list_windows": 1,
+			read: 1,
+			"skill:domain-modeling": 1,
+			edit: 1,
+		});
 	});
 
 	it("survives a torn cache file and drops files that leave the tree", async () => {
@@ -182,7 +224,12 @@ describe("createToolUsageSource", () => {
 		const fresh = makeSource(root, cacheFile);
 		const counts = await fresh.counts();
 		expect(counts.scanned).toBe(3);
-		expect(counts.counts).toEqual({ bash: 4, "mcp:list_windows": 1 });
+		expect(counts.counts).toEqual({
+			bash: 4,
+			"mcp:list_windows": 1,
+			read: 1,
+			"skill:domain-modeling": 1,
+		});
 
 		// A deleted file drops out of the counts and the cache.
 		const { rmSync: rm } = await import("node:fs");
@@ -190,7 +237,12 @@ describe("createToolUsageSource", () => {
 		const after = makeSource(root, cacheFile);
 		const next = await after.counts();
 		expect(next.files).toBe(2);
-		expect(next.counts).toEqual({ bash: 4, "mcp:list_windows": 1 });
+		expect(next.counts).toEqual({
+			bash: 4,
+			"mcp:list_windows": 1,
+			read: 1,
+			"skill:domain-modeling": 1,
+		});
 	});
 
 	it("notifies subscribers when the scan settles and when the window changes", async () => {

@@ -47,6 +47,25 @@ export function toolCallKey(name: string, args: unknown): string {
 	return name;
 }
 
+/**
+ * The skill keys a tool call loads. The agent uses a skill by reading its
+ * SKILL.md, so any call whose arguments reference `/<name>/SKILL.md` counts
+ * for that skill row. A rough proxy: it counts the load, not the outcome.
+ */
+export function skillKeysFor(args: unknown): string[] {
+	let text: string;
+	try {
+		text = typeof args === "string" ? args : JSON.stringify(args ?? "");
+	} catch {
+		return [];
+	}
+	const out = new Set<string>();
+	for (const match of text.matchAll(/\/([A-Za-z0-9._-]+)\/SKILL\.md/g)) {
+		out.add(`skill:${match[1]}`);
+	}
+	return [...out];
+}
+
 // ---------------------------------------------------------------------------
 // Cache
 // ---------------------------------------------------------------------------
@@ -66,7 +85,8 @@ interface FileCache {
 
 /** The whole cache. A pure function of the session files. */
 interface ToolUsageCache {
-	v: 1;
+	/** Cache format version; a mismatch reads as an empty cache. */
+	v: 2;
 	files: Record<string, FileCache>;
 }
 
@@ -96,11 +116,11 @@ function hashLine(line: string): string {
 function loadCache(file: string): ToolUsageCache {
 	try {
 		const raw = JSON.parse(readFileSync(file, "utf8")) as ToolUsageCache;
-		if (raw && raw.v === 1 && typeof raw.files === "object" && raw.files) return raw;
+		if (raw && raw.v === 2 && typeof raw.files === "object" && raw.files) return raw;
 	} catch {
 		// Missing or torn cache file: start empty.
 	}
-	return { v: 1, files: {} };
+	return { v: 2, files: {} };
 }
 
 function saveCache(file: string, cache: ToolUsageCache): void {
@@ -249,10 +269,12 @@ export function createToolUsageSource(options: ToolUsageSourceOptions = {}): Too
 						for (const item of content) {
 							const call = item as { type?: unknown; name?: unknown; arguments?: unknown };
 							if (call?.type !== "toolCall" || typeof call.name !== "string") continue;
-							const key = toolCallKey(call.name, call.arguments);
-							entry.counts[key] = (entry.counts[key] ?? 0) + 1;
-							if (Number.isFinite(ts) && ts > 0 && ts >= recentCutoff) entry.recent.push([ts, key]);
 							carried = true;
+							const keys = [toolCallKey(call.name, call.arguments), ...skillKeysFor(call.arguments)];
+							for (const key of keys) {
+								entry.counts[key] = (entry.counts[key] ?? 0) + 1;
+								if (Number.isFinite(ts) && ts > 0 && ts >= recentCutoff) entry.recent.push([ts, key]);
+							}
 						}
 					}
 					// The hash is recorded even for a duplicate line: a fork copy
@@ -321,10 +343,14 @@ export function createToolUsageSource(options: ToolUsageSourceOptions = {}): Too
 
 /**
  * The count for one /ctx row, or undefined for rows that carry no count.
- * Tool rows only; the `mcp` row folds its `mcp:<tool>` subtools in.
+ * Tool rows show their call count (the `mcp` row folds its `mcp:<tool>`
+ * subtools in); skill rows show how often the agent loaded the skill's
+ * SKILL.md; the other section rows carry no count.
  */
 export function usesForLabel(label: string, kind: string, counts: Record<string, number> | undefined): number | undefined {
-	if (kind !== "tool" || !counts) return undefined;
+	if (!counts) return undefined;
+	if (kind === "skill") return counts[`skill:${label}`] ?? 0;
+	if (kind !== "tool") return undefined;
 	if (label === "mcp") {
 		let total = counts.mcp ?? 0;
 		for (const [key, n] of Object.entries(counts)) {
