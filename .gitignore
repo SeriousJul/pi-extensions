@@ -144,3 +144,7 @@ vite.config.ts.timestamp-*
 
 # codegraph index (per-worktree, disposable; see extensions/codegraph)
 .codegraph/
+
+# docs site: glossary.md is generated from the repo-root CONTEXT.md by
+# docs/prepare-glossary.mjs before every build
+/docs/glossary.md

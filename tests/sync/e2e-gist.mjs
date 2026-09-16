@@ -40,7 +40,7 @@ function fail(message) {
 if (!token && !clientId) {
 	console.log("SKIP: set PI_SYNC_TOKEN (PAT, gist scope) for non-interactive mode,");
 	console.log("      or PI_SYNC_OAUTH_CLIENT_ID (device flow, needs a terminal) for interactive mode.");
-	console.log("      The real-GitHub e2e is opt-in; see extensions/sync/README.md.");
+	console.log("      The real-GitHub e2e is opt-in; see docs/extensions/sync/internals.md.");
 	process.exit(0);
 }
 if (deviceFlow && !clientId) fail("--device-flow needs PI_SYNC_OAUTH_CLIENT_ID (or scripts/setup-sync-wizard.sh)");

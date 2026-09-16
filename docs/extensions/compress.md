@@ -1,11 +1,11 @@
-# compress
+# compress extension
 
 Compresses finished turns out of outgoing LLM requests without touching the
 session file. A turn that falls out of the keep window is replaced in every
 outgoing request by one short synthetic user message carrying a compressed
 form of the turn. The full original messages stay in the session file, and
 each compressed span is persisted as a `compress-span` custom session entry
-(ADR 0015).
+([ADR 0015](/adr/0015-compression-is-a-request-time-view)).
 
 Compression is opt-in: the extension does nothing until a compression model
 is set with `/compression-model`.
