@@ -11,7 +11,13 @@
 #     tests the locked tree, not bun's own resolution.
 #   - No publish step: this package is consumed via `pi install` from
 #     git, not from npm.
-
+#
+# Docs job
+#   - One independent job on Node 24 that only runs the VitePress
+#     production build (the same command the deploy workflow publishes
+#     on main). It catches dead links and broken markdown before merge.
+#   - It is separate from the node matrix and the bun job, and it is not
+#     a required check.
 name: CI
 
 on:
@@ -65,3 +71,19 @@ jobs:
           bun-version: 1.4.0
       - run: npm ci
       - run: bun test tests/codegraph/runtime-bun.test.cts tests/codegraph/shim-bun.test.cts
+
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+      - run: npm ci
+        working-directory: docs
+      - run: npm run build
+        working-directory: docs

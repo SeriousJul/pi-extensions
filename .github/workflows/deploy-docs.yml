@@ -1,0 +1,59 @@
+# Deploys the VitePress docs site to GitHub Pages.
+#
+# Publishes to the classic gh-pages branch (project site at
+# /pi-extensions/) with a plain git push: force, branch auto-created on
+# the first run. No third-party deploy action, no PR previews. The
+# gh-pages branch is a deploy artifact; no one pushes to it by hand.
+#
+# The build command is the same one the CI docs job runs on every PR, so
+# what is checked in review is what gets published.
+
+name: Deploy docs
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: deploy-docs
+  # A late main push must not be skipped by a running dispatch.
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: gh-pages
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: the last-updated footer reads commit dates.
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+      - run: npm ci
+        working-directory: docs
+      - run: npm run build
+        working-directory: docs
+      - name: Push to gh-pages
+        run: |
+          set -euo pipefail
+          DEPLOY_DIR=$(mktemp -d)
+          cp -a docs/.vitepress/dist/. "$DEPLOY_DIR/"
+          git -C "$DEPLOY_DIR" init -b gh-pages
+          git -C "$DEPLOY_DIR" add -A
+          git -C "$DEPLOY_DIR" \
+            -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "Deploy $GITHUB_SHA"
+          git -C "$DEPLOY_DIR" \
+            remote add origin \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$DEPLOY_DIR" push --force origin gh-pages
