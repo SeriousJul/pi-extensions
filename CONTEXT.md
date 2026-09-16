@@ -173,6 +173,15 @@ The time range a Tool usage count covers: the last 30 days (the default),
 the last 90 days, or all time.
 _Avoid_: period (generic), bucket (a report term), quota window
 
+### Tool exposure
+
+**User-only tool**:
+A capability an extension gives the human as a command. As an agent tool it
+starts inactive in every new session and can be enabled per session, so it
+pays no context cost by default and the agent has no path to it.
+_Avoid_: hidden tool (nothing is hidden; it is simply inactive by default),
+admin tool, console tool
+
 ### Quota
 
 **Quota window**:

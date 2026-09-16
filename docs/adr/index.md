@@ -20,3 +20,4 @@ chosen option, and the options that were considered.
 | [0013](/adr/0013-skill-tree-tracks-upstream-sources-with-per-source-pins) | The skill tree tracks upstream sources with per-source pins. |
 | [0014](/adr/0014-tool-usage-counts-cached-session-scan) | Tool usage counts are derived from a session scan with a per-file stat-keyed cache. |
 | [0015](/adr/0015-compression-is-a-request-time-view) | Compression is a request-time view; the compressed form is text. |
+| [0016](/adr/0016-dependency-indexes-build-on-first-query) | Dependency indexes build on first query, with streamed progress. |
