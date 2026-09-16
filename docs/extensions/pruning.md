@@ -17,11 +17,16 @@ resolves any recall reference back to the full output.
 
 ## Behavior
 
-- **Engagement.** Pruning applies only while the context estimate exceeds
+- **Engagement.** Pruning engages the first time the context estimate exceeds
   `contextWindow - reserveTokens`, the same threshold and the same effective
   window (context window cap included) that pi's own compaction and footer
   read. The estimate uses pi's token helpers: the last assistant usage plus
-  a character estimate for the messages after it.
+  a character estimate for the messages after it. Engagement is sticky for
+  the session ([ADR 0018](/adr/0018-pruning-engagement-is-sticky)): once it has
+  engaged, it keeps engaging on every later request until a reset, so the
+  outgoing prefix holds one shape and the provider's prompt cache stays hot.
+  A reset is a compaction that runs (the raw size drops) or a session start,
+  after which the session runs raw again until it re-crosses the threshold.
 - **Eligibility.** Tool result and bash execution outputs whose size estimate
   exceeds `minResultTokens`. With `protectCurrentTurn` set, outputs after
   the last user message are never pruned. Image content parts are never
@@ -40,12 +45,19 @@ resolves any recall reference back to the full output.
   across forks and tree navigation. In an ephemeral session (no session
   file) the marker carries the 12 character entry id instead. The recall
   tool accepts both forms regardless of which the marker carries.
-- **Re-derivation.** Pruning is a pure function of the current messages and
-  thresholds, re-derived on every request. Nothing is persisted, so a
-  restart or resume behaves identically without any saved state.
+- **Re-derivation.** The pruned view is a pure function of the current
+  messages and thresholds, re-derived on every request and never written to
+  the session file. The only session state is the sticky Engagement flag
+  ([ADR 0018](/adr/0018-pruning-engagement-is-sticky)); a restart or resume
+  recomputes the same pruned projection, and the flag resets with the
+  session.
 - **Settling.** After one request goes out pruned, the provider reports
-  usage for the pruned size, and pi's own threshold check reads that usage,
-  so the gate settles within about one turn per threshold crossing.
+  usage for the pruned size and the estimate drops back below the threshold,
+  but the sticky Engagement flag holds it pruned, so there is no per-turn
+  settling and no pruned/raw alternation
+  ([ADR 0018](/adr/0018-pruning-engagement-is-sticky)). The gate still
+  settles on its own: it runs a fresh prune pass against the window minus
+  twice the reserve.
 - **Second level.** pi's compaction summarizes from the raw session entries
   and never sees the markers, so pruning never degrades summary quality.
   Manual `/compact` and context overflow recovery always perform a real

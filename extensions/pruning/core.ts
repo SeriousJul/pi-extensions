@@ -77,6 +77,11 @@ export interface PruneInput {
 	 * injects the usage-backed estimate, which agrees with pi's own
 	 * accounting. */
 	estimateList?: (messages: AgentMessage[]) => number;
+	/** When set, run the pruning pass regardless of the threshold: the caller
+	 * has already decided engagement (the sticky state machine in the wiring,
+	 * or the gate's fresh pass). When unset, the pass engages only above the
+	 * threshold, as before. */
+	engage?: boolean;
 }
 
 /** Format an estimated token size for a marker: "~5.2k" or "~900". */
@@ -250,9 +255,10 @@ export function prune(input: PruneInput): PruneResult {
 	const identity: PruneResult = { engaged: false, messages: input.messages, records: [], prunedCount: 0, savingsTokens: 0 };
 	if (!input.settings.enabled) return identity;
 
-	// Engagement: pi's own compaction threshold.
+	// Engagement: pi's own compaction threshold, unless the caller has already
+	// decided engagement (the sticky state machine) and forced the pass.
 	const threshold = input.contextWindow - input.reserveTokens;
-	if (estimateList(input.messages) <= threshold) return identity;
+	if (!input.engage && estimateList(input.messages) <= threshold) return identity;
 
 	// Reference mapping: without the aligning entry no recall reference can
 	// be built, so the pass stays out of the way.

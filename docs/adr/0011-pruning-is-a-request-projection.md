@@ -16,6 +16,8 @@ the data and need a cleanup policy; freezing the omission list in a
 compaction entry's `details` (the pi-blackhole approach) ties pruning to
 compaction events, while our trigger is a threshold evaluated every turn.
 
-Cost accepted: the pruning state is a pure function of the current messages
-and thresholds, recomputed on every request, and the session file keeps the
-full outputs and grows accordingly.
+Cost accepted: the pruning projection is a pure function of the current
+messages and thresholds, recomputed on every request, and the session file
+keeps the full outputs and grows accordingly. (The engagement decision -
+whether to run the pass at all - is session state that sticks until a reset,
+not a pure function of the current request. ADR 0018.)

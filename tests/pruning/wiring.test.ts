@@ -305,6 +305,90 @@ describe("prune gate handler", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Sticky engagement
+// ---------------------------------------------------------------------------
+
+/** Drop the session's usage-backed estimate back below the threshold the way
+ * a pruned request's own (smaller) usage does, so the next request is judged
+ * on a sub-threshold estimate. */
+function dropEstimate(target: SessionManager): void {
+	target.appendMessage(assistant(null, { ...USAGE, totalTokens: 5000 }));
+}
+
+describe("sticky engagement", () => {
+	it("keeps pruning on the next request once engaged, even when the estimate drops below the threshold", () => {
+		const captured = loadExtension(cwd, sm);
+		// The fixture's usage (19500) is above the threshold (19000), so the
+		// first request engages and prunes.
+		const first = captured.context!({ type: "context", messages: sm.buildSessionContext().messages });
+		expect(first).toBeDefined();
+		expect(referencesOf(first!.messages)).toHaveLength(2);
+		// The pruned request reports the smaller pruned usage, so the estimate
+		// drops below the threshold. Without stickiness the next request would
+		// go out raw; with stickiness it stays pruned.
+		dropEstimate(sm);
+		const second = captured.context!({ type: "context", messages: sm.buildSessionContext().messages });
+		expect(second).toBeDefined();
+		expect(referencesOf(second!.messages)).toHaveLength(2);
+	});
+
+	it("stays raw below the threshold when it never engaged", () => {
+		const builder = SessionManager.create(cwd, sessionDir);
+		builder.appendMessage(user("q1"));
+		builder.appendMessage(assistant({ id: "c1", name: "bash", arguments: { command: "npm test" } }));
+		builder.appendMessage(toolResult("c1", "bash", BIG_BASH));
+		builder.appendMessage(assistant(null, { ...USAGE, totalTokens: 5000 })); // below the threshold
+		builder.appendMessage(user("q2"));
+		const small = SessionManager.open(builder.getSessionFile()!, sessionDir, cwd);
+		const captured = loadExtension(cwd, small);
+		const messages = small.buildSessionContext().messages;
+		expect(captured.context!({ type: "context", messages })).toBeUndefined();
+		expect(captured.context!({ type: "context", messages })).toBeUndefined();
+	});
+
+	it("resets engagement when a compaction runs, so the shrunken session runs raw again", () => {
+		const captured = loadExtension(cwd, sm);
+		captured.context!({ type: "context", messages: sm.buildSessionContext().messages }); // engage
+		// The gate passes: pruning does not cover the margin, so the compaction
+		// runs and the sticky engagement resets.
+		const compact = captured.sessionBeforeCompact!({
+			type: "session_before_compact",
+			preparation: { tokensBefore: 100000 },
+			branchEntries: sm.getBranch(),
+			reason: "threshold",
+			willRetry: false,
+			signal: new AbortController().signal,
+		});
+		expect(compact).toBeUndefined();
+		// The shrunken session's estimate is below the threshold, so the next
+		// request goes out raw again until it re-crosses.
+		dropEstimate(sm);
+		expect(captured.context!({ type: "context", messages: sm.buildSessionContext().messages })).toBeUndefined();
+	});
+
+	it("does not reset engagement when the gate cancels the compaction (pruning wins)", () => {
+		const captured = loadExtension(cwd, sm);
+		captured.context!({ type: "context", messages: sm.buildSessionContext().messages }); // engage
+		// The gate cancels: pruning covers the margin, so the compaction does
+		// not run and the sticky engagement is kept.
+		const compact = captured.sessionBeforeCompact!({
+			type: "session_before_compact",
+			preparation: { tokensBefore: 19500 },
+			branchEntries: sm.getBranch(),
+			reason: "threshold",
+			willRetry: false,
+			signal: new AbortController().signal,
+		});
+		expect(compact).toEqual({ cancel: true });
+		// Still sticky: the below-threshold request is pruned as before.
+		dropEstimate(sm);
+		const after = captured.context!({ type: "context", messages: sm.buildSessionContext().messages });
+		expect(after).toBeDefined();
+		expect(referencesOf(after!.messages)).toHaveLength(2);
+	});
+});
+
+// ---------------------------------------------------------------------------
 // Ephemeral sessions
 // ---------------------------------------------------------------------------
 
