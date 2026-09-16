@@ -25,8 +25,7 @@ import {
 	type CapturedContext,
 } from "./context.ts";
 import { createContextTui } from "./tui.ts";
-
-const STATUS_KEY = "ctx";
+import { setPiece } from "../shared/status-line.ts";
 
 export default function (pi: ExtensionAPI): void {
 	let captured: CapturedContext = emptyCaptured();
@@ -41,7 +40,7 @@ export default function (pi: ExtensionAPI): void {
 			captured,
 			contextWindow: ctx.model?.contextWindow,
 		});
-		ctx.ui.setStatus(STATUS_KEY, formatStatusText(totalTokens, windowPercent));
+		setPiece(ctx, "ctx", "left", formatStatusText(totalTokens, windowPercent));
 	};
 
 	pi.on("session_start", (_event, ctx) => {

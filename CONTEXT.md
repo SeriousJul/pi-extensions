@@ -3,7 +3,9 @@
 Extensions for the pi coding agent. Five today: Codegraph (semantic code
 search over the current project), Quota (subscription quota monitor), Model
 router (automatic recovery from quota exhaustion), Sync (device file
-sync), and Usage (token and cost reporting across all sessions).
+sync), and Usage (token and cost reporting across all sessions). The
+package also ships a Skill tree, kept in step with upstream repos by the
+skill sync script.
 
 ## Language
 
@@ -291,6 +293,56 @@ shared Base lives in the Backend and advances with every push. A device
 that lost its cache falls back to the shared Base.
 _Avoid_: metadata (generic), manifest (clashes with Sync manifest), state
 (too generic)
+
+### Skill tree
+
+**Skill tree**:
+The package's `skills/` directory, laid out as
+`skills/<source-slug>/<upstream bucket>/<name>` for tracked skills and
+`skills/local/<name>` for Local-only skills. The layout mirrors each
+upstream repo, so a tracked skill's upstream path is read off its local
+path.
+_Avoid_: pool (generic), skillset, bundle (a bundle is a pi package)
+
+**Skill source**:
+One upstream git repo whose skills are tracked: a repo URL, a local root
+in the Skill tree, and one Source pin. Matt Pocock's skills repo is the
+only source today.
+_Avoid_: provider (names the vendor, not the tracked unit), upstream
+(too generic), feed
+
+**Source pin**:
+The last upstream commit at which every tracked skill of one source is
+in agreement with the local copy. A skill sync advances it only when it
+completes with no unresolved conflict, so the pin always names a commit
+where the whole tree merged. It is the merge base of the next sync.
+_Avoid_: tag, version, sync stamp, base state (the Sync extension's per-file
+record; the pin is one commit per source)
+
+**Skill sync**:
+One run of the update over one source: fetch upstream, three-way merge
+every tracked skill (base = the Source pin, theirs = the fetched commit,
+ours = the local copy), apply clean merges, report conflicts with marked
+hunks, and advance the pin when everything is clean or finalized.
+_Avoid_: pull (git's one-way word), refresh (too generic), update (the user's
+word for the whole chore, not one pass)
+
+**Adopt**:
+Taking a new upstream skill into the Skill tree by the user's choice.
+A skill sync reports new upstream skills but never adopts one on its own.
+_Avoid_: install (the package word), import, subscribe
+
+**Local-only skill**:
+A skill under `skills/local/` with no Skill source. A skill sync never
+reads, merges, or reports it.
+_Avoid_: private skill, homegrown (implies authorship, not tracking state)
+
+**Upstream orphan**:
+A tracked skill that upstream deleted or renamed: present locally, absent
+at its upstream path. Its pin holds, the skill keeps working, and every
+skill sync reports it until the user deletes it or accepts the rename.
+_Avoid_: stale skill (stale is a content word, this is a presence word),
+dangling skill, ghost
 
 ### Usage
 

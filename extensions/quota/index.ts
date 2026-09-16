@@ -22,8 +22,7 @@ import { Box, Text, matchesKey } from "@earendil-works/pi-tui";
 
 import { renderFooter, renderQuotaDetail, type QuotaLine, type Tone } from "./render.ts";
 import { createQuotaSource, type QuotaSource, type UsageSnapshot } from "./source.ts";
-
-const STATUS_KEY = "quota";
+import { setPiece } from "../shared/status-line.ts";
 /** Fixed by design: the interval is not configurable (issue #28). */
 const POLL_INTERVAL_MS = 5 * 60 * 1000;
 
@@ -58,10 +57,10 @@ export default function (pi: ExtensionAPI): void {
 	function updateFooter(ctx: ExtensionContext): void {
 		if (!ctx.hasUI) return;
 		if (!snapshot) {
-			ctx.ui.setStatus(STATUS_KEY, undefined);
+			setPiece(ctx, "quota", "right", undefined);
 			return;
 		}
-		ctx.ui.setStatus(STATUS_KEY, renderFooter(snapshot, stale).map((line) => paint(line, ctx.ui.theme)).join(""));
+		setPiece(ctx, "quota", "right", renderFooter(snapshot, stale).map((line) => paint(line, ctx.ui.theme)).join(""));
 	}
 
 	function notifyFailure(ctx: ExtensionContext, reason: string, message: string): void {
@@ -128,7 +127,7 @@ export default function (pi: ExtensionAPI): void {
 		snapshot = undefined;
 		stale = false;
 		notifiedFailure = null;
-		if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
+		if (ctx.hasUI) setPiece(ctx, "quota", "right", undefined);
 	});
 
 	pi.registerCommand("quota", {

@@ -385,9 +385,19 @@ describe("renderContextText", () => {
 });
 
 describe("formatStatusText", () => {
+	// The count is human-readable and locale-aware (system prefs): the test
+	// builds the expectation with the same system-locale formatter.
+	const compact = (n: number) =>
+		new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(n);
+
 	it("formats the footer with and without a window", () => {
-		expect(formatStatusText(45230, 11.3075)).toBe("ctx: 45,230 (11.3% of window)");
-		expect(formatStatusText(45230)).toBe("ctx: 45,230");
+		expect(formatStatusText(45230, 11.3075)).toBe(`ctx: ${compact(45230)} (11.3%)`);
+		expect(formatStatusText(45230)).toBe(`ctx: ${compact(45230)}`);
+	});
+
+	it("reads a mid-thousands count as a K value, not a digit-grouped one", () => {
+		expect(formatStatusText(4492)).not.toContain("4,492");
+		expect(formatStatusText(4492)).toContain(compact(4492));
 	});
 });
 

@@ -79,7 +79,7 @@ function startRpc() {
 				const record = JSON.parse(line);
 				if (record.type === "extension_error") extensionErrors.push(record);
 				if (record.type === "extension_ui_request" && record.method === "notify") notifies.push(record);
-				if (record.type === "extension_ui_request" && record.method === "setStatus" && record.statusKey === "ctx") {
+				if (record.type === "extension_ui_request" && record.method === "setStatus" && record.statusKey === "pi-extensions") {
 					statuses.push(record);
 				}
 				if (record.type === "response" && record.id && pending.has(record.id)) {
@@ -168,7 +168,7 @@ try {
 		"footer status",
 		rpc.getStderr,
 	);
-	if (!/ctx: [\d,]+ \(\d+\.\d% of window\)/.test(status.statusText ?? "")) {
+	if (!/^ctx: .+ \(\d+\.\d%\)/.test(status.statusText ?? "")) {
 		fail(`footer status is not the expected shape: ${JSON.stringify(status)}`);
 	}
 	console.log("ok: the footer status shows the total and window share");

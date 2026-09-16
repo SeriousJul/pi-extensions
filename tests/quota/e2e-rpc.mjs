@@ -62,7 +62,7 @@ function startRpc() {
 			try {
 				const record = JSON.parse(line);
 				if (record.type === "extension_error") extensionErrors.push(record);
-				if (record.type === "extension_ui_request" && record.method === "setStatus" && record.statusKey === "quota") {
+				if (record.type === "extension_ui_request" && record.method === "setStatus" && record.statusKey === "pi-extensions") {
 					uiRequests.push(record);
 				}
 				if (record.type === "response" && record.id && pending.has(record.id)) {

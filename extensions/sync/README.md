@@ -213,8 +213,13 @@ probe in the background (5 s timeout) and, on drift, puts a footer
 status line up:
 
 ```
-sync: 2 ahead, 1 behind
+sync: ↑2 ↓1
 ```
+
+A green up-arrow plus count when ahead, a red down-arrow plus count when
+behind, both when the device drifts both ways. The line sits on the right
+of the shared footer status line (see `shared/status-line.ts`), in the
+column above the provider and model.
 
 When a token exists but this device has not joined a gist yet, the line
 nudges instead of staying empty:

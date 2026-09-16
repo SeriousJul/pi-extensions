@@ -22,8 +22,7 @@ import { resolveClientId } from "./config.ts";
 import { runDeviceFlow, type DeviceFlowResult } from "./deviceflow.ts";
 import { probeStartup, runInit, runPull, runPush, runStatus, type SyncOutcome, type SyncRuntime } from "./ops.ts";
 import { GITHUB_BASE_URL_ENV, homeFor, stateDirFor } from "./token.ts";
-
-const STATUS_KEY = "sync";
+import { setPiece } from "../shared/status-line.ts";
 /** The startup notice must never hold startup up. */
 const NOTICE_TIMEOUT_MS = 5_000;
 
@@ -77,7 +76,7 @@ export default function (pi: ExtensionAPI): void {
 				const probe = await probeStartup(runtime);
 				if (sessionCtx !== ctx) return; // a newer session owns the line now
 				if (probe.state === "not-joined") {
-					ctx.ui.setStatus(STATUS_KEY, "sync: not joined - run /sync init");
+					setPiece(ctx, "sync", "left", "sync: not joined - run /sync init");
 				} else if (probe.state === "drift") {
 					// Herdr-style drift: green up-arrow + count when ahead, red
 					// down-arrow + count when behind; either side may be absent.
@@ -85,9 +84,9 @@ export default function (pi: ExtensionAPI): void {
 					const parts: string[] = [];
 					if (probe.ahead > 0) parts.push(theme.fg("success", `↑${probe.ahead}`));
 					if (probe.behind > 0) parts.push(theme.fg("error", `↓${probe.behind}`));
-					ctx.ui.setStatus(STATUS_KEY, `sync: ${parts.join(" ")}`);
+					setPiece(ctx, "sync", "right", `sync: ${parts.join(" ")}`);
 				} else {
-					ctx.ui.setStatus(STATUS_KEY, undefined);
+					setPiece(ctx, "sync", "right", undefined);
 				}
 			} catch {
 				// The notice is best effort. Startup never sees an error.
@@ -276,13 +275,13 @@ export default function (pi: ExtensionAPI): void {
 
 	pi.on("session_start", (_event, ctx) => {
 		sessionCtx = ctx;
-		if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
+		if (ctx.hasUI) setPiece(ctx, "sync", "right", undefined);
 		startupNotice(ctx);
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
 		sessionCtx = null;
-		if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
+		if (ctx.hasUI) setPiece(ctx, "sync", "right", undefined);
 	});
 
 	pi.registerCommand("sync", {

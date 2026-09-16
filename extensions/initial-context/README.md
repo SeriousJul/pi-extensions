@@ -28,7 +28,8 @@ its share of the context window, and a bar.
 | `esc` / `q` | close |
 
 A footer status line keeps the total visible without opening the view:
-`ctx: 45,230 (11.3% of window)`.
+`ctx: 45.2K (11.3%)`. The count is compact and uses the system locale's
+number format.
 
 In headless modes the command prints the same breakdown as plain text:
 a notify record in RPC mode, the console in print mode.

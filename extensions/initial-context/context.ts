@@ -586,7 +586,15 @@ export function renderContextText(report: InitialContextReport): string {
 	return lines.join("\n");
 }
 
+/**
+ * Compact token count in the system locale's number format
+ * (4,492 reads 4.5K in en, 4,5 k in fr).
+ */
+export function formatCompactTokens(totalTokens: number): string {
+	return new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(totalTokens);
+}
+
 /** The persistent footer status text. */
 export function formatStatusText(totalTokens: number, windowPercent?: number): string {
-	return `ctx: ${formatInt(totalTokens)}${windowPercent !== undefined ? ` (${windowPercent.toFixed(1)}% of window)` : ""}`;
+	return `ctx: ${formatCompactTokens(totalTokens)}${windowPercent !== undefined ? ` (${windowPercent.toFixed(1)}%)` : ""}`;
 }

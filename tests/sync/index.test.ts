@@ -21,6 +21,7 @@ import { createServer } from "node:http";
 import { AddressInfo } from "node:net";
 import syncExtension from "../../extensions/sync/index.ts";
 import { writeManagedToken } from "../../extensions/sync/token.ts";
+import { resetStatusLine } from "../../extensions/shared/status-line.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 interface StatusCall {
@@ -91,6 +92,7 @@ let saved: Record<string, string | undefined> = {};
 beforeEach(() => {
 	saved = {};
 	for (const k of ENV_KEYS) saved[k] = process.env[k];
+	resetStatusLine();
 });
 
 afterEach(async () => {

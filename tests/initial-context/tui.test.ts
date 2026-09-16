@@ -74,7 +74,7 @@ describe("initial context TUI", () => {
 		const rig = makeRig(fixtureReport());
 		const lines = rig.rendered();
 		expect(lines[0]).toBe("initial context");
-		expect(lines[1]).toMatch(/^ctx: [\d,]+ \(\d+\.\d% of window\)$/);
+		expect(lines[1]).toMatch(/^ctx: .+ \(\d+\.\d%\)$/);
 		expect(lines).toContain("j/k move  e expand  c copy  esc/q close");
 		expect(lines.some((l) => l.includes("base prompt"))).toBe(true);
 		expect(lines.some((l) => l.includes("append text"))).toBe(true);
