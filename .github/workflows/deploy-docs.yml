@@ -43,6 +43,10 @@ jobs:
       - run: npm run build
         working-directory: docs
       - name: Push to gh-pages
+        # The job token is a secret, not an env var. Map it so the script's
+        # ${GITHUB_TOKEN} resolves under `set -u`.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           DEPLOY_DIR=$(mktemp -d)
