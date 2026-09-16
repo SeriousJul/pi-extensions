@@ -1,10 +1,11 @@
 /**
  * TUI view for the initial-context breakdown. A row table with per-row
- * token counts, percentages, and bars; expandable rows show the exact
- * text; copy puts the row (or the whole breakdown) on the clipboard.
+ * token counts, percentages, bars, and the tool's call count in the usage
+ * window; expandable rows show the exact text; copy puts the row (or the
+ * whole breakdown) on the clipboard.
  *
  * Keys: j/k (or up/down) move or scroll, e expands and collapses,
- * c copies, esc/q closes.
+ * c copies, w cycles the usage window, esc/q closes.
  */
 import { matchesKey } from "@earendil-works/pi-tui";
 import type { TUI } from "@earendil-works/pi-tui";
@@ -17,6 +18,7 @@ import {
 	type InitialContextReport,
 	type InitialContextRow,
 } from "./context.ts";
+import { TOOL_USAGE_WINDOWS, usesForLabel, type ToolUsageSource } from "./tool-usage.ts";
 
 const INT = new Intl.NumberFormat("en-US");
 
@@ -25,6 +27,8 @@ export interface ContextTuiDeps {
 	tui: TUI;
 	theme: Theme;
 	report: InitialContextReport;
+	/** The live tool usage source: window, counts, and change events. */
+	usage: ToolUsageSource;
 	/** Copy text to the clipboard. Errors are swallowed by the view. */
 	copy: (text: string) => Promise<void>;
 	/** How many table rows fit in the viewport right now. */
@@ -37,6 +41,8 @@ export interface ContextTuiComponent {
 	render(width: number): string[];
 	handleInput(data: string): void;
 	invalidate(): void;
+	/** Drop the usage subscription. Call when the dialog closes. */
+	dispose(): void;
 }
 
 /** Word-wrap text to a fixed width for the expand pane. */
@@ -70,21 +76,52 @@ export function createContextTui(deps: ContextTuiDeps): ContextTuiComponent {
 	let scroll = 0;
 	let copied = false;
 	let lastWidth = 80;
+	let disposed = false;
+	const unsubscribe = deps.usage.subscribe(() => {
+		if (!disposed) tui.requestRender();
+	});
+
+	const readyCounts = (): Record<string, number> | undefined => {
+		const snapshot = deps.usage.snapshot();
+		return snapshot.phase === "ready" ? (snapshot.counts ?? {}) : undefined;
+	};
 
 	const paneHeight = (): number => Math.max(3, Math.min(12, deps.viewport() - 6));
 
 	const expandedLines = (width: number): string[] => {
 		const row = rows[cursor];
 		if (!row) return [];
-		return wrapText(row.text, Math.max(8, width - 4));
+		const out: string[] = [];
+		const snapshot = deps.usage.snapshot();
+		if (row.kind === "tool" && snapshot.phase === "ready") {
+			const counts = snapshot.counts ?? {};
+			out.push(`uses (${snapshot.window}): ${usesForLabel(row.label, row.kind, counts) ?? 0}`);
+			if (row.label === "mcp") {
+				const subs = Object.entries(counts)
+					.filter(([key]) => key.startsWith("mcp:"))
+					.sort((a, b) => b[1] - a[1]);
+				for (const [key, n] of subs) out.push(`${key.slice("mcp:".length).padEnd(24)} ${INT.format(n)}`);
+			}
+		}
+		out.push(...wrapText(row.text, Math.max(8, width - 4)));
+		return out;
 	};
 
 	const render = (width: number): string[] => {
 		lastWidth = width;
 		const lines: string[] = [];
 
+		const usage = deps.usage.snapshot();
+		const counts = readyCounts();
+
 		lines.push(accent("initial context"));
-		lines.push(dim(formatStatusText(report.totalTokens, report.windowPercent)));
+		const suffix =
+			usage.phase === "ready"
+				? ` - uses: ${usage.window}`
+				: usage.phase === "scanning"
+					? ` - counting usage${usage.scanned !== undefined && usage.files !== undefined ? ` ${usage.scanned}/${usage.files}` : ""}`
+				: ` - usage: error`;
+		lines.push(dim(formatStatusText(report.totalTokens, report.windowPercent) + suffix));
 		lines.push("");
 
 		const maxLabel = Math.max("TOTAL".length, ...rows.map((row) => rowLabel(row).length));
@@ -97,6 +134,14 @@ export function createContextTui(deps: ContextTuiDeps): ContextTuiComponent {
 		);
 		const window = report.contextWindow;
 
+		const usesText = (row: InitialContextRow): string =>
+			counts !== undefined ? String(usesForLabel(row.label, row.kind, counts) ?? "-") : "-";
+		const usesWidth = Math.max(4, ...rows.map((row) => usesText(row).length));
+		let totalUses = 0;
+		for (const row of rows) {
+			if (row.kind === "tool") totalUses += usesForLabel(row.label, row.kind, counts ?? {}) ?? 0;
+		}
+
 		const rowLine = (row: InitialContextRow | "TOTAL", index: number): string => {
 			const isTotal = row === "TOTAL";
 			const label = isTotal ? "TOTAL" : rowLabel(row);
@@ -105,10 +150,11 @@ export function createContextTui(deps: ContextTuiDeps): ContextTuiComponent {
 			const marker = !isTotal && index === cursor ? (expanded ? "\u25be" : "\u25b8") : " ";
 			const ctxPct = report.totalTokens > 0 ? `${((tokens / report.totalTokens) * 100).toFixed(1)}%` : "0.0%";
 			const winPct = window && window > 0 ? `${((tokens / window) * 100).toFixed(1)}%` : "-";
+			const uses = isTotal ? (counts !== undefined ? INT.format(totalUses) : "-") : usesText(row);
 			const bar = barFor(report.totalTokens > 0 ? (tokens / report.totalTokens) * 100 : 0);
 			const line =
 				`${marker} ${label.slice(0, labelWidth).padEnd(labelWidth)}  ${source.padEnd(sourceWidth)}  ` +
-				`${INT.format(tokens).padStart(tokenWidth)}  ${ctxPct}  ${winPct}` +
+				`${INT.format(tokens).padStart(tokenWidth)}  ${ctxPct}  ${winPct}  ${uses.padStart(usesWidth)}` +
 				(bar ? `  ${bar}` : "");
 			return isTotal ? dim(line.trimEnd()) : line.trimEnd();
 		};
@@ -135,7 +181,7 @@ export function createContextTui(deps: ContextTuiDeps): ContextTuiComponent {
 			lines.push(dim(`provider report (first call): ${INT.format(report.providerInputTokens)} input tokens`));
 		}
 		lines.push("");
-		lines.push(dim(`j/k move  e expand  c copy  esc/q close${copied ? "  copied" : ""}`));
+		lines.push(dim(`j/k move  e expand  c copy  w window  esc/q close${copied ? "  copied" : ""}`));
 
 		return lines;
 	};
@@ -164,6 +210,11 @@ export function createContextTui(deps: ContextTuiDeps): ContextTuiComponent {
 		if (data === "c" || data === "C") {
 			void doCopy();
 			return;
+		}
+		if (data === "w" || data === "W") {
+			const next = TOOL_USAGE_WINDOWS[(TOOL_USAGE_WINDOWS.indexOf(deps.usage.window) + 1) % TOOL_USAGE_WINDOWS.length];
+			deps.usage.setWindow(next);
+			return; // the usage subscription re-renders
 		}
 		if (expanded) {
 			const pane = expandedLines(lastWidth);
@@ -197,5 +248,10 @@ export function createContextTui(deps: ContextTuiDeps): ContextTuiComponent {
 		// Static report; nothing to recompute.
 	};
 
-	return { render, handleInput, invalidate };
+	const dispose = (): void => {
+		disposed = true;
+		unsubscribe();
+	};
+
+	return { render, handleInput, invalidate, dispose };
 }

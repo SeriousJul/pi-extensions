@@ -16,17 +16,17 @@
  *
  * A partial trailing line in a live session fails to parse and is skipped.
  */
-import { homedir } from "node:os";
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
 import type { ScanResult, SessionSummary, UsageEvent } from "./types.ts";
+import {
+defaultSessionsRoot,
+  listSessionFiles,
+  readSessionText,
+  SESSIONS_DIR_ENV,
+} from "../../shared/sessions.ts";
 
-/** Environment variable that points the scan at another sessions tree. */
-export const SESSIONS_DIR_ENV = "PI_SESSIONS_DIR";
-
-export function defaultSessionsRoot(env: NodeJS.ProcessEnv = process.env): string {
-  return env[SESSIONS_DIR_ENV] || join(homedir(), ".pi", "agent", "sessions");
-}
+// Re-exported so the CLI and the extension keep importing the sessions root
+// from this module.
+export { defaultSessionsRoot, SESSIONS_DIR_ENV };
 
 interface SessionEntry {
   type?: string;
@@ -212,40 +212,11 @@ export function scanUsage(root: string): ScanResult {
   const skipped = { n: 0 };
   let files = 0;
 
-  let dirNames: string[];
-  try {
-    dirNames = readdirSync(root);
-  } catch {
-    return { events, sessions, files, skipped: 0 };
-  }
-
-  for (const dirName of dirNames) {
-    const dir = join(root, dirName);
-    let st;
-    try {
-      st = statSync(dir);
-    } catch {
-      continue;
-    }
-    if (!st.isDirectory()) continue;
-
-    let names: string[];
-    try {
-      names = readdirSync(dir);
-    } catch {
-      continue;
-    }
-    for (const name of names) {
-      if (!name.endsWith(".jsonl")) continue;
-      files++;
-      let text: string;
-      try {
-        text = readFileSync(join(dir, name), "utf8");
-      } catch {
-        continue;
-      }
-      scanFile(text, join(dir, name), seen, { events, sessions, skipped });
-    }
+  for (const sf of listSessionFiles(root)) {
+    files++;
+    const text = readSessionText(sf.file);
+    if (text === undefined) continue;
+    scanFile(text, sf.file, seen, { events, sessions, skipped });
   }
 
   return { events, sessions, files, skipped: skipped.n };

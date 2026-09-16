@@ -3,7 +3,9 @@
 The token breakdown of the running agent's initial context: the system
 prompt and the tool definitions, which are resent to the model on every LLM
 call. One row per section and per tool, with token counts, percentages,
-and bars.
+and bars. Tool rows also show the tool's call count in a usage window
+(the last 30 days by default), so the cost of a tool can be weighed
+against how often it is used.
 
 ## /ctx (TUI)
 
@@ -15,14 +17,24 @@ and each tool. Rows are sorted by size, largest first.
 Every row shows its source (builtin, settings, file, skill, or
 extension; a tool is builtin or the extension that added it), its token
 count, its share of the initial context total, its share of the context
-window, and a bar.
+window, and a bar. Tool rows additionally show their call count in the
+usage window; section rows show `-`, and TOTAL sums the tool calls.
+
+The usage window is the last 30 days by default. `w` cycles
+30d → 90d → all. In headless modes the command takes the window as an
+argument: `/ctx 90d`, `/ctx all`.
 
 | Key | Action |
 | --- | --- |
 | `j` / `k` | move the cursor (scroll the pane when expanded) |
 | `e` | expand the row to the exact text, or collapse |
 | `c` | copy the expanded row, or the whole breakdown |
+| `w` | cycle the usage window (30d, 90d, all) |
 | `esc` / `q` | close |
+
+Expanding the `mcp` row lists its per-subtool split (`mcp` calls with a
+`tool` argument count as that subtool; `connect`, `describe`, and
+`search` count as plain `mcp`).
 
 A footer status line keeps the total visible without opening the view:
 `ctx: 45.2K (11.3%)`. The count is compact and uses the system locale's
@@ -50,6 +62,18 @@ If other extensions append to the prompt, an injection row shows the
 suffix; anything else that changes the prompt is flagged
 `modified by extension`.
 
+## How the uses column is built
+
+The counts are derived from the session files: a tool call is a `toolCall`
+item inside an assistant message, and a fork-copied line counts once
+(ADR 0009). The scan runs in the background on the first `/ctx`; the
+dialog shows a counting state until it settles. A per-file cache keyed on
+mtime and size (`~/.pi/agent/tool-usage-cache.json`, override
+`PI_TOOL_USAGE_CACHE`) makes every later open near instant and window
+switches a filter on cached events; the cache is a pure function of the
+session files, never a source of truth (ADR 0014). The sessions root is
+`~/.pi/agent/sessions`, override `PI_SESSIONS_DIR`.
+
 This extension registers no tools, no prompt text, and no prompt notes of
 its own, so its own overhead is zero.
 
@@ -57,5 +81,6 @@ its own, so its own overhead is zero.
 
 - `context.ts` pure core: row construction, payload parsing, injection
   detection, token estimation, plain-text rendering
+- `tool-usage.ts` the tool usage scan, cache, and windows
 - `tui.ts` the TUI view
 - `index.ts` event wiring and the `/ctx` command

@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { buildInitialContext, emptyCaptured, type InitialContextReport } from "../../extensions/initial-context/context.ts";
 import { createContextTui, wrapText, type ContextTuiComponent } from "../../extensions/initial-context/tui.ts";
+import type { ToolUsageSource, ToolUsageWindow } from "../../extensions/initial-context/tool-usage.ts";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 
 const baseOptions = {
@@ -24,9 +25,33 @@ interface Rig {
 	copied: string[];
 	closed: { count: number };
 	rendered: () => string[];
+	usage: ToolUsageSource;
 }
 
-function makeRig(report: InitialContextReport): Rig {
+export function makeFakeUsage(opts: { counts?: Record<string, number>; phase?: "scanning" | "ready" } = {}): ToolUsageSource {
+	let window: ToolUsageWindow = "30d";
+	const listeners = new Set<() => void>();
+	return {
+		get window() {
+			return window;
+		},
+		setWindow(next: ToolUsageWindow): void {
+			window = next;
+			for (const l of [...listeners]) l();
+		},
+		counts: async () => ({ window, counts: opts.counts ?? {}, files: 1, scanned: 0 }),
+		snapshot: () =>
+			opts.phase === "scanning"
+				? { phase: "scanning" as const, window, scanned: 0, files: 4 }
+				: { phase: "ready" as const, window, counts: opts.counts ?? {}, files: 4, scanned: 4 },
+		subscribe: (fn: () => void) => {
+			listeners.add(fn);
+			return () => listeners.delete(fn);
+		},
+	};
+}
+
+function makeRig(report: InitialContextReport, usage: ToolUsageSource = makeFakeUsage({ counts: { bash: 3, read: 5 } })): Rig {
 	const rig: Rig = {
 		component: undefined as unknown as ContextTuiComponent,
 		copied: [],
@@ -34,6 +59,7 @@ function makeRig(report: InitialContextReport): Rig {
 		rendered: () => {
 			throw new Error("render not called");
 		},
+		usage,
 	};
 	const tui = {
 		terminal: { rows: 40, columns: 120 },
@@ -43,6 +69,7 @@ function makeRig(report: InitialContextReport): Rig {
 		tui: tui as never,
 		theme: fakeTheme,
 		report,
+		usage,
 		copy: async (text) => {
 			rig.copied.push(text);
 		},
@@ -74,8 +101,8 @@ describe("initial context TUI", () => {
 		const rig = makeRig(fixtureReport());
 		const lines = rig.rendered();
 		expect(lines[0]).toBe("initial context");
-		expect(lines[1]).toMatch(/^ctx: .+ \(\d+\.\d%\)$/);
-		expect(lines).toContain("j/k move  e expand  c copy  esc/q close");
+		expect(lines[1]).toMatch(/^ctx: .+ \(\d+\.\d%\) - uses: 30d$/);
+		expect(lines).toContain("j/k move  e expand  c copy  w window  esc/q close");
 		const baseLine = lines.find((l) => l.includes("base prompt")) as string;
 		expect(baseLine).toContain("builtin");
 		expect(lines.some((l) => l.includes("append text"))).toBe(true);
@@ -85,6 +112,60 @@ describe("initial context TUI", () => {
 		expect(total).toContain("100.0%");
 		// Bars are present on the data rows.
 		expect(lines.filter((l) => l.includes("█")).length).toBeGreaterThan(3);
+	});
+
+	it("shows the uses column: counts on tool rows, dashes on sections, sum on TOTAL", () => {
+		const rig = makeRig(fixtureReport());
+		const lines = rig.rendered();
+		// Section rows carry no count; the dash sits where the count column is.
+		const baseLine = lines.find((l) => l.includes("base prompt")) as string;
+		expect(baseLine).toMatch(/  -  █/);
+		// Tool rows show their call count (bash 3, read 5, edit and write 0).
+		const bashLine = lines.find((l) => /\bbash\b/.test(l)) as string;
+		expect(bashLine).toMatch(/ 3(  █+)?$/);
+		const readLine = lines.find((l) => /\bread\b/.test(l)) as string;
+		expect(readLine).toMatch(/ 5(  █+)?$/);
+		// TOTAL sums the tool calls.
+		const total = lines.find((l) => l.includes("TOTAL")) as string;
+		expect(total).toMatch(/ 8  █/);
+	});
+
+	it("w cycles the usage window 30d -> 90d -> all", () => {
+		const rig = makeRig(fixtureReport());
+		rig.component.handleInput("w");
+		expect(rig.usage.window).toBe("90d");
+		rig.component.handleInput("w");
+		expect(rig.usage.window).toBe("all");
+		rig.component.handleInput("w");
+		expect(rig.usage.window).toBe("30d");
+		expect(rig.rendered()[1]).toContain("uses: 30d");
+	});
+
+	it("shows counting status and dashes while the scan runs", () => {
+		const rig = makeRig(fixtureReport(), makeFakeUsage({ phase: "scanning" }));
+		const lines = rig.rendered();
+		expect(lines[1]).toContain("counting usage 0/4");
+		const bashLine = lines.find((l) => l.includes("bash")) as string;
+		expect(bashLine).toContain("  - ");
+	});
+
+	it("dispose stops the usage subscription from re-rendering", () => {
+		let renders = 0;
+		const usage = makeFakeUsage({ counts: { bash: 3 } });
+		const component = createContextTui({
+			tui: { requestRender: () => renders++ } as never,
+			theme: fakeTheme,
+			report: fixtureReport(),
+			usage,
+			copy: async () => {},
+			viewport: () => 12,
+			close: () => {},
+		});
+		usage.setWindow("90d");
+		expect(renders).toBe(1);
+		component.dispose();
+		usage.setWindow("all");
+		expect(renders).toBe(1);
 	});
 
 	it("moves the cursor with j and k and marks the cursor row", () => {

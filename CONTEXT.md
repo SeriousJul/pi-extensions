@@ -155,6 +155,20 @@ session. Display only: the bars and percentages stay on the estimator's
 character scale, so the reference stays comparable with the rows.
 _Avoid_: true token count, ground truth, correction
 
+**Tool usage count**:
+How often one tool was called across the machine's pi sessions inside a Tool
+usage window. Derived by scanning the session files for `toolCall` items in
+assistant messages: an MCP call with a subtool counts as `mcp:<subtool>`, and
+a fork-copied line counts once (ADR 0009). A per-file mtime-and-size keyed
+cache holds the derived counts; it is never a source of truth (ADR 0014).
+_Avoid_: telemetry (implies data leaves the machine), call log (codegraph's
+Usage log records index calls, this counts model tool calls), metrics
+
+**Tool usage window**:
+The time range a Tool usage count covers: the last 30 days (the default),
+the last 90 days, or all time.
+_Avoid_: period (generic), bucket (a report term), quota window
+
 ### Quota
 
 **Quota window**:

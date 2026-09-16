@@ -22,6 +22,7 @@ import {
 	type BuildSystemPromptOptions,
 } from "@earendil-works/pi-coding-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { usesForLabel } from "./tool-usage.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -569,8 +570,11 @@ export function rowLabel(row: InitialContextRow): string {
  *     ...
  *     TOTAL                  45,230  100.0%  11.3%  ████████████
  *     provider report (first call): 44,900 input tokens
+ *
+ * With a usage view, a `uses(<window>)` column is added: the call count of
+ * each tool in the window (section rows show `-`, TOTAL the sum).
  */
-export function renderContextText(report: InitialContextReport): string {
+export function renderContextText(report: InitialContextReport, usage?: { window: string; counts: Record<string, number> }): string {
 	const lines: string[] = [];
 	const total = report.totalTokens;
 	const window = report.contextWindow;
@@ -584,7 +588,20 @@ export function renderContextText(report: InitialContextReport): string {
 	const sourceWidth = Math.max(3, ...report.rows.map((row) => row.source.length));
 	const tokenWidth = Math.max(6, formatInt(total).length, ...report.rows.map((row) => formatInt(row.tokens).length));
 
-	lines.push(`  name  ${"src".padEnd(sourceWidth)}  ${"tokens".padStart(tokenWidth)}  ctx%   win%`);
+	const usesText = (row: InitialContextRow): string =>
+		usage ? String(usesForLabel(row.label, row.kind, usage.counts) ?? "-") : "";
+	const usesWidth = usage ? Math.max(4, ...report.rows.map((row) => usesText(row).length)) : 0;
+	let totalUses = 0;
+	if (usage) {
+		for (const row of report.rows) {
+			if (row.kind === "tool") totalUses += usesForLabel(row.label, row.kind, usage.counts) ?? 0;
+		}
+	}
+
+	lines.push(
+		`  name  ${"src".padEnd(sourceWidth)}  ${"tokens".padStart(tokenWidth)}  ctx%   win%` +
+		(usage ? `  uses(${usage.window})` : ""),
+	);
 	for (const row of report.rows) {
 		const line =
 			`  ${rowLabel(row).padEnd(labelWidth)}  ` +
@@ -592,14 +609,16 @@ export function renderContextText(report: InitialContextReport): string {
 			`${formatInt(row.tokens).padStart(tokenWidth)}  ` +
 			`${percentOf(row.tokens, total)}  ` +
 			`${windowPercentOf(row.tokens, window)}` +
+			(usage ? `  ${usesText(row).padStart(usesWidth)}` : "") +
 			(barFor(total > 0 ? (row.tokens / total) * 100 : 0) ? `  ${barFor((row.tokens / total) * 100)}` : "");
 		lines.push(line);
 	}
 	lines.push(
-	`  ${"TOTAL".padEnd(labelWidth)}  ${" ".repeat(sourceWidth)}  ` +
+		`  ${"TOTAL".padEnd(labelWidth)}  ${" ".repeat(sourceWidth)}  ` +
 			`${formatInt(total).padStart(tokenWidth)}  ` +
 			`${total > 0 ? "100.0%" : "0.0%"}  ` +
 			`${windowPercentOf(total, window)}  ` +
+			(usage ? `${formatInt(totalUses).padStart(usesWidth)}  ` : "") +
 			barFor(100),
 	);
 

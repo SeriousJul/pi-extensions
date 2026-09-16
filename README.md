@@ -301,10 +301,13 @@ The token breakdown of the running agent's initial context: the system
 prompt and the tool definitions, resent to the model on every LLM call.
 `/ctx` shows one row per prompt section (base, append, project files,
 skills, cwd) and one row per tool, each with its token count, its share of
-the initial context total, its share of the context window, and a bar. Rows
-expand to the exact text and copy to the clipboard. A footer status line
-(`ctx: 45,230 (11.3% of window)`) keeps the total visible without opening
-the view. When other extensions append to the prompt, an injection row
+the initial context total, its share of the context window, and a bar. Tool
+rows also show the tool's call count in a usage window (`w` cycles 30d,
+90d, and all; the headless modes take `/ctx 90d`), counted from the
+session files with a per-file cache so later opens are near instant
+(ADR 0014). Rows expand to the exact text and copy to the clipboard. A
+footer status line (`ctx: 45,230 (11.3% of window)`) keeps the total
+visible without opening the view. When other extensions append to the prompt, an injection row
 shows the suffix; any other change is flagged `modified by extension`.
 
 Prompt rows come from the same structured inputs pi uses to build the

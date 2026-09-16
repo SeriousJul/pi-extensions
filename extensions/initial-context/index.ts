@@ -25,11 +25,15 @@ import {
 	type CapturedContext,
 } from "./context.ts";
 import { createContextTui } from "./tui.ts";
+import { createToolUsageSource, parseToolUsageWindow, type ToolUsageSource } from "./tool-usage.ts";
 import { setPiece } from "../shared/status-line.ts";
 
 export default function (pi: ExtensionAPI): void {
 	let captured: CapturedContext = emptyCaptured();
 	let lastOptions: BuildSystemPromptOptions | undefined;
+	// The usage source starts its scan on the first /ctx, never at load.
+	let usageSource: ToolUsageSource | undefined;
+	const getUsageSource = (): ToolUsageSource => (usageSource ??= createToolUsageSource());
 
 	const refreshStatus = (ctx: ExtensionContext): void => {
 		if (!ctx.hasUI) return;
@@ -73,28 +77,52 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("ctx", {
-		description: "Show the breakdown of the running agent's initial context",
-		handler: async (_args, ctx) => {
+		description: "Show the breakdown of the running agent's initial context, with tool usage (window: 30d, 90d, or all)",
+		handler: async (args, ctx) => {
 			const options = ctx.getSystemPromptOptions();
 			lastOptions = options;
 			const report = buildInitialContext(options, captured, ctx.model?.contextWindow);
 			refreshStatus(ctx);
 
+			const usage = getUsageSource();
+			const arg = args?.trim();
+			if (arg) {
+				const window = parseToolUsageWindow(arg);
+				if (!window) {
+					const note = `unknown window: ${arg} (use 30d, 90d, or all)`;
+					if (ctx.hasUI) ctx.ui.notify(note, "error");
+					else console.error(note);
+					return;
+				}
+				usage.setWindow(window);
+			}
+
 			if (ctx.hasUI && ctx.mode === "tui") {
-				await ctx.ui.custom((tui, theme, _keybindings, done) =>
-					createContextTui({
+				let component: ReturnType<typeof createContextTui> | undefined;
+				await ctx.ui.custom((tui, theme, _keybindings, done) => {
+					component = createContextTui({
 						tui,
 						theme,
 						report,
+						usage,
 						copy: (text) => copyToClipboard(text),
 						viewport: () => Math.max(6, Math.min(tui.terminal.rows - 10, 24)),
 						close: () => done(undefined),
-					}),
-				);
+					});
+					return component;
+				});
+				component?.dispose();
 				return;
 			}
 
-			const text = renderContextText(report);
+			let usageView: { window: string; counts: Record<string, number> } | undefined;
+			try {
+				const settled = await usage.counts();
+				usageView = { window: settled.window, counts: settled.counts };
+			} catch {
+				// A failed scan drops the column; the breakdown still renders.
+			}
+			const text = renderContextText(report, usageView);
 			if (ctx.hasUI && ctx.mode === "rpc") {
 				ctx.ui.notify(text, "info");
 			} else {

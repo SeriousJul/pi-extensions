@@ -12,8 +12,15 @@
  * 3. /ctx again must now show the captured tool entries (no rebuilt schemas)
  *    and the provider reference line, and must NOT flag an injection: the
  *    reconstruction of pi's default prompt must match what pi actually sent.
+ * 4. The uses column counts tool calls from a fixture sessions tree (pointed
+ *    at with PI_SESSIONS_DIR): fork-copied lines count once, and /ctx 90d
+ *    switches the window and admits the older call.
  *
- * The pi run uses the real HOME so it starts with a working model config.
+ * The pi run uses the real HOME so it starts with a working model config,
+ * but the usage scan is pointed at the fixture tree with its own cache file.
+ * --no-extensions keeps only the one extension under test: on a machine
+ * where this repo is installed as a pi package, discovery loads a second
+ * copy and the duplicate command names (ctx:1, ctx:2) stop /ctx resolving.
  *
  *   node tests/initial-context/e2e-rpc.mjs
  */
@@ -36,6 +43,29 @@ function fail(message) {
 // --- fixture project ----------------------------------------------------------
 
 const projectDir = mkdtempSync(join(tmpdir(), "initial-context-e2e-"));
+
+// --- fixture sessions tree for the uses column --------------------------------
+
+const sessionsDir = join(projectDir, "sessions");
+mkdirSync(join(sessionsDir, "proj"), { recursive: true });
+const nowMs = Date.now();
+const DAY = 86_400_000;
+const call = (name) => ({ type: "toolCall", id: "x", name, arguments: {} });
+const msg = (id, daysAgo, calls) =>
+	JSON.stringify({
+		type: "message",
+		id,
+		parentId: null,
+		timestamp: new Date(nowMs - daysAgo * DAY).toISOString(),
+		message: { role: "assistant", content: calls },
+	});
+const aLines = [
+	msg("a1", 1, [call("bash"), call("bash"), call("read")]),
+	msg("a2", 40, [call("write")]),
+].join("\n");
+writeFileSync(join(sessionsDir, "proj", "a.jsonl"), aLines);
+// The fork copies a's lines byte-identical and adds one own bash call.
+writeFileSync(join(sessionsDir, "proj", "a-fork.jsonl"), aLines + "\n" + msg("f1", 1, [call("bash")]) + "\n");
 writeFileSync(join(projectDir, "AGENTS.md"), "E2E project instructions for the initial context test.\n");
 const skillDir = join(projectDir, "e2e-skill");
 mkdirSync(skillDir, { recursive: true });
@@ -58,8 +88,16 @@ const appendText = "E2E APPEND MARKER";
 function startRpc() {
 	const child = spawn(
 		process.execPath,
-		[piCli, "--mode", "rpc", "--extension", extensionPath, "--skill", skillDir, "--no-skills", "--append-system-prompt", appendText],
-		{ cwd: projectDir, stdio: ["pipe", "pipe", "pipe"] },
+		[piCli, "--mode", "rpc", "--no-extensions", "--extension", extensionPath, "--skill", skillDir, "--no-skills", "--append-system-prompt", appendText],
+		{
+			cwd: projectDir,
+			stdio: ["pipe", "pipe", "pipe"],
+			env: {
+				...process.env,
+				PI_SESSIONS_DIR: sessionsDir,
+				PI_TOOL_USAGE_CACHE: join(projectDir, "tool-usage-cache.json"),
+			},
+		},
 	);
 	let buffer = "";
 	const pending = new Map();
@@ -151,7 +189,11 @@ try {
 	const first = await rpc.request("prompt", { message: "/ctx" });
 	if (!first.success) fail(`/ctx (first): ${JSON.stringify(first)}`);
 
-	const firstNote = await waitFor(() => rpc.notifies[rpc.notifies.length - 1], "/ctx notify record", rpc.getStderr);
+	const firstNote = await waitFor(
+		() => rpc.notifies.find((n) => (n.message ?? "").startsWith("initial context:")),
+		"/ctx notify record",
+		rpc.getStderr,
+	);
 	const firstMessage = firstNote.message ?? "";
 	if (!firstMessage.match(/^initial context: [\d,]+ tokens \(\d+\.\d% of [\d,]+ window\)$/m)) {
 		fail(`/ctx missing the totals header:\n${firstMessage}`);
@@ -162,6 +204,20 @@ try {
 	if (firstMessage.includes("provider report")) fail(`/ctx (first) should not have a provider reference yet:\n${firstMessage}`);
 	if (firstMessage.includes("injection")) fail(`/ctx (first) should not flag an injection:\n${firstMessage}`);
 	console.log("ok: /ctx before the first call breaks down the prompt and lists built-in tool schemas");
+
+	// The uses column: bash 3 (the fork's copy counts once), read 1, write 0
+	// in 30d, and TOTAL 4.
+	const rowLine = (message, name) => {
+		const line = message.split("\n").find((l) => l.trim().startsWith(name));
+		if (!line) fail(`/ctx (first) missing the ${name} row:\n${message}`);
+		return line;
+	};
+	if (!firstMessage.includes("uses(30d)")) fail(`/ctx (first) missing the uses(30d) header:\n${firstMessage}`);
+	if (!rowLine(firstMessage, "bash").match(/ 3(  \u2588+)?\s*$/)) fail(`/ctx (first) bash row does not end in 3:\n${rowLine(firstMessage, "bash")}`);
+	if (!rowLine(firstMessage, "read").match(/ 1(  \u2588+)?\s*$/)) fail(`/ctx (first) read row does not end in 1:\n${rowLine(firstMessage, "read")}`);
+	if (!rowLine(firstMessage, "write").match(/ 0(  \u2588+)?\s*$/)) fail(`/ctx (first) write row does not end in 0:\n${rowLine(firstMessage, "write")}`);
+	if (!rowLine(firstMessage, "TOTAL").match(/ 4  \u2588/)) fail(`/ctx (first) TOTAL row does not sum to 4:\n${rowLine(firstMessage, "TOTAL")}`);
+	console.log("ok: the uses column counts the fixture tree, fork copies once, 30d window");
 
 	const status = await waitFor(
 		() => rpc.statuses[rpc.statuses.length - 1],
@@ -184,10 +240,13 @@ try {
 	// --- Phase 3: /ctx after the first call ------------------------------------
 
 	const seen = rpc.notifies.length;
-	const second = await rpc.request("prompt", { message: "/ctx" });
+	const second = await rpc.request("prompt", { message: "/ctx 90d" });
 	if (!second.success) fail(`/ctx (second): ${JSON.stringify(second)}`);
 	const secondNote = await waitFor(
-		() => (rpc.notifies.length > seen ? rpc.notifies[rpc.notifies.length - 1] : undefined),
+		() =>
+			rpc.notifies
+				.slice(seen)
+				.find((n) => (n.message ?? "").startsWith("initial context:")),
 		"second /ctx notify record",
 		rpc.getStderr,
 	);
@@ -201,7 +260,17 @@ try {
 	if (secondMessage.includes("injection") || secondMessage.includes("modified by extension")) {
 		fail(`/ctx (second) flags an injection; the reconstruction does not match pi:\n${secondMessage}`);
 	}
+	// The 90d window admits the 40-day write call.
+	if (!secondMessage.includes("uses(90d)")) fail(`/ctx (second) missing the uses(90d) header:\n${secondMessage}`);
+	const rowLine90 = (name) => {
+		const line = secondMessage.split("\n").find((l) => l.trim().startsWith(name));
+		if (!line) fail(`/ctx (second) missing the ${name} row:\n${secondMessage}`);
+		return line;
+	};
+	if (!rowLine90("write").match(/ 1(  \u2588+)?\s*$/)) fail(`/ctx (second) write row does not end in 1:\n${rowLine90("write")}`);
+	if (!rowLine90("TOTAL").match(/ 5  \u2588/)) fail(`/ctx (second) TOTAL row does not sum to 5:\n${rowLine90("TOTAL")}`);
 	console.log("ok: /ctx after the first call shows captured tools and the provider reference, with no injection");
+	console.log("ok: /ctx 90d switches the window and admits the older call");
 } finally {
 	if (rpc.extensionErrors.length > 0) fail(`extension_error events: ${JSON.stringify(rpc.extensionErrors)}`);
 	rpc.close();
