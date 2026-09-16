@@ -192,6 +192,22 @@ describe("plan jobs", () => {
 		expect(plan.jobs).toHaveLength(1);
 	});
 
+	it("skips job emission when emitJobs is false, with the same outgoing messages", () => {
+		const { core, serialized } = makeHarness({ perMessageTokens: 7 });
+		const t0 = turn("a", 2); // 21 tokens, passes the gate
+		const t1 = turn("b", 1);
+		const t2 = turn("c", 1);
+		const full = core.plan(request(t0, t1, t2), CONFIG);
+		const quiet = core.plan(request(t0, t1, t2), CONFIG, { emitJobs: false });
+		expect(full.jobs).toHaveLength(1);
+		expect(quiet.jobs).toEqual([]);
+		expect(quiet.messages).toEqual(full.messages);
+		expect(quiet.spans).toBe(full.spans);
+		expect(quiet.compressed).toBe(full.compressed);
+		// The span was never serialized for the quiet plan.
+		expect(serialized).toEqual([t0.messages]);
+	});
+
 	it("does not emit a job for a cached span", () => {
 		const { core, serialized } = makeHarness();
 		const t0 = turn("a", 2);

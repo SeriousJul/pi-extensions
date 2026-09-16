@@ -48,6 +48,16 @@ export interface TurnRequest {
 	turns: Turn[];
 }
 
+/** The optional plan behavior. */
+export interface PlanOptions {
+	/**
+	 * Emit jobs for uncached spans (default true). A caller that only needs
+	 * the outgoing message list (the context hook) sets this to false so
+	 * the spans are not re-serialized on every request.
+	 */
+	emitJobs?: boolean;
+}
+
 /** One compression job: the serialized input plus the numbers the runner
  * and the cache need. */
 export interface CompressionJob {
@@ -122,8 +132,14 @@ export interface CoreDeps {
 }
 
 export interface CompressionCore {
-	/** Produce the outgoing message list and the compression jobs. */
-	plan(request: TurnRequest, config: CompressionConfig): PlanResult;
+	/** Produce the outgoing message list and the compression jobs. With
+	 * `emitJobs: false` the jobs are not built (and the spans not serialized);
+	 * the rest of the result is identical. */
+	plan(
+		request: TurnRequest,
+		config: CompressionConfig,
+		options?: PlanOptions,
+	): PlanResult;
 	/** Add one finished span to the cache. */
 	record(span: SpanRecord): void;
 	/** Rebuild the cache from persisted spans (session start). */
@@ -149,7 +165,12 @@ export function createCompressionCore(deps: CoreDeps): CompressionCore {
 		}
 	}
 
-	function plan(request: TurnRequest, config: CompressionConfig): PlanResult {
+	function plan(
+		request: TurnRequest,
+		config: CompressionConfig,
+		options?: PlanOptions,
+	): PlanResult {
+		const emitJobs = options?.emitJobs ?? true;
 		prune(request);
 		const { preamble, turns } = request;
 		const messages: AgentMessage[] = [...preamble.messages];
@@ -171,7 +192,7 @@ export function createCompressionCore(deps: CoreDeps): CompressionCore {
 					continue;
 				}
 				const spanTokens = deps.estimateTokens(turn.messages);
-				if (spanTokens >= config.minSpanTokens) {
+				if (emitJobs && spanTokens >= config.minSpanTokens) {
 					jobs.push({
 						spanKey: key,
 						entryIds: turn.entryIds,

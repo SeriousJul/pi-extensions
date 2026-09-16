@@ -6,7 +6,7 @@
  * form. The session file is never rewritten; each finished span is persisted
  * as a `compress-span` custom entry, and its usage counts as a Usage event.
  * The compressed form is computed in the background after each turn (see
- * ADR 0012).
+ * ADR 0014).
  *
  * This file is thin pi wiring around the pure core (`core.ts`), the turn
  * serializer (`serializer.ts`), the settings reader (`settings.ts`), and the
@@ -258,7 +258,7 @@ async function runJob(s: SessionState, job: CompressionJob): Promise<void> {
 		const result = await runner.compress(job);
 		// The session may have shut down while the call ran; the span entry
 		// would land in a file this state no longer owns.
-		if (s.closed) return;
+		if (s.closed) return releaseSlot(s, job);
 		const span: SpanRecord = {
 			v: 1,
 			entryIds: job.entryIds,
@@ -274,7 +274,7 @@ async function runJob(s: SessionState, job: CompressionJob): Promise<void> {
 		s.attempts.delete(job.spanKey);
 		updateStatus();
 	} catch (err) {
-		if (s.closed) return;
+		if (s.closed) return releaseSlot(s, job);
 		const attempts = (s.attempts.get(job.spanKey) ?? 0) + 1;
 		s.attempts.set(job.spanKey, attempts);
 		if (attempts >= MAX_COMPRESS_ATTEMPTS) {
@@ -449,7 +449,9 @@ export default function compressExtension(pi: ExtensionAPI): void {
 			}
 			return;
 		}
-		const plan = s.core.plan(request, configOf(s.settings));
+		// The hook discards the jobs; skipping their emission keeps the
+		// check from re-serializing every raw span on every request.
+		const plan = s.core.plan(request, configOf(s.settings), { emitJobs: false });
 		if (plan.compressed === 0) return;
 		return { messages: plan.messages };
 	});
