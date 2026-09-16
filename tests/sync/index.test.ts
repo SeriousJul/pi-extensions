@@ -34,6 +34,7 @@ function makeCtx(calls: StatusCall[]): ExtensionContext {
 	return {
 		hasUI: true,
 		ui: {
+			theme: { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text },
 			setStatus: (key: string, value: string | undefined) => {
 				calls.push({ key, value });
 			},
@@ -193,8 +194,10 @@ describe("startup notice at the entrypoint seam (issue #36)", () => {
 			fire();
 			// Only the renewed token can read the gist, so a drift line proves
 			// the startup path renewed the token.
-			await until(() => /^sync: \d+ ahead, \d+ behind$/.test(lastStatus(calls) ?? ""), "the drift line");
-			expect(lastStatus(calls)).toMatch(/^sync: \d+ ahead, \d+ behind$/);
+			// The herdr-style line keeps an up-arrow for ahead and a down-arrow
+			// for behind; the mock theme strips the color.
+			await until(() => /^sync: ↑\d+( ↓\d+)?$/.test(lastStatus(calls) ?? ""), "the drift line");
+			expect(lastStatus(calls)).toMatch(/^sync: ↑\d+( ↓\d+)?$/);
 		} finally {
 			await env.close();
 		}

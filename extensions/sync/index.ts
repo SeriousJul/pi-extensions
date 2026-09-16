@@ -79,7 +79,13 @@ export default function (pi: ExtensionAPI): void {
 				if (probe.state === "not-joined") {
 					ctx.ui.setStatus(STATUS_KEY, "sync: not joined - run /sync init");
 				} else if (probe.state === "drift") {
-					ctx.ui.setStatus(STATUS_KEY, `sync: ${probe.ahead} ahead, ${probe.behind} behind`);
+					// Herdr-style drift: green up-arrow + count when ahead, red
+					// down-arrow + count when behind; either side may be absent.
+					const theme = ctx.ui.theme;
+					const parts: string[] = [];
+					if (probe.ahead > 0) parts.push(theme.fg("success", `↑${probe.ahead}`));
+					if (probe.behind > 0) parts.push(theme.fg("error", `↓${probe.behind}`));
+					ctx.ui.setStatus(STATUS_KEY, `sync: ${parts.join(" ")}`);
 				} else {
 					ctx.ui.setStatus(STATUS_KEY, undefined);
 				}
