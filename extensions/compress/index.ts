@@ -13,7 +13,7 @@
  * model runner (`runner.ts`).
  */
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
-import { estimateTokens as estimateMessageTokens } from "@earendil-works/pi-coding-agent";
+import { estimateTokens as estimateMessageTokens, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import {
@@ -44,6 +44,8 @@ interface SessionState {
 	inFlight: Set<string>;
 	/** Span keys already warned about, so a failing span warns once. */
 	warned: Set<string>;
+	/** True once the baseline mismatch was reported, so it warns once. */
+	mismatchNotified: boolean;
 	/** The background queue: one compression call at a time. */
 	queue: Promise<void>;
 }
@@ -55,72 +57,45 @@ let state: SessionState | null = null;
 //
 // The context hook must know exactly which messages pi is about to send, or
 // it stays out of the way. Rebuild the context from the session entries with
-// the same rules pi applies (compaction-aware, failed assistant messages
-// dropped, custom entries projected away), then require a byte-for-byte
-// match with the event's message list before rewriting anything.
+// pi's own projection (buildContextEntries plus sessionEntryToContextMessages:
+// compaction-aware with the retained tail, custom messages projected in, null
+// content normalized), then require a byte-for-byte match with the event's
+// message list before rewriting anything.
+//
+// One rule comes from pi's agent state instead of the session file: pi
+// removes auto-retry error messages from state (it keeps them in the file
+// for history), so the baseline drops assistant messages with stopReason
+// "error". Plain interrupted ("aborted") messages stay: pi keeps those in
+// both the file and the state.
 // ---------------------------------------------------------------------------
 
-function toTimestampMs(timestamp: string): number {
-	return new Date(timestamp).getTime();
+function isBaselineMessage(message: AgentMessage): boolean {
+	return !(message.role === "assistant" && message.stopReason === "error");
 }
 
-function isContextMessage(message: AgentMessage): boolean {
-	return (
-		message.role !== "assistant" ||
-		(message.stopReason !== "error" && message.stopReason !== "aborted" && message.stopReason !== "deferred")
-	);
+function entryBaselineMessages(entry: SessionEntry): AgentMessage[] {
+	return sessionEntryToContextMessages(entry).filter(isBaselineMessage);
 }
 
-function entryToContextMessages(entry: SessionEntry): AgentMessage[] {
-	switch (entry.type) {
-		case "message":
-			return isContextMessage(entry.message) ? [entry.message] : [];
-		case "compaction":
-			return [
-				{
-					role: "compactionSummary",
-					summary: entry.summary,
-					tokensBefore: entry.tokensBefore,
-					timestamp: toTimestampMs(entry.timestamp),
-				},
-				...((entry as { retainedTail?: AgentMessage[] }).retainedTail ?? []).filter(isContextMessage),
-			];
-		case "branch_summary":
-			return entry.summary
-				? [
-						{
-							role: "branchSummary",
-							summary: entry.summary,
-							fromId: entry.fromId,
-							timestamp: toTimestampMs(entry.timestamp),
-						},
-					]
-				: [];
-		default:
-			return [];
-	}
+/** The outgoing baseline: pi's own context projection over the compaction-
+ * aware branch, minus the assistant messages pi removed from agent state.
+ * Exported for the wiring regression tests. */
+export function contextBaseline(manager: { buildContextEntries(): SessionEntry[] }): AgentMessage[] {
+	return manager.buildContextEntries().flatMap(entryBaselineMessages);
 }
 
 /** Split the session context into the preamble (messages before the first
  * user turn) and the user-started turns, in original order. Returns null
- * when the session manager is unavailable. */
+ * when the branch is empty. */
 function buildTurnRequest(ctx: ExtensionContext): TurnRequest | null {
-	const path = ctx.sessionManager.getBranch();
-	if (path.length === 0) return null;
-	let compactionIndex = -1;
-	for (let i = path.length - 1; i >= 0; i -= 1) {
-		if (path[i].type === "compaction") {
-			compactionIndex = i;
-			break;
-		}
-	}
-	const entries = compactionIndex >= 0 ? [path[compactionIndex], ...path.slice(compactionIndex + 1)] : path;
+	const entries = ctx.sessionManager.buildContextEntries();
+	if (entries.length === 0) return null;
 
 	const preamble: Turn = { entryIds: [], messages: [] };
 	const turns: Turn[] = [];
 	let current: Turn | null = null;
 	for (const entry of entries) {
-		const messages = entryToContextMessages(entry);
+		const messages = entryBaselineMessages(entry);
 		if (messages.length === 0) continue;
 		if (entry.type === "message" && entry.message.role === "user") {
 			current = { entryIds: [entry.id], messages };
@@ -236,7 +211,6 @@ async function runJob(s: SessionState, job: CompressionJob): Promise<void> {
 	} catch (err) {
 		// The span stays raw and retries on the next turn_end. Warn once per
 		// span so a persistently failing model does not spam.
-		s.inFlight.delete(job.spanKey);
 		if (!s.warned.has(job.spanKey)) {
 			s.warned.add(job.spanKey);
 			if (s.ctx.hasUI) {
@@ -244,6 +218,10 @@ async function runJob(s: SessionState, job: CompressionJob): Promise<void> {
 			}
 		}
 	}
+	// Release the queue slot in both outcomes: a cached span is skipped by
+	// isCached, and a span that left and came back through a branch round trip
+	// must not stay suppressed by a stale key.
+	s.inFlight.delete(job.spanKey);
 }
 
 /** Queue the jobs for every uncached span, after each finished turn. */
@@ -358,6 +336,7 @@ export default function compressExtension(pi: ExtensionAPI): void {
 			runner,
 			inFlight: new Set(),
 			warned: new Set(),
+			mismatchNotified: false,
 			queue: Promise.resolve(),
 		};
 		updateStatus();
@@ -370,7 +349,17 @@ export default function compressExtension(pi: ExtensionAPI): void {
 		const request = buildTurnRequest(s.ctx);
 		if (!request) return;
 		const baseline = [request.preamble, ...request.turns].flatMap((t) => t.messages);
-		if (JSON.stringify(baseline) !== JSON.stringify(event.messages)) return;
+		if (JSON.stringify(baseline) !== JSON.stringify(event.messages)) {
+			// Stay out of the way, but do not fail silently: report once that
+			// the extension is inert.
+			if (!s.mismatchNotified) {
+				s.mismatchNotified = true;
+				if (s.ctx.hasUI) {
+					s.ctx.ui.notify("compress: the rebuilt session context does not match pi's outgoing messages; compression stays off for this session", "warning");
+				}
+			}
+			return;
+		}
 		const plan = s.core.plan(request, configOf(s.settings));
 		if (plan.compressed === 0) return;
 		return { messages: plan.messages };

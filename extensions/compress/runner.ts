@@ -56,26 +56,6 @@ function extractText(message: AssistantMessage): string {
 		.trim();
 }
 
-/** A runner that answers with a fixed form text and fake usage, for the
- * e2e script and for wiring tests. */
-export function createStubRunner(text: string): CompressionRunner {
-	return {
-		async compress(): Promise<CompressionResult> {
-			return {
-				text,
-				usage: {
-					input: Math.round(text.length / CHARS_PER_TOKEN),
-					output: 0,
-					cacheRead: 0,
-					cacheWrite: 0,
-					totalTokens: Math.round(text.length / CHARS_PER_TOKEN),
-					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-				},
-			};
-		},
-	};
-}
-
 export function createModelRunner(model: Model<Api>, registry: ModelRegistry): CompressionRunner {
 	return {
 		async compress(job: CompressionJob): Promise<CompressionResult> {
