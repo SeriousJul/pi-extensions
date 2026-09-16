@@ -226,6 +226,28 @@ The one synthetic user message the router sends to resume the halted turn.
 _Avoid_: resume prompt, continuation (generic), retry message (a retry is a
 different concept)
 
+### Resource toggle
+
+**Resource**:
+One unit pi loads from disk: an extension, a skill, a prompt template, or a theme. A resource has a location, a scope (global or project), and a Toggle state.
+_Avoid_: plugin (pi's word is extension), feature, component
+
+**Top-level resource**:
+A resource loaded from an auto-discovered location or a settings array entry, instead of one bundled in a package. The toggle writes the state of a top-level resource; a package resource is display-only in v1.
+_Avoid_: local resource, installed resource
+
+**Override pattern**:
+An entry in a settings resource array that starts with `+`, `-`, or `!`. `+path` force-includes a resource, `-path` force-excludes it, and `!pattern` excludes by glob. Pi applies them during resource resolution, so a disabled resource is fully unloaded: no factory run, no tools, no commands, no prompt entry.
+_Avoid_: flag (a flag is a boolean setting), toggle bit, exclude rule
+
+**Toggle state**:
+The effective state of one resource: enabled, disabled, or a project override of inherit, load, or unload over the global state. Derived from the override patterns in the settings files, never stored as a separate field.
+_Avoid_: enabled flag (only two of the states), on/off (hides the override layer)
+
+**Shadow entry**:
+A plain path plus a `+` or `-` pattern for the same path, written together into the project settings. It re-registers a global resource at project scope, where it wins over the global copy, so the project decides the resource's state without touching the global file.
+_Avoid_: alias (implies the path stays one resource), per-project copy, override rule
+
 ### Sync
 
 **Sync wizard**:
