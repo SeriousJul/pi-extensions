@@ -7,6 +7,8 @@ A pi package that bundles pi extensions. This package contains:
 - **context-cap** - `--context-window <tokens>` caps the session's context window so compaction fires early.
 - **model-router** - recovers a session from a provider usage-limit halt (switch to a fallback or wait for the reset, then resume).
 - **quota** - monitors the OpenAI ChatGPT plan quota: a footer line with the used windows, and a `/quota` detail view.
+- **resource-toggle** - `/resources`, `/enable`, `/disable`, `/inherit`: enable and disable extensions, skills, prompt templates, and themes from inside a running session.
+- **usage** - `/usage`: LLM token and cost reporting across all pi sessions, plus the `pi-usage` CLI.
 - **sync** - cross-device pi config sync: `/sync` plus the `pi-sync` CLI, three-way merge, v1 backend a secret GitHub Gist.
 - **hello** - a minimal example extension.
 
@@ -24,6 +26,8 @@ See the [pi packages docs](https://github.com/earendil-works/pi/blob/main/packag
 │   ├── context-cap/  # multi-file extension, entry point at context-cap/index.ts
 │   ├── model-router/ # multi-file extension, entry point at model-router/index.ts
 │   ├── quota/        # multi-file extension, entry point at quota/index.ts
+│   ├── resource-toggle/  # multi-file extension, entry point at resource-toggle/index.ts
+│   ├── usage/        # multi-file extension, entry point at usage/index.ts, plus the pi-usage CLI
 │   ├── sync/         # multi-file extension, entry point at sync/index.ts, plus the pi-sync CLI
 │   └── codegraph/    # multi-file extension, entry point at codegraph/index.ts
 ├── docs/adr/         # architecture decision records
