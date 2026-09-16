@@ -64,6 +64,8 @@ export interface InitialContextRow {
 	key: string;
 	label: string;
 	kind: RowKind;
+	/** Where the text comes from: builtin, settings, file, skill, or extension. */
+	source: string;
 	/** The exact text this row contributes to the prompt or tool list. */
 	text: string;
 	/** Display note, e.g. "built-in schema" or "modified by extension". */
@@ -343,6 +345,7 @@ function injectionRow(sections: Section[], sentSystem: string | undefined): Init
 			key: "injection",
 			label: "injection",
 			kind: "injection",
+			source: "extension",
 			text: suffix,
 			tokens: estimateTextTokens(suffix),
 		};
@@ -351,6 +354,7 @@ function injectionRow(sections: Section[], sentSystem: string | undefined): Init
 		key: "injection",
 		label: "injection",
 		kind: "injection",
+		source: "extension",
 		note: "modified by extension",
 		text: sentSystem,
 		tokens: estimateTextTokens(sentSystem),
@@ -407,6 +411,9 @@ function buildToolRows(options: BuildSystemPromptOptions, captured: CapturedCont
 		key: `tool:${entry.name}`,
 		label: entry.name,
 		kind: "tool" as RowKind,
+		// The default tools are pi built-ins; anything else in the list
+		// (custom tools, extension tools) comes from an extension.
+		source: DEFAULT_TOOLS.includes(entry.name) ? "builtin" : "extension",
 		note: entry.note,
 		text: entry.raw,
 		tokens: estimateTextTokens(entry.raw),
@@ -419,9 +426,20 @@ function buildToolRows(options: BuildSystemPromptOptions, captured: CapturedCont
 // Report
 // ---------------------------------------------------------------------------
 
+/** Source of a base-prompt section. */
+const SECTION_SOURCE: Record<RowKind, string> = {
+	base: "builtin",
+	append: "settings",
+	file: "file",
+	skill: "skill",
+	cwd: "builtin",
+	injection: "extension",
+	tool: "builtin",
+};
+
 /**
  * Build the full breakdown from the prompt options and the captured state.
- * Row order: base, append, project files, skills, cwd, injection, tools.
+ * Row order: size, largest first (the stable sort keeps prompt order for ties).
  */
 export function buildInitialContext(
 	options: BuildSystemPromptOptions,
@@ -433,6 +451,7 @@ export function buildInitialContext(
 		key: section.key,
 		label: section.label,
 		kind: section.kind,
+		source: SECTION_SOURCE[section.kind],
 		text: section.text,
 		tokens: estimateTextTokens(section.text),
 	}));
@@ -441,6 +460,7 @@ export function buildInitialContext(
 	if (injection) rows.push(injection);
 
 	rows.push(...buildToolRows(options, captured));
+	rows.sort((a, b) => b.tokens - a.tokens);
 
 	// The total estimates the prompt exactly as it is sent (one unit, the
 	// way the provider sees it) plus the tool entries. The per-row numbers
@@ -540,10 +560,12 @@ export function rowLabel(row: InitialContextRow): string {
 /**
  * The plain-text breakdown, used by the print and RPC modes.
  *
+ * Rows are sorted by size, largest first.
+ *
  *   initial context: 45,230 tokens (11.3% of 400,000 window)
  *
- *     name                    tokens    ctx%   win%
- *     base prompt            12,345   27.3%   3.1%  ████
+ *     name             src       tokens  ctx%   win%
+ *     base prompt      builtin  12,345  27.3%   3.1%  ████
  *     ...
  *     TOTAL                  45,230  100.0%  11.3%  ████████████
  *     provider report (first call): 44,900 input tokens
@@ -559,12 +581,14 @@ export function renderContextText(report: InitialContextReport): string {
 	lines.push("");
 
 	const labelWidth = Math.max(4, "TOTAL".length, ...report.rows.map((row) => rowLabel(row).length));
+	const sourceWidth = Math.max(3, ...report.rows.map((row) => row.source.length));
 	const tokenWidth = Math.max(6, formatInt(total).length, ...report.rows.map((row) => formatInt(row.tokens).length));
 
-	lines.push(`  name  ${"tokens".padStart(tokenWidth)}  ctx%   win%`);
+	lines.push(`  name  ${"src".padEnd(sourceWidth)}  ${"tokens".padStart(tokenWidth)}  ctx%   win%`);
 	for (const row of report.rows) {
 		const line =
 			`  ${rowLabel(row).padEnd(labelWidth)}  ` +
+			`${row.source.padEnd(sourceWidth)}  ` +
 			`${formatInt(row.tokens).padStart(tokenWidth)}  ` +
 			`${percentOf(row.tokens, total)}  ` +
 			`${windowPercentOf(row.tokens, window)}` +
@@ -572,7 +596,7 @@ export function renderContextText(report: InitialContextReport): string {
 		lines.push(line);
 	}
 	lines.push(
-	`  ${"TOTAL".padEnd(labelWidth)}  ` +
+	`  ${"TOTAL".padEnd(labelWidth)}  ${" ".repeat(sourceWidth)}  ` +
 			`${formatInt(total).padStart(tokenWidth)}  ` +
 			`${total > 0 ? "100.0%" : "0.0%"}  ` +
 			`${windowPercentOf(total, window)}  ` +

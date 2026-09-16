@@ -89,6 +89,7 @@ export function createContextTui(deps: ContextTuiDeps): ContextTuiComponent {
 
 		const maxLabel = Math.max("TOTAL".length, ...rows.map((row) => rowLabel(row).length));
 		const labelWidth = Math.min(Math.max(8, Math.floor(width * 0.4)), maxLabel);
+		const sourceWidth = Math.max(3, ...rows.map((row) => row.source.length));
 		const tokenWidth = Math.max(
 			4,
 			INT.format(report.totalTokens).length,
@@ -99,13 +100,14 @@ export function createContextTui(deps: ContextTuiDeps): ContextTuiComponent {
 		const rowLine = (row: InitialContextRow | "TOTAL", index: number): string => {
 			const isTotal = row === "TOTAL";
 			const label = isTotal ? "TOTAL" : rowLabel(row);
+			const source = isTotal ? "" : row.source;
 			const tokens = isTotal ? report.totalTokens : row.tokens;
 			const marker = !isTotal && index === cursor ? (expanded ? "\u25be" : "\u25b8") : " ";
 			const ctxPct = report.totalTokens > 0 ? `${((tokens / report.totalTokens) * 100).toFixed(1)}%` : "0.0%";
 			const winPct = window && window > 0 ? `${((tokens / window) * 100).toFixed(1)}%` : "-";
 			const bar = barFor(report.totalTokens > 0 ? (tokens / report.totalTokens) * 100 : 0);
 			const line =
-				`${marker} ${label.slice(0, labelWidth).padEnd(labelWidth)}  ` +
+				`${marker} ${label.slice(0, labelWidth).padEnd(labelWidth)}  ${source.padEnd(sourceWidth)}  ` +
 				`${INT.format(tokens).padStart(tokenWidth)}  ${ctxPct}  ${winPct}` +
 				(bar ? `  ${bar}` : "");
 			return isTotal ? dim(line.trimEnd()) : line.trimEnd();

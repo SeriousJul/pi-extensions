@@ -7,18 +7,15 @@ and bars.
 
 ## /ctx (TUI)
 
-Opens the breakdown. Rows appear in a fixed block order:
+Opens the breakdown. There is one row per part: the base prompt (or
+custom prompt), the append text, project instruction files, skills, the
+cwd line, a prompt injection when another extension touched the prompt,
+and each tool. Rows are sorted by size, largest first.
 
-1. base prompt (or custom prompt)
-2. append text
-3. project instruction files, one row per file
-4. skills, one row per skill
-5. cwd line
-6. prompt injection, when other extensions appended to the prompt
-7. tools, sorted by estimated size, largest first
-
-Every row shows its token count, its share of the initial context total,
-its share of the context window, and a bar.
+Every row shows its source (builtin, settings, file, skill, or
+extension; a tool is builtin or the extension that added it), its token
+count, its share of the initial context total, its share of the context
+window, and a bar.
 
 | Key | Action |
 | --- | --- |

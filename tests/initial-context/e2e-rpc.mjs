@@ -156,7 +156,7 @@ try {
 	if (!firstMessage.match(/^initial context: [\d,]+ tokens \(\d+\.\d% of [\d,]+ window\)$/m)) {
 		fail(`/ctx missing the totals header:\n${firstMessage}`);
 	}
-	for (const expected of ["base prompt", "append text", "AGENTS.md", "e2e-skill", "cwd", "(built-in schema)", "TOTAL"]) {
+	for (const expected of ["name  src", "base prompt", "append text", "AGENTS.md", "e2e-skill", "cwd", "(built-in schema)", "TOTAL"]) {
 		if (!firstMessage.includes(expected)) fail(`/ctx (first) missing ${expected}:\n${firstMessage}`);
 	}
 	if (firstMessage.includes("provider report")) fail(`/ctx (first) should not have a provider reference yet:\n${firstMessage}`);

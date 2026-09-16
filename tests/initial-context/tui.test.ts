@@ -76,7 +76,8 @@ describe("initial context TUI", () => {
 		expect(lines[0]).toBe("initial context");
 		expect(lines[1]).toMatch(/^ctx: .+ \(\d+\.\d%\)$/);
 		expect(lines).toContain("j/k move  e expand  c copy  esc/q close");
-		expect(lines.some((l) => l.includes("base prompt"))).toBe(true);
+		const baseLine = lines.find((l) => l.includes("base prompt")) as string;
+		expect(baseLine).toContain("builtin");
 		expect(lines.some((l) => l.includes("append text"))).toBe(true);
 		expect(lines.some((l) => l.includes("cwd"))).toBe(true);
 		expect(lines.some((l) => l.includes("provider report (first call): 44,900 input tokens"))).toBe(true);

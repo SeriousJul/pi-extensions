@@ -199,10 +199,7 @@ describe("injection detection", () => {
 		const inRow = injected.rows.find((r) => r.kind === "injection");
 		expect(inRow?.text).toBe(suffix);
 		expect(inRow?.note).toBeUndefined();
-		// The injection row lands after the cwd row and before the tools.
-		const order = injected.rows.map((r) => r.kind);
-		expect(order.indexOf("injection")).toBeGreaterThan(order.indexOf("cwd"));
-		expect(order.indexOf("injection")).toBeLessThan(order.indexOf("tool"));
+		expect(inRow?.source).toBe("extension");
 	});
 
 	it("flags any other modification", () => {
@@ -212,6 +209,7 @@ describe("injection detection", () => {
 		const row = report.rows.find((r) => r.kind === "injection");
 		expect(row?.note).toBe("modified by extension");
 		expect(row?.text).toBe("TOTALLY DIFFERENT PROMPT");
+		expect(row?.source).toBe("extension");
 	});
 });
 
@@ -297,6 +295,33 @@ describe("buildInitialContext", () => {
 			expect(row.tokens).toBe(Math.ceil(row.text.length / 4));
 		}
 	});
+
+	it("sorts rows by size, largest first", () => {
+		const report = buildInitialContext(baseOptions, emptyCaptured(), 200000);
+		const sizes = report.rows.map((r) => r.tokens);
+		expect(sizes).toEqual([...sizes].sort((a, b) => b - a));
+	});
+
+	it("labels the source of every row kind", () => {
+		const captured = emptyCaptured();
+		captured.tools = [
+			{ name: "read", raw: JSON.stringify({ name: "read", description: "d", parameters: {} }) },
+			{ name: "my_tool", raw: JSON.stringify({ name: "my_tool", description: "d", parameters: {} }) },
+		];
+		const rows = buildInitialContext(baseOptions, captured, 200000).rows;
+		expect(rows.find((r) => r.kind === "base")?.source).toBe("builtin");
+		expect(rows.find((r) => r.kind === "file")?.source).toBe("file");
+		expect(rows.find((r) => r.kind === "skill")?.source).toBe("skill");
+		expect(rows.find((r) => r.kind === "cwd")?.source).toBe("builtin");
+		expect(rows.find((r) => r.key === "tool:read")?.source).toBe("builtin");
+		expect(rows.find((r) => r.key === "tool:my_tool")?.source).toBe("extension");
+	});
+
+	it("labels append text as settings-sourced", () => {
+		const options = { ...baseOptions, appendSystemPrompt: "Be concise." };
+		const rows = buildInitialContext(options, emptyCaptured(), 200000).rows;
+		expect(rows.find((r) => r.kind === "append")?.source).toBe("settings");
+	});
 });
 
 // --- footer estimate ------------------------------------------------------
@@ -354,7 +379,7 @@ describe("renderContextText", () => {
 		const lines = text.split("\n");
 		expect(lines[0]).toMatch(/^initial context: [\d,]+ tokens \(\d+\.\d% of 200,000 window\)$/);
 		expect(lines[1]).toBe("");
-		expect(lines[2]).toMatch(/^\s+name\s+tokens\s+ctx%\s+win%$/);
+		expect(lines[2]).toMatch(/^\s+name\s+src\s+tokens\s+ctx%\s+win%$/);
 		expect(text).toContain("base prompt");
 		expect(text).toContain("/tmp/project/AGENTS.md");
 		expect(text).toContain("alpha");
@@ -368,7 +393,7 @@ describe("renderContextText", () => {
 		const text = renderContextText(report());
 		const lines = text.split("\n");
 		const baseLine = lines.find((l) => l.trimStart().startsWith("base prompt")) as string;
-		expect(baseLine).toMatch(/^\s+base prompt\s+\d[\d,]*\s+\d+\.\d%\s+\d+\.\d%\s+█+$/);
+		expect(baseLine).toMatch(/^\s+base prompt\s+builtin\s+\d[\d,]*\s+\d+\.\d%\s+\d+\.\d%\s+█+$/);
 	});
 
 	it("renders a header without window info", () => {
