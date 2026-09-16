@@ -410,6 +410,16 @@ _Avoid_: compaction (that is the second level, pi's native summarization),
 offloading (implies the content moves to another store), truncation
 (implies the content is lost)
 
+**Engagement**:
+Whether the pruning first level is active for the session right now. It is a
+sticky session state, not a per-request re-check: once the context estimate
+crosses pi's own compaction threshold, it engages and keeps engaging on every
+later request until a reset, so the outgoing prefix holds one shape and the
+provider's prompt cache stays hot. A reset is a compaction that runs or a
+session start, after which the session runs raw again until it re-crosses.
+_Avoid_: threshold check (that is the stateless per-request comparison the
+sticky state wraps), activation (too generic), on/off (hides the reset)
+
 **Recall reference**:
 The pointer a pruned output carries: the line number of the entry in the
 session file, resolved by the recall tool back to the full output. When no

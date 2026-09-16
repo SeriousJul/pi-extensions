@@ -22,6 +22,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { calculateContextTokens, estimateTokens, sessionEntryToContextMessages, type ExtensionAPI, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { prune, type PruneInput, type PruneSettings } from "./core.ts";
+import { nextEngagement } from "./engagement.ts";
 import { pruneGate, type GateDecision } from "./gate.ts";
 import { createRecallTool } from "./recall.ts";
 import { readPruningSettings, readReserveTokens, writePruningSettings, type PruningSettings } from "./settings.ts";
@@ -42,6 +43,12 @@ interface PruningState {
 	reserveTokens: number;
 	/** True once the first-activation notification went out. */
 	firstActivationNotified: boolean;
+	/** The sticky engaged state (ADR 0018): true once the estimate has crossed
+	 * the threshold, held until a reset event, so the prefix keeps one shape. */
+	engaged: boolean;
+	/** True after a compaction ran, until the next request consumes it: a reset
+	 * event that clears the sticky engagement. */
+	resetPending: boolean;
 	/** The last prune pass that replaced outputs, for the state line. */
 	lastPrune: PruneStats | null;
 	/** The last gate decision, for the state line. */
@@ -177,6 +184,8 @@ export default function pruningExtension(pi: ExtensionAPI): void {
 			settings,
 			reserveTokens: readReserveTokens(ctx.cwd),
 			firstActivationNotified: false,
+			engaged: false,
+			resetPending: false,
 			lastPrune: null,
 			lastGate: null,
 		};
@@ -188,15 +197,28 @@ export default function pruningExtension(pi: ExtensionAPI): void {
 		activeCtx = null;
 	});
 
-	// First level: re-derive the pruned view on every request. Stateless
-	// and idempotent; a request that does not engage goes out unchanged.
+	// First level: re-derive the pruned view on every request. Engagement is
+	// sticky for the session (ADR 0018): once the estimate has crossed the
+	// threshold, keep pruning until a reset, so the outgoing prefix holds one
+	// shape and the provider's prompt cache stays hot. A request that does not
+	// engage goes out unchanged.
 	pi.on("context", (event) => {
 		const s = state;
 		const ctx = activeCtx;
 		if (!s || !ctx || !s.settings.enabled || !ctx.model) return;
-		const result = prune(
-			pruneInput(ctx, event.messages, ctx.sessionManager.buildContextEntries(), ctx.model.contextWindow, s.reserveTokens, s.settings),
-		);
+		const engaged = nextEngagement({
+			engaged: s.engaged,
+			estimate: estimateContextTokens(event.messages),
+			threshold: ctx.model.contextWindow - s.reserveTokens,
+			reset: s.resetPending,
+		});
+		s.engaged = engaged;
+		s.resetPending = false;
+		if (!engaged) return;
+		const result = prune({
+			...pruneInput(ctx, event.messages, ctx.sessionManager.buildContextEntries(), ctx.model.contextWindow, s.reserveTokens, s.settings),
+			engage: true,
+		});
 		if (result.prunedCount === 0) return;
 		s.lastPrune = { outputs: result.prunedCount, tokensSaved: result.savingsTokens };
 		if (!s.firstActivationNotified) {
@@ -212,24 +234,31 @@ export default function pruningExtension(pi: ExtensionAPI): void {
 	});
 
 	// Second level's gate: cancel a threshold compaction exactly when
-	// pruning alone reaches the window minus twice reserveTokens.
+	// pruning alone reaches the window minus twice reserveTokens. When a
+	// compaction actually runs (the gate passes, or pruning is off so the gate
+	// never fires), the raw size drops, so reset the sticky engagement and let
+	// the session run raw again until it re-crosses the threshold.
 	pi.on("session_before_compact", (event) => {
 		const s = state;
 		const ctx = activeCtx;
-		if (!s || !ctx || !s.settings.enabled || !ctx.model) return;
-		const messages = currentMessages(ctx.sessionManager);
-		const result = prune(
-			pruneInput(ctx, messages, ctx.sessionManager.buildContextEntries(), ctx.model.contextWindow, s.reserveTokens, s.settings),
-		);
-		const decision = pruneGate({
-			tokensBefore: event.preparation.tokensBefore,
-			prunedSavings: result.savingsTokens,
-			contextWindow: ctx.model.contextWindow,
-			reserveTokens: s.reserveTokens,
-			reason: event.reason,
-		});
-		s.lastGate = { decision, reason: event.reason, tokensBefore: event.preparation.tokensBefore };
-		if (decision.cancel) return { cancel: true };
+		if (!s || !ctx) return;
+		if (s.settings.enabled && ctx.model) {
+			const messages = currentMessages(ctx.sessionManager);
+			const result = prune(
+				pruneInput(ctx, messages, ctx.sessionManager.buildContextEntries(), ctx.model.contextWindow, s.reserveTokens, s.settings),
+			);
+			const decision = pruneGate({
+				tokensBefore: event.preparation.tokensBefore,
+				prunedSavings: result.savingsTokens,
+				contextWindow: ctx.model.contextWindow,
+				reserveTokens: s.reserveTokens,
+				reason: event.reason,
+			});
+			s.lastGate = { decision, reason: event.reason, tokensBefore: event.preparation.tokensBefore };
+			if (decision.cancel) return { cancel: true };
+		}
+		// A compaction runs: clear the sticky engagement on the next request.
+		s.resetPending = true;
 		return;
 	});
 
