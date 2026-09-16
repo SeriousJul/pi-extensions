@@ -74,8 +74,8 @@ npm install
 Load the checkout into a pi session without installing:
 
 ```bash
-pi -e /absolute/path/to/pi-extensions                    # whole package
-pi -e /absolute/path/to/pi-extensions/extensions/hello.ts  # one extension
+pi -e /absolute/path/to/pi-extensions                   # whole package
+pi -e /absolute/path/to/pi-extensions/extensions/tools.ts  # one extension
 ```
 
 Or point settings at the checkout. pi does not copy local paths, so the
