@@ -221,13 +221,17 @@ describe("initial context TUI", () => {
 		expect(clamped).toMatch(/\[1-/);
 	});
 
-	it("copies the whole breakdown, and the row text when expanded", async () => {
+	it("copies the whole breakdown with the uses column when ready", async () => {
 		const rig = makeRig(fixtureReport());
 		rig.component.handleInput("c");
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		expect(rig.copied).toHaveLength(1);
 		expect(rig.copied[0]).toMatch(/^initial context: [\d,]+ tokens/);
 		expect(rig.copied[0]).toContain("provider report (first call): 44,900 input tokens");
+		// The copied text includes the uses column with the sum on TOTAL.
+		expect(rig.copied[0]).toContain("uses(30d)");
+		const totalLine = rig.copied[0].split("\n").find((l) => l.includes("TOTAL"))!;
+		expect(totalLine).toMatch(/\b8\b/);
 		expect(rig.rendered().some((l) => l.includes("copied"))).toBe(true);
 
 		rig.component.handleInput("e");
@@ -237,6 +241,39 @@ describe("initial context TUI", () => {
 		// The expanded row is the base prompt.
 		expect(rig.copied[1].startsWith("You are an expert coding assistant operating inside pi")).toBe(true);
 		expect(rig.closed.count).toBe(0);
+	});
+
+	it("TOTAL includes tool calls for tools not in the report", () => {
+		// bash: 3, read: 5 are in the report; ghost: 7 is not.
+		const usage = makeFakeUsage({ counts: { bash: 3, read: 5, ghost: 7 } });
+		const rig = makeRig(fixtureReport(), usage);
+		const lines = rig.rendered();
+		const total = lines.find((l) => l.includes("TOTAL")) as string;
+		// 3 + 5 + 7 = 15
+		expect(total).toMatch(/\b15\b/);
+	});
+
+	it("mcp expanded view lists the per-subtool split", () => {
+		// Build a report that includes an mcp tool row.
+		const captured = emptyCaptured();
+		captured.tools = [{ name: "mcp", raw: "mcp tool schema" } as never];
+		const report = buildInitialContext(
+			{ ...baseOptions, contextFiles: [...baseOptions.contextFiles], appendSystemPrompt: baseOptions.appendSystemPrompt } as never,
+			captured,
+			200000,
+		);
+		const usage = makeFakeUsage({ counts: { mcp: 2, "mcp:search": 5, "mcp:fetch": 3, bash: 1 } });
+		const rig = makeRig(report, usage);
+		// Navigate to the mcp row by its index in the report.
+		const mcpRowIdx = report.rows.findIndex((r) => r.label === "mcp");
+		for (let i = 0; i < mcpRowIdx; i++) rig.component.handleInput("j");
+		// Expand the mcp row.
+		rig.component.handleInput("e");
+		const lines = rig.rendered();
+		// The expanded pane shows the total (2+5+3=10) and the per-subtool split.
+		expect(lines.some((l) => l.includes("uses (30d): 10"))).toBe(true);
+		expect(lines.some((l) => l.includes("search") && l.includes("5"))).toBe(true);
+		expect(lines.some((l) => l.includes("fetch") && l.includes("3"))).toBe(true);
 	});
 
 	it("closes on escape and q", () => {

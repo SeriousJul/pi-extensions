@@ -138,8 +138,10 @@ export function createContextTui(deps: ContextTuiDeps): ContextTuiComponent {
 			counts !== undefined ? String(usesForLabel(row.label, row.kind, counts) ?? "-") : "-";
 		const usesWidth = Math.max(4, ...rows.map((row) => usesText(row).length));
 		let totalUses = 0;
-		for (const row of rows) {
-			if (row.kind === "tool") totalUses += usesForLabel(row.label, row.kind, counts ?? {}) ?? 0;
+		if (counts !== undefined) {
+			for (const [key, n] of Object.entries(counts)) {
+				if (!key.startsWith("skill:")) totalUses += n;
+			}
 		}
 
 		const rowLine = (row: InitialContextRow | "TOTAL", index: number): string => {
@@ -188,7 +190,9 @@ export function createContextTui(deps: ContextTuiDeps): ContextTuiComponent {
 
 	const doCopy = async (): Promise<void> => {
 		const row = rows[cursor];
-		const text = expanded && row ? row.text : renderContextText(report);
+		const counts = readyCounts();
+		const usageView = counts !== undefined ? { window: deps.usage.window, counts } : undefined;
+		const text = expanded && row ? row.text : renderContextText(report, usageView);
 		try {
 			await deps.copy(text);
 			copied = true;
