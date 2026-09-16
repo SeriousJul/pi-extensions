@@ -78,6 +78,7 @@ export default defineConfig({
           { text: "sync internals", link: "/extensions/sync/internals" },
           { text: "usage", link: "/extensions/usage" },
           { text: "compress", link: "/extensions/compress" },
+          { text: "pruning", link: "/extensions/pruning" },
         ],
       },
       {

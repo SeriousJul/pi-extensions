@@ -1,11 +1,13 @@
 # Pi Extensions
 
-Extensions for the pi coding agent. Six today: Codegraph (semantic code
+Extensions for the pi coding agent. Seven today: Codegraph (semantic code
 search over the current project), Quota (subscription quota monitor), Model
 router (automatic recovery from quota exhaustion), Sync (device file
-sync), Usage (token and cost reporting across all sessions), and Compress
-(request-time compression of finished turns). The package also ships a
-Skill tree, kept in step with upstream repos by the skill sync script.
+sync), Usage (token and cost reporting across all sessions), Compress
+(request-time compression of finished turns), and Pruning (two-level
+context control: request-time pruning of large tool outputs in front of
+native compaction). The package also ships a Skill tree, kept in step with
+upstream repos by the skill sync script.
 
 ## Language
 

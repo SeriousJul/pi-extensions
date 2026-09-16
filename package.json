@@ -43,6 +43,7 @@
     "smoke:node": "node tests/codegraph/smoke/smoke-node.mjs",
     "e2e:context-cap": "node tests/context-cap/e2e-rpc.mjs",
     "e2e:initial-context": "node tests/initial-context/e2e-rpc.mjs",
+    "e2e:pruning": "node tests/pruning/e2e-rpc.mjs",
     "e2e:quota": "node tests/quota/e2e-rpc.mjs",
     "e2e:resource-toggle": "node tests/resource-toggle/e2e-rpc.mjs",
     "e2e:sync": "node tests/sync/e2e-gist.mjs",
