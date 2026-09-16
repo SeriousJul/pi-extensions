@@ -14,6 +14,7 @@ VitePress from the [`docs/`](docs/) folder.
 - **sync** - cross-device pi config sync: `/sync` plus the `pi-sync` CLI, three-way merge, v1 backend a secret GitHub Gist.
 - **compress** - replaces finished turns in outgoing requests with one short standing-in message; the session file stays intact.
 - **pruning** - two-level context control: prunes large tool outputs out of the request at pi's compaction threshold, and lets the prune gate cancel the compaction when pruning alone frees enough headroom.
+- **skills** - a curated skill tree loaded by pi from the package's `skills/` directory, with `npm run skills:update` to three-way-merge upstream changes into the copies. The `mattpocock/` skills come from [mattpocock/skills](https://github.com/mattpocock/skills), MIT licensed (the upstream `LICENSE` ships at `skills/mattpocock/LICENSE`).
 
 See the [pi packages docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md) and the [extensions docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md).
 
@@ -31,6 +32,38 @@ See the [pi packages docs](https://github.com/earendil-works/pi/blob/main/packag
 | usage | [docs](https://seriousjul.github.io/pi-extensions/extensions/usage.html) |
 | compress | [docs](https://seriousjul.github.io/pi-extensions/extensions/compress.html) |
 | pruning | [docs](https://seriousjul.github.io/pi-extensions/extensions/pruning.html) |
+
+## Skills
+
+The package ships a skill tree under `skills/`; pi loads it automatically
+when the package is installed. Layout is the manifest:
+
+- `skills/mattpocock/<bucket>/<name>` - skills tracked against the upstream
+  [mattpocock/skills](https://github.com/mattpocock/skills) repo, mirroring
+  its `skills/<bucket>/<name>` layout.
+- `skills/local/<name>` - local-only skills. Sync never reads, merges, or
+  reports them.
+
+Tweaking a skill is editing the file in this repo. `skills-manifest.json`
+holds one entry per skill source: repo URL, local root, and the Source pin
+(the upstream commit the whole tree last agreed on).
+
+```
+npm run skills:update            # fetch upstream, three-way-merge tracked skills
+npm run skills:add -- <bucket>/<name>   # adopt a new upstream skill
+```
+
+`skills:update` merges every tracked file with `git merge-file` (base = the
+pin, theirs = the fetched commit, ours = the local copy). Clean merges apply
+automatically. A file both sides changed comes back with git conflict
+markers; resolve it in place, and the pin advances on the next clean sync.
+Upstream deletes of a skill are reported as orphans and kept in place. New
+upstream skills are listed as offers and adopted only by `skills:add`.
+The Source pin advances only when a sync completes with no conflict and no
+orphan. The tool never commits, pushes, deletes, or renames.
+
+The tree also stays compatible with `npx skills@latest add
+SeriousJul/pi-extensions`.
 
 ## Layout
 
@@ -55,6 +88,9 @@ See the [pi packages docs](https://github.com/earendil-works/pi/blob/main/packag
 │   └── agents/       # agent skill files (excluded from the site navigation)
 ├── CONTEXT.md        # the domain glossary, single source (published on the site)
 ├── scripts/          # postinstall patch for the embedded codegraph library
+│   └── skills/       # skill sync (skills:update) and adopt (skills:add) tools
+├── skills/           # the skill tree pi loads from the package (mattpocock/ + local/)
+├── skills-manifest.json  # one entry per skill source: repo, local root, Source pin
 └── tests/            # vitest suite
 ```
 
