@@ -79,8 +79,8 @@ describe("usage TUI", () => {
     expect(lines[0]).toBe("pi usage");
     const text = lines.join("\n");
     expect(text).toContain("all time");
-    expect(text).toContain("8 events");
-    expect(totalLine(lines)).toContain("2660");
+    expect(text).toContain("9 events");
+    expect(totalLine(lines)).toContain("2900");
     expect(lines[lines.length - 1]).toContain("esc close");
   });
 
@@ -114,6 +114,8 @@ describe("usage TUI", () => {
   it("d shows the raw pairs behind the folded row", async () => {
     const rig = makeTui();
     await rig.settled;
+    // Move the cursor off the first row to the folded local-llamacpp row.
+    press(rig, "j");
     press(rig, "d");
     const text = rig.render().join("\n");
     expect(text).toContain("llama.cpp / unsloth/Qwen3.8-27B-GGUF:Q4_K_XL");
@@ -133,8 +135,12 @@ describe("usage TUI", () => {
   it("p cycles the provider filter", async () => {
     const rig = makeTui();
     await rig.settled;
-    press(rig, "p");
-    const lines = rig.render();
+    // Cycle the provider filter until it lands on local-llamacpp.
+    let lines = rig.render();
+    for (let i = 0; i < 6 && !lines.join("\n").includes("p local-llamacpp"); i += 1) {
+      press(rig, "p");
+      lines = rig.render();
+    }
     expect(lines.join("\n")).toContain("p local-llamacpp");
     expect(totalLine(lines)).toContain("2040");
   });
@@ -147,7 +153,7 @@ describe("usage TUI", () => {
     expect(totalLine(rig.render())).toContain("2440");
     for (let i = 0; i < 4; i++) press(rig, "\x7f");
     press(rig, "\x1b");
-    expect(totalLine(rig.render())).toContain("2660");
+    expect(totalLine(rig.render())).toContain("2900");
   });
 
   it("r rescans", async () => {

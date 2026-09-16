@@ -8,6 +8,8 @@ A pi package that bundles pi extensions. This package contains:
 - **model-router** - recovers a session from a provider usage-limit halt (switch to a fallback or wait for the reset, then resume).
 - **quota** - monitors the OpenAI ChatGPT plan quota: a footer line with the used windows, and a `/quota` detail view.
 - **sync** - cross-device pi config sync: `/sync` plus the `pi-sync` CLI, three-way merge, v1 backend a secret GitHub Gist.
+- **usage** - token and cost reporting across all sessions, as a TUI view, a CLI, and a `/usage` agent tool.
+- **compress** - replaces finished turns in outgoing requests with one short standing-in message; the session file stays intact.
 - **hello** - a minimal example extension.
 
 See the [pi packages docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md) and the [extensions docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md).
@@ -25,7 +27,8 @@ See the [pi packages docs](https://github.com/earendil-works/pi/blob/main/packag
 │   ├── model-router/ # multi-file extension, entry point at model-router/index.ts
 │   ├── quota/        # multi-file extension, entry point at quota/index.ts
 │   ├── sync/         # multi-file extension, entry point at sync/index.ts, plus the pi-sync CLI
-│   └── codegraph/    # multi-file extension, entry point at codegraph/index.ts
+│   ├── codegraph/    # multi-file extension, entry point at codegraph/index.ts
+│   └── compress/     # multi-file extension, entry point at compress/index.ts
 ├── docs/adr/         # architecture decision records
 ├── scripts/          # postinstall patch for the embedded codegraph library
 └── tests/            # vitest suite

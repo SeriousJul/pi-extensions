@@ -36,8 +36,10 @@ describe("scan", () => {
   it("counts each usage event exactly once across forked sessions", () => {
     const { events, files } = scanUsage(root);
     expect(files).toBe(3);
-    expect(events).toHaveLength(8);
-    expect(events.reduce((s, e) => s + e.total, 0)).toBe(2660);
+    // The compress-span line exists byte-identical in a.jsonl and its fork
+    // b.jsonl: it is counted once.
+    expect(events).toHaveLength(9);
+    expect(events.reduce((s, e) => s + e.total, 0)).toBe(2900);
   });
 
   it("does not count the compaction retained tail", () => {
@@ -55,6 +57,9 @@ describe("scan", () => {
     // file-order-last model (mistral).
     expect(byTotal.get(300)?.provider).toBe("vllm");
     expect(byTotal.get(300)?.model).toBe("qwen3-32b");
+    // A compress-span event carries its own compression model.
+    expect(byTotal.get(240)?.provider).toBe("anthropic");
+    expect(byTotal.get(240)?.model).toBe("claude-haiku");
   });
 
   it("skips an unparseable partial trailing line", () => {
@@ -66,8 +71,8 @@ describe("scan", () => {
     const { sessions } = scanUsage(root);
     const a = sessions.find((s) => s.file.endsWith("11111111.jsonl"));
     const b = sessions.find((s) => s.file.endsWith("22222222.jsonl"));
-    expect(a?.events).toBe(4);
-    expect(a?.total).toBe(2040);
+    expect(a?.events).toBe(5);
+    expect(a?.total).toBe(2280);
     expect(b?.events).toBe(1);
     expect(b?.total).toBe(20);
   });
@@ -166,13 +171,13 @@ describe("windows", () => {
 describe("aggregate", () => {
   it("sums all events with the all-time window", () => {
     const report = aggregate(events, { ...emptyReportOptions(), window: "all" }, nowSep16);
-    expect(report.events).toBe(8);
-    expect(report.total.total).toBe(2660);
-    expect(report.total.cost).toBeCloseTo(0.0935, 10);
-    expect(report.total.input).toBe(1125);
+    expect(report.events).toBe(9);
+    expect(report.total.total).toBe(2900);
+    expect(report.total.cost).toBeCloseTo(0.0965, 10);
+    expect(report.total.input).toBe(1325);
     expect(report.total.cacheRead).toBe(200);
     expect(report.total.cacheWrite).toBe(100);
-    expect(report.total.output).toBe(585);
+    expect(report.total.output).toBe(625);
     expect(report.total.reasoning).toBe(50);
   });
 
@@ -180,8 +185,8 @@ describe("aggregate", () => {
     // now is after the fork (09-20) and before the October session.
     const now = Date.parse("2026-09-21T12:00:00.000Z");
     const report = aggregate(events, { ...emptyReportOptions(), window: "30d" }, now);
-    expect(report.events).toBe(5);
-    expect(report.total.total).toBe(2060);
+    expect(report.events).toBe(6);
+    expect(report.total.total).toBe(2300);
   });
 
   it("the month filter overrides the window", () => {
@@ -197,6 +202,7 @@ describe("aggregate", () => {
     expect(providers.has("openai-codex")).toBe(true);
     expect(providers.has("vllm")).toBe(true);
     expect(providers.has("mistral")).toBe(true);
+    expect(providers.has("anthropic")).toBe(true);
 
     const byModel = aggregate(events, { ...emptyReportOptions(), window: "all", groupBy: "model" }, nowSep16);
     expect(byModel.rows.every((r) => r.provider === "")).toBe(true);
@@ -260,10 +266,10 @@ describe("render", () => {
     const text = renderReportText(report());
     expect(text).toContain("pi usage report");
     expect(text).toContain("all time");
-    expect(text).toContain("2,660");
+    expect(text).toContain("2,900");
     expect(text).toContain("TOTAL");
     expect(text).toContain("local-llamacpp");
-    expect(text).toContain("$0.09");
+    expect(text).toContain("$0.10");
   });
 
   it("compact columns merge cache read and write", () => {
