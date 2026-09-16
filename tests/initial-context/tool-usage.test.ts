@@ -3,7 +3,7 @@
  * session tree, fork dedupe, the mcp subtool split, the windows, and the
  * per-file mtime+size cache.
  */
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync, appendFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -243,6 +243,48 @@ describe("createToolUsageSource", () => {
 			read: 1,
 			"skill:domain-modeling": 1,
 		});
+	});
+
+	it("drops a cache with a corrupt per-file entry and re-scans from empty", async () => {
+		const root = makeTree();
+		const cacheFile = join(tmp, "cache.json");
+		const first = makeSource(root, cacheFile);
+		const cold = await first.counts();
+		expect(cold.scanned).toBe(3);
+
+		// Corrupt one entry: drop `recent` and `lineHashes`.
+		const parsed = JSON.parse(readFileSync(cacheFile, "utf8"));
+		delete parsed.files[join(root, "proj", "a.jsonl")].recent;
+		delete parsed.files[join(root, "proj", "a.jsonl")].lineHashes;
+		writeFileSync(cacheFile, JSON.stringify(parsed));
+
+		// A shape-invalid entry reads as an empty cache: a full re-scan with
+		// no throw and the exact same counts.
+		const next = makeSource(root, cacheFile);
+		const counts = await next.counts();
+		expect(counts.scanned).toBe(3);
+		expect(counts.counts).toEqual(cold.counts);
+	});
+
+	it("settles a failed initial scan as an error, never an unhandled rejection", async () => {
+		// The TUI never awaits counts(); a scan that rejects at the initial
+		// kick must not leak an unhandled rejection. A subscriber that throws
+		// inside the publish makes the first scan reject; without the no-op
+		// handler on the initial kick, the rejection is an unhandled error
+		// and fails the run.
+		const root = makeTree();
+		const source = makeSource(root, join(tmp, "cache.json"));
+		source.subscribe(() => {
+			throw new Error("subscriber boom");
+		});
+		// Wait on the snapshot, like the TUI does; never attach a handler to
+		// the scan promise itself.
+		const deadline = Date.now() + 1000;
+		while (source.snapshot().phase !== "error" && Date.now() < deadline) {
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		expect(source.snapshot().phase).toBe("error");
+		expect(source.snapshot().error).toBe("subscriber boom");
 	});
 
 	it("notifies subscribers when the scan settles and when the window changes", async () => {

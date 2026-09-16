@@ -113,10 +113,35 @@ function hashLine(line: string): string {
 	return (h1 >>> 0).toString(16).padStart(8, "0") + (h2 >>> 0).toString(16).padStart(8, "0");
 }
 
+/**
+ * The shape of one cached file entry. A corrupt entry reads as an empty
+ * cache (a full re-scan), so a missing field can never throw in the
+ * aggregate or in the seen-set build at source creation.
+ */
+function isFileCache(entry: unknown): entry is FileCache {
+	if (!entry || typeof entry !== "object") return false;
+	const file = entry as Record<string, unknown>;
+	if (typeof file.mtimeMs !== "number" || typeof file.size !== "number") return false;
+	if (typeof file.counts !== "object" || file.counts === null) return false;
+	for (const n of Object.values(file.counts)) if (typeof n !== "number") return false;
+	if (!Array.isArray(file.recent)) return false;
+	for (const event of file.recent) {
+		if (!Array.isArray(event) || event.length !== 2 || typeof event[0] !== "number" || typeof event[1] !== "string") return false;
+	}
+	if (!Array.isArray(file.lineHashes)) return false;
+	for (const hash of file.lineHashes) if (typeof hash !== "string") return false;
+	return true;
+}
+
 function loadCache(file: string): ToolUsageCache {
 	try {
 		const raw = JSON.parse(readFileSync(file, "utf8")) as ToolUsageCache;
-		if (raw && raw.v === 2 && typeof raw.files === "object" && raw.files) return raw;
+		if (raw && raw.v === 2 && typeof raw.files === "object" && raw.files) {
+			for (const entry of Object.values(raw.files)) {
+				if (!isFileCache(entry)) return { v: 2, files: {} };
+			}
+			return raw;
+		}
 	} catch {
 		// Missing or torn cache file: start empty.
 	}
@@ -310,7 +335,11 @@ export function createToolUsageSource(options: ToolUsageSourceOptions = {}): Too
 	};
 	// The source is created on the first /ctx, so the scan starts on first
 	// use, never at extension load, and always runs in the background.
-	kick();
+	kick().catch(() => {
+		// The snapshot already carries the error. The TUI never awaits
+		// counts(), so without this handler a failed scan would be an
+		// unhandled rejection in the agent process.
+	});
 
 	/** The settled counts for the window that is current when it resolves. */
 	const counts = (): Promise<ToolUsageCounts> =>
