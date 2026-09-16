@@ -40,7 +40,7 @@
     "vitest": "^4.1.11"
   },
   "scripts": {
-    "postinstall": "node scripts/patch-codegraph.mjs",
+    "postinstall": "node scripts/patch-codegraph.mjs && node scripts/welcome.mjs",
     "docs:dev": "npm --prefix docs run dev",
     "docs:build": "npm --prefix docs run build",
     "typecheck": "tsc --noEmit",
