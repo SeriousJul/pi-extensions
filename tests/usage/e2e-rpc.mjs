@@ -96,7 +96,10 @@ console.log("ok: cli rejects an unknown window");
 
 function startRpc() {
 	const cwd = mkdtempSync(join(tmpdir(), "usage-e2e-"));
-	const child = spawn(process.execPath, [piCli, "--mode", "rpc", "--extension", extensionPath], {
+	// --no-extensions: on a machine where this repo is installed as a pi
+	// package, discovery loads a second copy and the duplicate command name
+	// (usage:1) stops /usage resolving.
+	const child = spawn(process.execPath, [piCli, "--mode", "rpc", "--no-extensions", "--extension", extensionPath], {
 		cwd,
 		env: withFixtureEnv(),
 		stdio: ["pipe", "pipe", "pipe"],
