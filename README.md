@@ -12,6 +12,7 @@ VitePress from the [`docs/`](docs/) folder.
 - **sync** - cross-device pi config sync: `/sync` plus the `pi-sync` CLI, three-way merge, v1 backend a secret GitHub Gist.
 - **usage** - token and cost reporting across all sessions, as a TUI view, a CLI, and a `/usage` agent tool.
 - **compress** - replaces finished turns in outgoing requests with one short standing-in message; the session file stays intact.
+- **pruning** - two-level context control: prunes large tool outputs out of the request at pi's compaction threshold, and lets the prune gate cancel the compaction when pruning alone frees enough headroom.
 - **hello** - a minimal example extension.
 
 See the [pi packages docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md) and the [extensions docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md).
@@ -29,6 +30,7 @@ See the [pi packages docs](https://github.com/earendil-works/pi/blob/main/packag
 | sync | [user page](https://seriousjul.github.io/pi-extensions/extensions/sync/) / [internals](https://seriousjul.github.io/pi-extensions/extensions/sync/internals.html) |
 | usage | [docs](https://seriousjul.github.io/pi-extensions/extensions/usage.html) |
 | compress | [docs](https://seriousjul.github.io/pi-extensions/extensions/compress.html) |
+| pruning | [docs](https://seriousjul.github.io/pi-extensions/extensions/pruning.html) |
 | hello | covered by the [develop page](https://seriousjul.github.io/pi-extensions/develop.html) |
 
 ## Layout
@@ -45,7 +47,8 @@ See the [pi packages docs](https://github.com/earendil-works/pi/blob/main/packag
 │   ├── quota/        # multi-file extension, entry point at quota/index.ts
 │   ├── sync/         # multi-file extension, entry point at sync/index.ts, plus the pi-sync CLI
 │   ├── codegraph/    # multi-file extension, entry point at codegraph/index.ts
-│   └── compress/     # multi-file extension, entry point at compress/index.ts
+│   ├── compress/     # multi-file extension, entry point at compress/index.ts
+│   └── pruning/      # multi-file extension, entry point at pruning/index.ts
 ├── docs/             # VitePress site root, canonical source for all documentation
 │   ├── .vitepress/   # site config; its own package.json + lockfile for site tooling
 │   ├── adr/          # architecture decision records
