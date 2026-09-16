@@ -1,0 +1,8 @@
+{
+  "mattpocock": {
+    "repo": "https://github.com/mattpocock/skills.git",
+    "root": "skills/mattpocock",
+    "upstreamRoot": "skills",
+    "pin": "959a8e9f1edc3adbe2f7e3054bb6fbefa6696260"
+  }
+}

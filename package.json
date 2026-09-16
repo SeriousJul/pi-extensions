@@ -9,7 +9,9 @@
   ],
   "files": [
     "extensions",
-    "scripts"
+    "scripts",
+    "skills",
+    "skills-manifest.json"
   ],
   "bin": {
     "pi-sync": "./extensions/sync/cli.mjs",
@@ -46,8 +48,11 @@
     "e2e:pruning": "node tests/pruning/e2e-rpc.mjs",
     "e2e:quota": "node tests/quota/e2e-rpc.mjs",
     "e2e:resource-toggle": "node tests/resource-toggle/e2e-rpc.mjs",
+    "e2e:skills": "node tests/skills/e2e-update.mjs",
     "e2e:sync": "node tests/sync/e2e-gist.mjs",
-    "e2e:usage": "node tests/usage/e2e-rpc.mjs"
+    "e2e:usage": "node tests/usage/e2e-rpc.mjs",
+    "skills:update": "node scripts/skills/update.mjs",
+    "skills:add": "node scripts/skills/add.mjs"
   },
   "dependencies": {
     "@colbymchenry/codegraph": "^1.6.0",

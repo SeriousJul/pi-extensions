@@ -145,6 +145,9 @@ vite.config.ts.timestamp-*
 # codegraph index (per-worktree, disposable; see extensions/codegraph)
 .codegraph/
 
+# skill sync: per-source upstream git cache (see scripts/skills)
+.skill-cache/
+
 # docs site: glossary.md is generated from the repo-root CONTEXT.md by
 # docs/prepare-glossary.mjs before every build
 /docs/glossary.md
