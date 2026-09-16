@@ -3,14 +3,17 @@
  * temp directory.
  *
  * a.jsonl: assistant, model change, second assistant, a tool result with
- *         nested LLM usage, and a compaction with a retained tail.
- * b.jsonl: a fork of a.jsonl (byte-identical copied lines) plus one new
- *         event on openai-codex.
+ *         nested LLM usage, a compaction with a retained tail, and a
+ *         compress-span custom entry (the compress extension's persisted
+ *         compression call).
+ * b.jsonl: a fork of a.jsonl (byte-identical copied lines, including the
+ *         compress-span line) plus one new event on openai-codex.
  * c.jsonl: a branch back to the first model, plus an unparseable partial
  *         trailing line.
  *
- * Totals: a = 2,040 tokens (4 events), b = 20 (1 new event), c = 600
- * (3 events). Grand total 2,660 tokens, 0.0935 cost, 8 events.
+ * Totals: a = 2,280 tokens (5 events), b = 20 (1 new event; the copied
+ * span line is deduped), c = 600 (3 events). Grand total 2,900 tokens,
+ * 0.0965 cost, 9 events.
  */
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,6 +28,22 @@ export const mc1Line = L({
   timestamp: "2026-09-15T08:00:01.000Z",
   provider: "llama.cpp",
   modelId: "unsloth/Qwen3.8-27B-GGUF:Q4_K_XL",
+});
+export const spanLine = L({
+  type: "custom",
+  customType: "compress-span",
+  id: "aaaa1117",
+  parentId: "aaaa1112",
+  timestamp: "2026-09-16T12:00:00.000Z",
+  data: {
+    v: 1,
+    entryIds: ["aaaa1112"],
+    text: "What was asked: fix the build. What was done: patched the deps.",
+    model: { provider: "anthropic", id: "claude-haiku" },
+    usage: { input: 200, output: 40, totalTokens: 240, cost: { total: 0.003 } },
+    tokensBefore: 1850,
+    tokensAfter: 60,
+  },
 });
 export const m1Line = L({
   type: "message",
@@ -90,6 +109,9 @@ export function buildFixtureRoot(): string {
       usage: { input: 10, output: 5, totalTokens: 15, cost: { total: 0.001 } },
       retainedTail: [{ message: { role: "assistant", usage: { totalTokens: 777, cost: { total: 0.777 } } } }],
     }),
+    // A persisted compression call: its usage is counted as an event, with
+    // the compression model taken from the entry's own data.
+    spanLine,
   ];
   writeFileSync(join(dirA, "2026-09-15_11111111.jsonl"), aLines.join("\n") + "\n");
 
@@ -105,6 +127,9 @@ export function buildFixtureRoot(): string {
       timestamp: "2026-09-20T12:05:00.000Z",
       message: { role: "assistant", provider: "openai-codex", model: "gpt-5.6-luna", usage: { input: 10, output: 10, totalTokens: 20, cost: { total: 0.05 } } },
     }),
+    // A byte-identical copy of a.jsonl's compress-span line: the fork
+    // dedupe must count it only once.
+    spanLine,
   ];
   writeFileSync(join(dirA, "2026-09-20_22222222.jsonl"), bLines.join("\n") + "\n");
 

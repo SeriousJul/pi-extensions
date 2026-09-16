@@ -2,11 +2,13 @@
  * The Usage scan: one pass over every session file that extracts every
  * usage event exactly once.
  *
- * pi records usage on three kinds of entries:
+ * pi records usage on four kinds of entries:
  *
  * - assistant messages, which carry their own provider and model
  * - tool results that did nested LLM work, which carry usage only
  * - compaction and branch summary entries, which carry usage only
+ * - compress-span custom entries (the compress extension's persisted
+ *   compression calls), which carry usage plus the compression model
  *
  * Forked and cloned sessions copy their ancestor's entry lines
  * byte-identical, so a usage line is counted once per distinct line
@@ -37,6 +39,11 @@ interface SessionEntry {
   provider?: string;
   modelId?: string;
   usage?: UsageFields;
+  customType?: string;
+  data?: {
+    model?: { provider?: string; id?: string };
+    usage?: UsageFields;
+  };
   message?: {
     role?: string;
     provider?: string;
@@ -137,6 +144,10 @@ function scanFile(text: string, file: string, seen: Set<string>, out: { events: 
       model = entry.message.model;
     } else if ((entry.type === "compaction" || entry.type === "branch_summary") && entry.usage) {
       usage = entry.usage;
+    } else if (entry.type === "custom" && entry.customType === "compress-span" && entry.data?.usage) {
+      usage = entry.data.usage;
+      provider = entry.data.model?.provider;
+      model = entry.data.model?.id;
     }
     if (!usage) continue;
 
