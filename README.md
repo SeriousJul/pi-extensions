@@ -65,44 +65,64 @@ directories and list them in the `pi` manifest in `package.json`.
 
 ## Install
 
-Install into user settings (default):
+Install from the git repository into user settings (default):
 
 ```bash
-pi install /absolute/path/to/pi-extensions
+pi install https://github.com/SeriousJul/pi-extensions
 ```
 
 Or into project settings, shared with the team:
 
 ```bash
-pi install -l /absolute/path/to/pi-extensions
+pi install -l https://github.com/SeriousJul/pi-extensions
 ```
 
-Git URLs work too. Remove with `pi remove <package>`, list with `pi list`.
-
-After any install, run `npm install` in the package directory once. The
-`postinstall` step (`scripts/patch-codegraph.mjs`) prepares the pinned
-`@colbymchenry/codegraph` package for the runtime pi embeds. The patch is
-idempotent and uses absolute paths, so re-run `npm install` if you move the
-repo. See the [codegraph internals page](https://seriousjul.github.io/pi-extensions/extensions/codegraph/internals.html)
+pi clones the repository to
+`~/.pi/agent/git/github.com/SeriousJul/pi-extensions`
+(`.pi/git/github.com/SeriousJul/pi-extensions` for project settings) and
+runs `npm install` for you. The `postinstall` step
+(`scripts/patch-codegraph.mjs`) prepares the pinned
+`@colbymchenry/codegraph` package for the runtime pi embeds. See the
+[codegraph internals page](https://seriousjul.github.io/pi-extensions/extensions/codegraph/internals.html)
 for what the patch does and why.
+
+Update with `pi update --extensions`. Remove with
+`pi remove https://github.com/SeriousJul/pi-extensions`, list with `pi list`.
+
+To develop from a local checkout instead, see [Develop](#develop).
 
 ### Develop
 
-Test a package or a single extension in a pi session without installing:
+Work from a local checkout. Install its dependencies once; the
+`postinstall` step applies the codegraph patch. The patch is idempotent and
+uses absolute paths, so re-run `npm install` if you move the checkout.
+
+```bash
+npm install
+```
+
+Test the package or a single extension in a pi session without installing:
 
 ```bash
 pi -e /absolute/path/to/pi-extensions
 pi -e /absolute/path/to/pi-extensions/extensions/tools.ts
 ```
 
+Or install the checkout into settings. pi does not copy local paths, so the
+checkout stays in use where it is:
+
 ```bash
-npm install
+pi install /absolute/path/to/pi-extensions      # user settings
+pi install -l /absolute/path/to/pi-extensions   # project settings
+```
+
+```bash
 npm run typecheck
 npm test
 ```
 
-The full developer walkthrough (minimal example, multi-file layout, test
-commands) is on the [develop page](https://seriousjul.github.io/pi-extensions/develop.html).
+The full developer walkthrough (minimal example, multi-file layout, local
+install, test commands) is on the [develop page](https://seriousjul.github.io/pi-extensions/develop.html).
 
 ### Docs site
 

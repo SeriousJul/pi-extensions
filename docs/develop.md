@@ -1,7 +1,8 @@
 # Develop
 
 How to add an extension to this package: the minimal example, the
-multi-file layout, and the test commands.
+multi-file layout, how to use the package from a local checkout, and the
+test commands.
 
 ## Layout
 
@@ -58,6 +59,32 @@ extension needs third party npm packages, add them to `dependencies` in
 `package.json` and run `npm install`. Runtime installs are production
 installs, so `devDependencies` are not available when the package is
 installed by pi.
+
+## Local install
+
+Work from a checkout instead of the git install. Install the dependencies
+once; the `postinstall` step applies the codegraph patch. The patch is
+idempotent and uses absolute paths, so re-run `npm install` if you move the
+checkout.
+
+```bash
+npm install
+```
+
+Load the checkout into a pi session without installing:
+
+```bash
+pi -e /absolute/path/to/pi-extensions                    # whole package
+pi -e /absolute/path/to/pi-extensions/extensions/hello.ts  # one extension
+```
+
+Or point settings at the checkout. pi does not copy local paths, so the
+checkout stays in use where it is:
+
+```bash
+pi install /absolute/path/to/pi-extensions     # user settings
+pi install -l /absolute/path/to/pi-extensions  # project settings
+```
 
 ## Test
 

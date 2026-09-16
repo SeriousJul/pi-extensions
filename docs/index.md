@@ -18,27 +18,28 @@ hero:
 
 ## Install
 
-Install into user settings (default):
+Install from the git repository into user settings (default):
 
 ```bash
-pi install /absolute/path/to/pi-extensions
+pi install https://github.com/SeriousJul/pi-extensions
 ```
 
 Or into project settings, shared with the team:
 
 ```bash
-pi install -l /absolute/path/to/pi-extensions
+pi install -l https://github.com/SeriousJul/pi-extensions
 ```
 
-Git URLs work too. Remove with `pi remove <package>`, list with `pi list`.
-
-After any install, run `npm install` in the package directory once. The
-`postinstall` step prepares the pinned codegraph package for the runtime pi
-embeds.
+pi clones the repository and runs `npm install` for you, which also applies
+the codegraph postinstall patch. Update with `pi update --extensions`.
+Remove with `pi remove https://github.com/SeriousJul/pi-extensions`,
+list with `pi list`.
 
 ### Develop
 
-Test a package or a single extension in a pi session without installing:
+Work from a local checkout: run `npm install` in it (the postinstall step
+applies the codegraph patch), then load it into a pi session without
+installing:
 
 ```bash
 pi -e /absolute/path/to/pi-extensions
@@ -49,6 +50,9 @@ npm install
 npm run typecheck
 npm test
 ```
+
+The full walkthrough, including local install, is on the
+[develop page](/develop).
 
 ## Extensions
 
