@@ -44,71 +44,118 @@ interface SessionState {
 	inFlight: Set<string>;
 	/** Span keys already warned about, so a failing span warns once. */
 	warned: Set<string>;
-	/** True once the baseline mismatch was reported, so it warns once. */
-	mismatchNotified: boolean;
+	/** Failed compression attempts per span key. */
+	attempts: Map<string, number>;
+	/** Span keys that will not earn another call this session: the input
+	 * does not fit the compression model's context window, or the retry cap
+	 * was hit. Cleared when the compression model changes. */
+	gaveUp: Set<string>;
+	/** True once the baseline mismatch was reported, so it warns once. The
+	 * check itself re-runs on every request; nothing latches off. */
+	mismatchWarned: boolean;
+	/** True once session_shutdown fired: queued jobs must not start a call
+	 * or touch the session file after that. */
+	closed: boolean;
 	/** The background queue: one compression call at a time. */
 	queue: Promise<void>;
 }
 
 let state: SessionState | null = null;
 
+/** A span that fails this many calls in a row stops earning calls for the
+ * session; its turn stays raw until the compression model changes. */
+const MAX_COMPRESS_ATTEMPTS = 3;
+/** Headroom for the system prompt and call overhead when a span's
+ * serialized input is checked against the compression model's context
+ * window. */
+const CONTEXT_MARGIN_TOKENS = 1024;
+
 // ---------------------------------------------------------------------------
-// Session context rebuild
+// Session context reconciliation
 //
 // The context hook must know exactly which messages pi is about to send, or
 // it stays out of the way. Rebuild the context from the session entries with
 // pi's own projection (buildContextEntries plus sessionEntryToContextMessages:
 // compaction-aware with the retained tail, custom messages projected in, null
-// content normalized), then require a byte-for-byte match with the event's
-// message list before rewriting anything.
+// content normalized), then reconcile it against the event's message list.
 //
-// One rule comes from pi's agent state instead of the session file: pi
-// removes auto-retry error messages from state (it keeps them in the file
-// for history), so the baseline drops assistant messages with stopReason
-// "error". Plain interrupted ("aborted") messages stay: pi keeps those in
-// both the file and the state.
+// One rule comes from pi's agent state instead of the session file: while
+// recovering from a failed call, pi removes the failed assistant message
+// from state (it keeps it in the file for history). A retried error is
+// removed when the auto-retry starts; a truncated response is removed on
+// overflow recovery. A non-retryable error is kept in state and goes out on
+// the next request. Which variant applied to a given message is not
+// knowable from the session file, so the reconciliation accepts either per
+// message: every projected message must match pi's outgoing list in order,
+// and only a failed assistant message (stopReason "error" or "length") may
+// be absent. Plain interrupted ("aborted") messages must match: pi keeps
+// those in state. When the reconciliation holds, the kept messages are
+// exactly pi's outgoing list, so the swap only ever replaces whole span
+// ranges inside it.
+//
+// Cost: the check stringifies the projection and the outgoing list, so it
+// is O(session size) per request. That is fine at current session sizes;
+// if it stops being, cache the projection string per immutable entry ID.
 // ---------------------------------------------------------------------------
 
-function isBaselineMessage(message: AgentMessage): boolean {
-	return !(message.role === "assistant" && message.stopReason === "error");
+function isFailedAssistantMessage(message: AgentMessage): boolean {
+	return message.role === "assistant" && (message.stopReason === "error" || message.stopReason === "length");
 }
 
-function entryBaselineMessages(entry: SessionEntry): AgentMessage[] {
-	return sessionEntryToContextMessages(entry).filter(isBaselineMessage);
+function sameMessage(a: AgentMessage, b: AgentMessage): boolean {
+	return JSON.stringify(a) === JSON.stringify(b);
 }
 
-/** The outgoing baseline: pi's own context projection over the compaction-
- * aware branch, minus the assistant messages pi removed from agent state.
+/** Reconcile the entries' projection with pi's outgoing messages and split
+ * the kept messages into the preamble and the user-started turns, in
+ * original order.
+ *
+ * Returns null on any divergence other than missing failed assistant
+ * messages (see above). Span identity follows the full projection: an entry
+ * that projected any message keeps its ID in the turn, even when pi removed
+ * all of its messages, so a span's key is the same whether the request came
+ * from prewarm (full projection) or from the context hook. Returns null
+ * when the branch is empty.
+ *
  * Exported for the wiring regression tests. */
-export function contextBaseline(manager: { buildContextEntries(): SessionEntry[] }): AgentMessage[] {
-	return manager.buildContextEntries().flatMap(entryBaselineMessages);
-}
-
-/** Split the session context into the preamble (messages before the first
- * user turn) and the user-started turns, in original order. Returns null
- * when the branch is empty. */
-function buildTurnRequest(ctx: ExtensionContext): TurnRequest | null {
-	const entries = ctx.sessionManager.buildContextEntries();
+export function reconcileContext(entries: SessionEntry[], outgoing: AgentMessage[]): TurnRequest | null {
 	if (entries.length === 0) return null;
-
 	const preamble: Turn = { entryIds: [], messages: [] };
 	const turns: Turn[] = [];
 	let current: Turn | null = null;
+	let j = 0;
 	for (const entry of entries) {
-		const messages = entryBaselineMessages(entry);
-		if (messages.length === 0) continue;
+		const projected = sessionEntryToContextMessages(entry);
+		if (projected.length === 0) continue;
+		const kept: AgentMessage[] = [];
+		for (const message of projected) {
+			if (j < outgoing.length && sameMessage(message, outgoing[j])) {
+				kept.push(message);
+				j += 1;
+			} else if (!isFailedAssistantMessage(message)) {
+				return null;
+			}
+			// else: pi removed this failed message from agent state
+		}
 		if (entry.type === "message" && entry.message.role === "user") {
-			current = { entryIds: [entry.id], messages };
+			current = { entryIds: [entry.id], messages: kept };
 			turns.push(current);
 		} else if (current) {
 			current.entryIds.push(entry.id);
-			current.messages.push(...messages);
+			current.messages.push(...kept);
 		} else {
 			preamble.entryIds.push(entry.id);
-			preamble.messages.push(...messages);
+			preamble.messages.push(...kept);
 		}
 	}
+	if (j !== outgoing.length) return null;
 	return { preamble, turns };
+}
+
+/** The request over the full projection: every projected message kept. Used
+ * where pi's outgoing list is not available (prewarm, the startup prune). */
+function fullRequest(entries: SessionEntry[]): TurnRequest | null {
+	return reconcileContext(entries, entries.flatMap((entry) => sessionEntryToContextMessages(entry)));
 }
 
 // ---------------------------------------------------------------------------
@@ -174,6 +221,12 @@ function shortMessage(err: unknown): string {
 	return String(err);
 }
 
+function warnSpan(s: SessionState, message: string): void {
+	if (s.ctx.hasUI) {
+		s.ctx.ui.notify(message, "warning");
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Background compression
 // ---------------------------------------------------------------------------
@@ -186,15 +239,26 @@ function configOf(settings: CompressSettings) {
 	};
 }
 
+/** Release the span's queue slot. Done in every outcome: a cached span is
+ * skipped by isCached, and a span that left and came back through a branch
+ * round trip must not stay suppressed by a stale key. */
+function releaseSlot(s: SessionState, job: CompressionJob): void {
+	s.inFlight.delete(job.spanKey);
+}
+
 /** Run one compression job on the queue. Resolves when the call settles, so
  * the queue runs one call at a time. */
 async function runJob(s: SessionState, job: CompressionJob): Promise<void> {
 	const runner = s.runner;
 	const model = s.model;
-	if (!runner || !model) return;
-	if (s.core.isCached(job.spanKey)) return;
+	// A shut-down state must not start a call or touch the session file.
+	if (s.closed || !runner || !model) return releaseSlot(s, job);
+	if (s.core.isCached(job.spanKey)) return releaseSlot(s, job);
 	try {
 		const result = await runner.compress(job);
+		// The session may have shut down while the call ran; the span entry
+		// would land in a file this state no longer owns.
+		if (s.closed) return;
 		const span: SpanRecord = {
 			v: 1,
 			entryIds: job.entryIds,
@@ -207,30 +271,46 @@ async function runJob(s: SessionState, job: CompressionJob): Promise<void> {
 		s.core.record(span);
 		appendSpanEntry(s.pi, span);
 		s.warned.delete(job.spanKey);
+		s.attempts.delete(job.spanKey);
 		updateStatus();
 	} catch (err) {
-		// The span stays raw and retries on the next turn_end. Warn once per
-		// span so a persistently failing model does not spam.
-		if (!s.warned.has(job.spanKey)) {
+		if (s.closed) return;
+		const attempts = (s.attempts.get(job.spanKey) ?? 0) + 1;
+		s.attempts.set(job.spanKey, attempts);
+		if (attempts >= MAX_COMPRESS_ATTEMPTS) {
+			// The retry cap was hit: the span stays raw and stops earning
+			// calls for the session, so a call that always fails never pays
+			// again. Changing the compression model resets the counters.
+			s.gaveUp.add(job.spanKey);
+			warnSpan(s, `compress: compression failed ${attempts} calls in a row; the affected turn stays raw and will not be retried (${shortMessage(err)})`);
+		} else if (!s.warned.has(job.spanKey)) {
+			// The span stays raw and retries on the next turn_end. Warn once
+			// per span so a persistently failing model does not spam.
 			s.warned.add(job.spanKey);
-			if (s.ctx.hasUI) {
-				s.ctx.ui.notify(`compress: compression call failed; the affected turn stays raw until a retry succeeds (${shortMessage(err)})`, "warning");
-			}
+			warnSpan(s, `compress: compression call failed; the affected turn stays raw until a retry succeeds (${shortMessage(err)})`);
 		}
 	}
-	// Release the queue slot in both outcomes: a cached span is skipped by
-	// isCached, and a span that left and came back through a branch round trip
-	// must not stay suppressed by a stale key.
-	s.inFlight.delete(job.spanKey);
+	return releaseSlot(s, job);
 }
 
 /** Queue the jobs for every uncached span, after each finished turn. */
 function prewarm(s: SessionState): void {
-	const request = buildTurnRequest(s.ctx);
+	const model = s.model;
+	if (!model) return;
+	const request = fullRequest(s.ctx.sessionManager.buildContextEntries());
 	if (!request) return;
 	const plan = s.core.plan(request, configOf(s.settings));
 	for (const job of plan.jobs) {
-		if (s.inFlight.has(job.spanKey)) continue;
+		if (s.inFlight.has(job.spanKey) || s.gaveUp.has(job.spanKey)) continue;
+		const inputTokens = estimateMessageTokens({ role: "user", content: job.input, timestamp: 0 });
+		if (inputTokens + job.capTokens + CONTEXT_MARGIN_TOKENS > model.contextWindow) {
+			// The span's input will never fit the compression model's context
+			// window, so a call would always fail: stop paying for it and
+			// say so once.
+			s.gaveUp.add(job.spanKey);
+			warnSpan(s, "compress: one turn is larger than the compression model's context window; it stays raw");
+			continue;
+		}
 		s.inFlight.add(job.spanKey);
 		s.queue = s.queue.then(() => runJob(s, job));
 	}
@@ -281,7 +361,11 @@ async function setModel(ctx: ExtensionContext, ref: ModelRef | null): Promise<vo
 	s.settings = { ...s.settings, model: ref };
 	s.model = model;
 	s.runner = runner;
+	// A new compression model gets a fresh start: the old model's failures
+	// say nothing about this one.
 	s.warned.clear();
+	s.attempts.clear();
+	s.gaveUp.clear();
 	const result = writeCompressModel(ctx.cwd, ref);
 	if (!result.ok) {
 		ctx.ui.notify(`compress: model applied for this session, but the setting could not be saved: ${result.error}`, "error");
@@ -313,6 +397,11 @@ export default function compressExtension(pi: ExtensionAPI): void {
 			serializeTurn,
 		});
 		core.restore(restoredSpans(ctx));
+		// Prune restored spans whose entries left the branch before the first
+		// status update, so the line does not show spans the first plan will
+		// drop.
+		const startupRequest = fullRequest(ctx.sessionManager.buildContextEntries());
+		if (startupRequest) core.plan(startupRequest, configOf(settings));
 
 		let model: Model<Api> | null = null;
 		let runner: CompressionRunner | null = null;
@@ -336,27 +425,27 @@ export default function compressExtension(pi: ExtensionAPI): void {
 			runner,
 			inFlight: new Set(),
 			warned: new Set(),
-			mismatchNotified: false,
+			attempts: new Map(),
+			gaveUp: new Set(),
+			mismatchWarned: false,
+			closed: false,
 			queue: Promise.resolve(),
 		};
 		updateStatus();
 	});
 
-	// Rewrite outgoing requests: cached spans become their form message.
+	// Rewrite outgoing requests: cached spans become their form message. The
+	// reconciliation re-runs on every request and never latches off; a
+	// mismatch only pauses compression for that request.
 	pi.on("context", (event) => {
 		const s = state;
 		if (!s || !s.model) return;
-		const request = buildTurnRequest(s.ctx);
-		if (!request) return;
-		const baseline = [request.preamble, ...request.turns].flatMap((t) => t.messages);
-		if (JSON.stringify(baseline) !== JSON.stringify(event.messages)) {
-			// Stay out of the way, but do not fail silently: report once that
-			// the extension is inert.
-			if (!s.mismatchNotified) {
-				s.mismatchNotified = true;
-				if (s.ctx.hasUI) {
-					s.ctx.ui.notify("compress: the rebuilt session context does not match pi's outgoing messages; compression stays off for this session", "warning");
-				}
+		const request = reconcileContext(s.ctx.sessionManager.buildContextEntries(), event.messages);
+		if (!request) {
+			// Stay out of the way, but do not fail silently: report once.
+			if (!s.mismatchWarned) {
+				s.mismatchWarned = true;
+				warnSpan(s, "compress: the rebuilt session context does not match pi's outgoing messages; compression is paused until they match again");
 			}
 			return;
 		}
@@ -368,11 +457,15 @@ export default function compressExtension(pi: ExtensionAPI): void {
 	// After each finished turn, compress the spans that are still raw.
 	pi.on("turn_end", () => {
 		const s = state;
-		if (!s || !s.model) return;
+		if (!s) return;
 		prewarm(s);
 	});
 
 	pi.on("session_shutdown", () => {
+		// Mark the state closed before dropping it so a queued job that is
+		// still draining after the shutdown stays out of the session file and
+		// does not start a new call.
+		if (state) state.closed = true;
 		state = null;
 	});
 

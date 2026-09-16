@@ -27,4 +27,7 @@ duplicates data the session file already can hold in a custom entry.
 
 Cost accepted: a failed compression leaves the span raw, warns once, and
 retries on the next turn end; the outgoing request until then carries the
-full span.
+full span. A span that fails three calls in a row stops earning calls and
+stays raw for the session, and a span whose serialized input does not fit
+the compression model's context window never earns a call, so a span that
+cannot compress cannot pay for it forever.

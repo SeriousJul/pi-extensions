@@ -24,10 +24,17 @@ is set with `/compression-model`.
   shown. `maxTokens` caps the form at `spanCapTokens`.
 - **The swap.** The next outgoing request replaces each cached span with one
   user message: a fixed lossy-view frame, then the form. The extension
-  rewrites a request only when it can rebuild pi's exact message list from
-  the session entries; anything it cannot reproduce goes out untouched.
-- **Failure.** A failed compression call leaves the span raw, warns once per
-  span, and retries after the next turn.
+  rewrites a request only when it can reconcile pi's exact message list from
+  the session entries: every message must match in order, and only failed
+  assistant messages (the ones pi removes from its state while retrying a
+  call) may be absent. Anything else it cannot reproduce goes out
+  untouched, and the check re-runs on every request.
+- **Failure.** A failed compression call leaves the span raw and retries
+  after the next turn, with one warning per span. A span that fails three
+  calls in a row stops earning calls and stays raw for the session; changing
+  the compression model resets the counter. A span whose serialized input
+  does not fit the compression model's context window (input plus the cap
+  plus a 1k-token margin) never earns a call.
 - **Restart.** Spans already have their persisted form, so no compression is
   re-run after a restart.
 - **Usage.** Each compression call is a normal LLM event: its usage is in
@@ -96,4 +103,4 @@ tokens saved, for example `compress: 3 spans, 12.4k saved`.
 
 Recompressing a span when the compression model changes (the first form
 stays), mid-conversation compaction of the keep window, and per-tool output
-shrinking (the pruning extension's job).
+shrinking.
