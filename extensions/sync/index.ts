@@ -10,7 +10,8 @@
  * built-in confirm dialog. In print and RPC modes there is no prompt: init
  * needs --yes, and the flow never starts (the fix is shown instead). The
  * startup notice is read-only with a short timeout: it never blocks startup,
- * never moves data, and never re-authenticates.
+ * never moves data, and never starts the device flow. It may renew a managed
+ * token through the stored refresh token, the same as every other path.
  */
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Box, Text, matchesKey } from "@earendil-works/pi-tui";
@@ -20,7 +21,7 @@ import { createAuthSession, type AuthSession } from "./auth.ts";
 import { resolveClientId } from "./config.ts";
 import { runDeviceFlow, type DeviceFlowResult } from "./deviceflow.ts";
 import { probeStartup, runInit, runPull, runPush, runStatus, type SyncOutcome, type SyncRuntime } from "./ops.ts";
-import { GITHUB_BASE_URL_ENV, homeFor, resolveToken, stateDirFor } from "./token.ts";
+import { GITHUB_BASE_URL_ENV, homeFor, stateDirFor } from "./token.ts";
 
 const STATUS_KEY = "sync";
 /** The startup notice must never hold startup up. */
@@ -59,15 +60,20 @@ export default function (pi: ExtensionAPI): void {
 	 * timeout. The line shows the drift when the device is joined, the
 	 * `run /sync init` nudge when a token exists but the device has not joined,
 	 * and nothing otherwise (no token, zero drift, or a failed read). It never
-	 * starts the device flow and never renews the token.
+	 * starts the device flow. It does renew a managed token through the stored
+	 * refresh token (the auth session without a flow): the access token lives
+	 * 8 hours, and a probe that could not renew would go blind every day.
 	 */
 	function startupNotice(ctx: ExtensionContext): void {
 		void (async () => {
 			try {
 				if (!ctx.hasUI) return;
-				const token = resolveToken(homeFor(process.env), process.env);
-				if (!token.token) return; // no token: stay silent
-				const runtime = withSignal(buildSyncRuntime(process.env, token.token), AbortSignal.timeout(NOTICE_TIMEOUT_MS));
+				const built = await createAuthSession({ env: process.env }); // no device flow at startup
+				if (!built.session) return; // no token: stay silent
+				const runtime = withSignal(
+					buildSyncRuntime(process.env, built.session.token, built.session.renew),
+					AbortSignal.timeout(NOTICE_TIMEOUT_MS),
+				);
 				const probe = await probeStartup(runtime);
 				if (sessionCtx !== ctx) return; // a newer session owns the line now
 				if (probe.state === "not-joined") {

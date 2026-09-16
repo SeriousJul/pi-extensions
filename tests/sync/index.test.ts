@@ -14,12 +14,13 @@
  * code line lands after the dialog's first paint.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
 import { AddressInfo } from "node:net";
 import syncExtension from "../../extensions/sync/index.ts";
+import { writeManagedToken } from "../../extensions/sync/token.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 interface StatusCall {
@@ -120,6 +121,100 @@ describe("startup notice at the entrypoint seam (issue #36)", () => {
 		await settle(80);
 		expect(lastStatus(calls)).toBeUndefined();
 		expect(calls.some((c) => c.value === NUDGE)).toBe(false);
+	});
+
+	/**
+	 * A joined device against a loopback GitHub: the API 401s any access
+	 * token but the refreshed one, and the OAuth endpoint renews only the
+	 * live refresh token. The state dir holds the manifest and an expired
+	 * managed token, so only a renewed token can read the gist.
+	 */
+	async function joinedHome(refreshLive: boolean): Promise<{ home: string; state: string; url: string; close: () => Promise<void> }> {
+		const home = await tempDir("sync-idx-home-");
+		const state = await tempDir("sync-idx-state-");
+		await writeFile(join(home, "AGENTS.md"), "local v2\n");
+		await writeManagedToken(state, {
+			accessToken: "ghs_expired",
+			refreshToken: "rt-live",
+			obtainedMs: Date.now() - 9 * 3600 * 1000,
+			expiresMs: Date.now() - 3600 * 1000, // expired an hour ago
+		});
+		const manifest = { v: 1, backend: "github-gist", backendOptions: { gistId: "e2e-gist-id" }, include: ["AGENTS.md"], exclude: [] };
+		await writeFile(join(state, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
+		const gist = {
+			id: "e2e-gist-id",
+			updated_at: new Date(Date.now() - 3600 * 1000).toISOString(),
+			files: {
+				[".pi-sync-manifest.json"]: { content: JSON.stringify({ ...manifest, backendOptions: {} }) },
+				["AGENTS.md"]: { content: "remote v1\n" },
+			},
+		};
+		const server = createServer((req, res) => {
+			const send = (status: number, body: unknown) => {
+				res.writeHead(status, { "Content-Type": "application/json" });
+				res.end(JSON.stringify(body));
+			};
+			if (req.method === "POST" && req.url === "/login/oauth/access_token") {
+				let body = "";
+				req.on("data", (c) => (body += c));
+				req.on("end", () => {
+					const data = JSON.parse(body || "{}") as { refresh_token?: string };
+					if (refreshLive && data.refresh_token === "rt-live") {
+						return send(200, { access_token: "ghs_new", refresh_token: "rt-live-2", expires_in: 28800 });
+					}
+					return send(400, { error: "bad_refresh_token" });
+				});
+				return;
+			}
+			if (req.method === "GET" && req.url === "/gists/e2e-gist-id") {
+				if (req.headers.authorization === "Bearer ghs_new") return send(200, gist);
+				return send(401, { message: "Bad credentials" });
+			}
+			send(404, { message: "no canned route" });
+		});
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const port = (server.address() as AddressInfo).port;
+		return {
+			home,
+			state,
+			url: `http://127.0.0.1:${port}`,
+			close: () => new Promise<void>((r) => server.close(() => r())),
+		};
+	}
+
+	it("renews an expired token at startup and shows the drift line", async () => {
+		const env = await joinedHome(true);
+		process.env.PI_SYNC_HOME = env.home;
+		process.env.PI_SYNC_STATE_DIR = env.state;
+		process.env.PI_SYNC_GITHUB_BASE_URL = env.url;
+		process.env.PI_SYNC_OAUTH_CLIENT_ID = "e2e-client";
+		try {
+			const { calls, fire } = await loadSession();
+			fire();
+			// Only the renewed token can read the gist, so a drift line proves
+			// the startup path renewed the token.
+			await until(() => /^sync: \d+ ahead, \d+ behind$/.test(lastStatus(calls) ?? ""), "the drift line");
+			expect(lastStatus(calls)).toMatch(/^sync: \d+ ahead, \d+ behind$/);
+		} finally {
+			await env.close();
+		}
+	});
+
+	it("stays silent when the token is expired and the refresh is dead", async () => {
+		const env = await joinedHome(false);
+		process.env.PI_SYNC_HOME = env.home;
+		process.env.PI_SYNC_STATE_DIR = env.state;
+		process.env.PI_SYNC_GITHUB_BASE_URL = env.url;
+		process.env.PI_SYNC_OAUTH_CLIENT_ID = "e2e-client";
+		try {
+			const { calls, fire } = await loadSession();
+			fire();
+			// Give the background notice a chance to (wrongly) show a line.
+			await settle(80);
+			expect(calls.every((c) => c.value === undefined), "no status line at all").toBe(true);
+		} finally {
+			await env.close();
+		}
 	});
 });
 
