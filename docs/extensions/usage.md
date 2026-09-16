@@ -1,8 +1,8 @@
-# Usage
+# usage extension
 
-LLM token and cost reporting across all pi sessions: every `.jsonl` under
-`~/.pi/agent/sessions/`, all working directories, including subagent
-sessions.
+LLM token and cost reporting across all pi sessions: every `.jsonl`
+under `~/.pi/agent/sessions/`, all working directories, including
+subagent sessions.
 
 ## What is counted
 
@@ -12,18 +12,18 @@ A usage event is one recorded LLM call:
 - a tool result that did nested LLM work (no provider of its own)
 - a compaction or branch summary (no provider of its own)
 
-Forked and cloned sessions copy their ancestor's lines byte-identical, so
-each distinct line counts once (ADR 0009). Events without a provider are
-attributed to the model active at their position in the entry tree (ADR
-0008). A partial trailing line in a live session is skipped. Zero-only
-events (aborted calls, unmeasured work) are dropped: they cannot change a
-total, and keeping them would render empty rows.
+Forked and cloned sessions copy their ancestor's lines byte-identical,
+so each distinct line counts once (ADR 0009). Events without a provider
+are attributed to the model active at their position in the entry tree
+(ADR 0008). A partial trailing line in a live session is skipped.
+Zero-only events (aborted calls, unmeasured work) are dropped: they
+cannot change a total, and keeping them would render empty rows.
 
 ## /usage (TUI)
 
-Opens the interactive report. One scan on open, then all filtering happens
-in memory. Every knob is a key, and the legend at the bottom always shows
-them:
+Opens the interactive report. One scan on open, then all filtering
+happens in memory. Every knob is a key, and the legend at the bottom
+always shows them:
 
 | Key | Knob | Values |
 | --- | --- | --- |
@@ -68,23 +68,23 @@ pi-usage help
 ```
 
 Default report: last 30 days, week buckets, provider+model groups.
-`--json` emits rows with the raw provider/model pairs per row. `sessions`
-lists every session file with its totals (shared fork history is attributed
-to the first file scanned).
+`--json` emits rows with the raw provider/model pairs per row.
+`sessions` lists every session file with its totals (shared fork
+history is attributed to the first file scanned).
 
-On a TTY narrower than 120 columns the report renders the compact column
-set (cache merged). Piped output always renders the full set.
+On a TTY narrower than 120 columns the report renders the compact
+column set (cache merged). Piped output always renders the full set.
 
 ## Canonical identity
 
-Grouping uses a Canonical identity: provider and model folded by a small
-rule table in `lib/identity.ts`.
+Grouping uses a Canonical identity: provider and model folded by a
+small rule table in `lib/identity.ts`.
 
 - `llama.cpp`, `llama-server=http://127.0.0.1:8080`, and
   `crossbar-llamacpp-127-0-0-1-8080` are one provider: `local-llamacpp`
 - `omni` stays distinct: it is a remote provider with its own billing
-- model ids are lowercased, a trailing `:QUANT` is stripped, and a `-GGUF`
-  infix is stripped, so `unsloth/Qwen3.8-27B-GGUF:Q4_K_XL` and
+- model ids are lowercased, a trailing `:QUANT` is stripped, and a
+  `-GGUF` infix is stripped, so `unsloth/Qwen3.8-27B-GGUF:Q4_K_XL` and
   `unsloth/qwen3.8-27b` are one line
 - any name no rule touches stays raw
 
@@ -93,4 +93,5 @@ The `d` key and `--json` expose the raw pairs behind each folded row.
 ## Data path
 
 The scan root is `~/.pi/agent/sessions/`, overridable with the
-`PI_SESSIONS_DIR` environment variable (the tests use it to scan fixtures).
+`PI_SESSIONS_DIR` environment variable (the tests use it to scan
+fixtures).
