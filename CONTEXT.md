@@ -275,7 +275,7 @@ _Avoid_: metadata (generic), manifest (clashes with Sync manifest), state
 **Usage event**:
 One LLM call's recorded usage in a session file: the token counts, cost,
 provider, model, and time of a single assistant reply, a tool's nested LLM
-work, or a compaction summary.
+work, a compaction summary, or a compression call.
 _Avoid_: request (implies network), sample, token count (that is one field)
 
 **Usage scan**:
@@ -297,3 +297,66 @@ one row per time bucket and Canonical identity, with the token columns, cost,
 and a grand total. Derived on demand by a Usage scan; never stored.
 _Avoid_: usage log (codegraph's per-call log), usage snapshot (Quota's plan
 read), metrics (implies stored aggregates)
+
+### Pruning
+
+**Pruning**:
+The first level of the two-level context control: replacing large tool
+outputs in the request context with short references. Applied per request on
+the message list, re-derived every turn, and never written to the session
+file. The session file always keeps the full outputs.
+_Avoid_: compaction (that is the second level, pi's native summarization),
+offloading (implies the content moves to another store), truncation
+(implies the content is lost)
+
+**Recall reference**:
+The pointer a pruned output carries: the line number of the entry in the
+session file, resolved by the recall tool back to the full output. When no
+session file exists, the reference is the entry id instead.
+_Avoid_: link (implies a URL or file path), citation, pointer (too generic)
+
+**Recall**:
+The tool that resolves a Recall reference to the full text of one pruned
+tool output. Direct lookup by session file line number or entry id, not
+search.
+_Avoid_: search (implies ranking), retrieval (too generic), drill-down
+(blackhole's word for its richer tool)
+
+**Prune gate**:
+The decision made when pi is about to compact: estimate the context size
+after pruning. Pruning wins, and the compaction is cancelled, only when the
+estimate falls to at most the context window minus twice the reserve. Any
+other outcome lets pi's native compaction run.
+_Avoid_: threshold check (that is pi's own single-level check), two-stage
+compact (the levels are pruning and compaction, not two compactions)
+
+### Compression
+
+**Compression model**:
+The auxiliary model that writes the compressed form of a compression span.
+It is a separate choice from the active model, so a small cheap model can
+serve a large expensive one.
+_Avoid_: reference model (in the prompt-compression literature the reference
+model is the LLM that receives the compressed prompt), backup model,
+summarizer (compaction summarizes into the session; this writes outside it)
+
+**Compression span**:
+A finished turn that has fallen out of the keep window. Outgoing requests
+carry the span's compressed form instead of the original messages. The
+session keeps the originals, so the compression is reversible at any time.
+_Avoid_: compaction (compaction rewrites the session, compression never does),
+window, summary
+
+**Keep window**:
+The recent finished turns that outgoing requests carry as-is, plus the turn
+in progress. A turn that leaves the window becomes a compression span.
+_Avoid_: recent context, raw tail, tail
+
+**Compressed form**:
+The short text a compression span carries in outgoing requests in place of
+its original messages. The compression model writes it once, and every later
+request reuses the same text, so the prefix stays stable for the provider's
+cache. User instructions inside the span appear in it verbatim.
+_Avoid_: summary (a summary is what compaction writes into the session), gist
+(gist tokens are the research form of soft-prompt compression; this works in
+text), digest
