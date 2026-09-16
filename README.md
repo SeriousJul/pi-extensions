@@ -15,7 +15,6 @@ VitePress from the [`docs/`](docs/) folder.
 - **usage** - token and cost reporting across all sessions, as a TUI view, a CLI, and a `/usage` agent tool.
 - **compress** - replaces finished turns in outgoing requests with one short standing-in message; the session file stays intact.
 - **pruning** - two-level context control: prunes large tool outputs out of the request at pi's compaction threshold, and lets the prune gate cancel the compaction when pruning alone frees enough headroom.
-- **hello** - a minimal example extension.
 
 See the [pi packages docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md) and the [extensions docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md).
 
@@ -33,7 +32,6 @@ See the [pi packages docs](https://github.com/earendil-works/pi/blob/main/packag
 | usage | [docs](https://seriousjul.github.io/pi-extensions/extensions/usage.html) |
 | compress | [docs](https://seriousjul.github.io/pi-extensions/extensions/compress.html) |
 | pruning | [docs](https://seriousjul.github.io/pi-extensions/extensions/pruning.html) |
-| hello | covered by the [develop page](https://seriousjul.github.io/pi-extensions/develop.html) |
 
 ## Layout
 
@@ -42,7 +40,6 @@ See the [pi packages docs](https://github.com/earendil-works/pi/blob/main/packag
 ├── package.json      # pi manifest under the "pi" key, pi-package keyword
 ├── tsconfig.json     # type checking only. pi loads .ts via jiti, no build step
 ├── extensions/       # every .ts file (or subdirectory with index.ts) is an extension
-│   ├── hello.ts
 │   ├── tools.ts
 │   ├── context-cap/  # multi-file extension, entry point at context-cap/index.ts
 │   ├── model-router/ # multi-file extension, entry point at model-router/index.ts
@@ -96,7 +93,7 @@ Test a package or a single extension in a pi session without installing:
 
 ```bash
 pi -e /absolute/path/to/pi-extensions
-pi -e /absolute/path/to/pi-extensions/extensions/hello.ts
+pi -e /absolute/path/to/pi-extensions/extensions/tools.ts
 ```
 
 ```bash

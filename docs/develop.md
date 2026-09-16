@@ -10,7 +10,6 @@ multi-file layout, and the test commands.
 ├── package.json      # pi manifest under the "pi" key, pi-package keyword
 ├── tsconfig.json     # type checking only. pi loads .ts via jiti, no build step
 ├── extensions/       # every .ts file (or subdirectory with index.ts) is an extension
-│   ├── hello.ts
 │   ├── tools.ts
 │   ├── context-cap/  # multi-file extension, entry point at context-cap/index.ts
 │   ├── model-router/ # multi-file extension, entry point at model-router/index.ts
@@ -28,11 +27,11 @@ an `index.ts` entry point. You can also add `skills/`, `prompts/`, and
 `themes/` directories and list them in the `pi` manifest in
 `package.json`.
 
-## The minimal example (`hello`)
+## The minimal example
 
-The `hello` extension is a minimal example: it registers a `/hello`
-command that shows a notification. Use it as a starting point. An
-extension is a TypeScript module with a default export:
+A minimal extension registers a command that shows a notification.
+Use the code below as a starting point. An extension is a TypeScript
+module with a default export:
 
 ```typescript
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";

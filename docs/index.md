@@ -63,4 +63,3 @@ npm test
 | [sync](/extensions/sync/) | Cross-device pi config sync: `/sync` plus the `pi-sync` CLI, three-way merge, v1 backend a secret GitHub Gist. |
 | [usage](/extensions/usage) | The `pi-usage` CLI and the usage report: token and cost usage across all pi sessions. |
 | [compress](/extensions/compress) | Replaces finished turns in outgoing requests with one short standing-in message; the session file stays intact. |
-| hello | A minimal example extension, covered by the [develop](/develop) page. |
