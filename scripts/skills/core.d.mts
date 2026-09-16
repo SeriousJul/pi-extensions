@@ -49,6 +49,10 @@ export interface PlanSourceInput {
 
 export declare const MANIFEST_NAME: string;
 export declare const CACHE_DIR_NAME: string;
+export declare const GIT_TIMEOUT_MS: number;
+export declare const MAX_BUFFER: number;
+
+export declare function git(args: string[], options?: Record<string, unknown>): string | Buffer;
 
 export declare function loadManifest(repoRoot: string): Record<string, SkillSource>;
 export declare function saveManifest(repoRoot: string, manifest: Record<string, SkillSource>): void;

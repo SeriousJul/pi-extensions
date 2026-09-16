@@ -9,19 +9,14 @@
 // The tool never commits, pushes, or overwrites a skill that is already in
 // the tree.
 
-import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { CACHE_DIR_NAME, loadManifest, refreshCache } from "./core.mjs";
 import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { CACHE_DIR_NAME, git, loadManifest, MAX_BUFFER, refreshCache } from "./core.mjs";
 
 function fail(message) {
 	console.error(`skill add: ${message}`);
 	process.exit(1);
-}
-
-function git(args) {
-	return execFileSync("git", args, { encoding: "utf8", timeout: 300_000, maxBuffer: 512 * 1024 * 1024 });
 }
 
 const repoRoot = process.env.SKILL_SYNC_ROOT ?? process.cwd();
@@ -66,10 +61,12 @@ try {
 	const localTarget = join(repoRoot, source.root, path);
 	if (existsSync(localTarget)) fail(`${path} is already in the tree at ${source.root}/${path}`);
 
-	const stage = mkdtempSync(join(tmpdir(), "skill-add-"));
+	// Stage inside the repo so the rename below always lands on the same
+	// filesystem as the target (a rename across devices throws EXDEV).
+	const stage = mkdtempSync(join(repoRoot, CACHE_DIR_NAME, "add-"));
 	try {
 		const archive = git(["-C", cacheDir, "archive", commit, upstreamPath], { encoding: "buffer" });
-		execFileSync("tar", ["-x", "-C", stage], { input: archive, maxBuffer: 512 * 1024 * 1024 });
+		execFileSync("tar", ["-x", "-C", stage], { input: archive, maxBuffer: MAX_BUFFER });
 		const staged = join(stage, ...upstreamPath.split("/"));
 		if (!existsSync(join(staged, "SKILL.md"))) fail(`adoption of ${path} did not land a SKILL.md`);
 		mkdirSync(dirname(localTarget), { recursive: true });

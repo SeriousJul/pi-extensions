@@ -26,10 +26,10 @@ import { dirname, join } from "node:path";
 export const MANIFEST_NAME = "skills-manifest.json";
 export const CACHE_DIR_NAME = ".skill-cache";
 
-const GIT_TIMEOUT_MS = 300_000;
-const MAX_BUFFER = 512 * 1024 * 1024;
+export const GIT_TIMEOUT_MS = 300_000;
+export const MAX_BUFFER = 512 * 1024 * 1024;
 
-function git(args, options = {}) {
+export function git(args, options = {}) {
 	return execFileSync("git", args, {
 		encoding: "utf8",
 		timeout: GIT_TIMEOUT_MS,
@@ -213,7 +213,9 @@ export function gitMergeFile(base, ours, theirs) {
 			// git merge-file exits with the number of conflicts when the merge
 			// is not clean, and 128 on error. The merged (marked) content is
 			// on stdout in both cases.
-			if (err.status === 128 || err.status === undefined) {
+			// A killed or timed-out run (err.killed, status null) is a hard
+			// failure: the captured stdout is not a usable merge result.
+			if (err.killed || err.status == null || err.status === 128) {
 				throw new Error(`git merge-file failed: ${String(err.stderr ?? err.message).trim()}`);
 			}
 			return { clean: false, content: String(err.stdout ?? "") };
