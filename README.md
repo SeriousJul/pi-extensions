@@ -51,7 +51,6 @@ See the [pi packages docs](https://github.com/earendil-works/pi/blob/main/packag
 │   ├── adr/          # architecture decision records
 │   └── agents/       # agent skill files (excluded from the site navigation)
 ├── CONTEXT.md        # the domain glossary, single source (published on the site)
->>>>>>> 921d912 (readme: slim to overview with links to the docs site)
 ├── scripts/          # postinstall patch for the embedded codegraph library
 └── tests/            # vitest suite
 ```
