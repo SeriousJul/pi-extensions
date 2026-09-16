@@ -6,7 +6,7 @@
  * form. The session file is never rewritten; each finished span is persisted
  * as a `compress-span` custom entry, and its usage counts as a Usage event.
  * The compressed form is computed in the background after each turn (see
- * ADR 0014).
+ * ADR 0015).
  *
  * This file is thin pi wiring around the pure core (`core.ts`), the turn
  * serializer (`serializer.ts`), the settings reader (`settings.ts`), and the
