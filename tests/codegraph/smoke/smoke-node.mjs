@@ -140,7 +140,7 @@ async function waitForReadyIndex() {
 }
 
 try {
-  if (tools.size !== 6) throw new Error(`expected 6 tools, got ${tools.size}`);
+  if (tools.size !== 4) throw new Error(`expected 4 tools, got ${tools.size}`);
   if (!commands.has("codegraph")) {
     throw new Error("no /codegraph command registered");
   }
@@ -234,7 +234,7 @@ try {
   if (!status.includes("usage: 2 ok, 0 failed")) {
     throw new Error(`status did not report the usage block:\n${status}`);
   }
-  if (!status.includes("explore: 0  node: 1  search: 1  impact: 0  callers: 0  callees: 0")) {
+  if (!status.includes("explore: 0  node: 1  search: 1  impact: 0")) {
     throw new Error(`status did not report the per-tool usage:\n${status}`);
   }
 

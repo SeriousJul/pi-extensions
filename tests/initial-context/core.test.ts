@@ -20,6 +20,7 @@ import {
 	formatStatusText,
 	parseProviderPayload,
 	renderContextText,
+	wasteFor,
 	type InitialContextReport,
 } from "../../extensions/initial-context/context.ts";
 
@@ -406,6 +407,48 @@ describe("renderContextText", () => {
 		const text = renderContextText(report());
 		const totalLine = text.split("\n").find((l) => /\bTOTAL\b/.test(l)) as string;
 		expect(totalLine).toMatch(/\bTOTAL\b\s+\d[\d,]*\s+100\.0%\s+\d+\.\d%\s+█{12}$/);
+	});
+
+	it("renders the waste column only with a usage view", () => {
+		// No usage view: no waste column at all.
+		expect(renderContextText(report())).not.toContain("waste");
+
+		// With a usage view: the header gains the column, a tool the window
+		// saw shows tokens per use, and a tool it never used shows the mark.
+		const counts: Record<string, number> = {};
+		for (const row of report().rows) if (row.kind === "tool") counts[row.label] = 0;
+		counts.read = 4;
+		const text = renderContextText(report(), { window: "30d", counts });
+		expect(text).toContain("uses(30d)  waste");
+		const readLine = text.split("\n").find((l) => l.trim().startsWith("read")) as string;
+		const readTokens = report().rows.find((r) => r.label === "read")!.tokens;
+		expect(readLine).toContain(`${(readTokens / 4).toFixed(1)}/u`);
+		const bashLine = text.split("\n").find((l) => l.trim().startsWith("bash")) as string;
+		expect(bashLine).toContain("never");
+		// Section rows and TOTAL carry no waste value.
+		const totalLine = text.split("\n").find((l) => /\bTOTAL\b/.test(l)) as string;
+		expect(totalLine).toMatch(/\s-  █{12}$/);
+		const baseLine = text.split("\n").find((l) => l.trim().startsWith("base prompt")) as string;
+		expect(baseLine).toContain("  -  ");
+	});
+});
+
+describe("wasteFor", () => {
+	const row = (label: string, kind: string, tokens: number) => ({
+		key: `tool:${label}`,
+		label,
+		kind,
+		source: "builtin",
+		text: label,
+		tokens,
+	}) as InitialContextReport["rows"][number];
+
+	it("computes tokens per use, the never mark, and dashes for non-tool rows", () => {
+		expect(wasteFor(row("bash", "tool", 936), { bash: 3 })).toBe("312.0/u");
+		expect(wasteFor(row("bash", "tool", 936), { bash: 0 })).toBe("never");
+		expect(wasteFor(row("bash", "tool", 936), undefined)).toBe("-");
+		expect(wasteFor(row("alpha", "skill", 100), { alpha: 2 })).toBe("-");
+		expect(wasteFor(row("base", "base", 500), { base: 9 })).toBe("-");
 	});
 });
 

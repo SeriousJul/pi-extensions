@@ -36,7 +36,7 @@ list with `pi list`.
 
 | Extension | What it does |
 | --- | --- |
-| [codegraph](/extensions/codegraph/) | Semantic code index for the agent: six tools plus `/codegraph`, one index per git worktree, dependency sources via `projectRoot`. |
+| [codegraph](/extensions/codegraph/) | Semantic code index for the agent: four tools plus `/codegraph`, one index per git worktree, dependency sources via `projectRoot`. |
 | [tools](/extensions/tools) | The `/tools` command to enable and disable tools per session. |
 | [context-cap](/extensions/context-cap) | `--context-window <tokens>` caps the session's context window so compaction fires early. |
 | [initial-context](/extensions/initial-context) | `/ctx` shows the token breakdown of the agent's initial context, with per-tool usage. |

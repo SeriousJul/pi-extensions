@@ -13,6 +13,14 @@ import type { ExtensionAPI, ExtensionContext, ToolInfo } from "@earendil-works/p
 import { getSettingsListTheme } from "@earendil-works/pi-coding-agent";
 import { Container, type SettingItem, SettingsList } from "@earendil-works/pi-tui";
 
+// User-only tools (CONTEXT.md, "Tool exposure", issue #72): the operator has
+// the capability as a command, so as agent tools they start inactive in
+// every new session and can be enabled per session through /tools. They pay
+// no context cost by default and a new session cannot reach them. The list
+// is code, not a settings entry: the extension API has no settings reader,
+// and one line per tool is the size of this decision.
+const DEFAULT_DISABLED = ["usage_report", "resource_toggle"];
+
 // State persisted to session
 interface ToolsState {
 	enabledTools: string[];
@@ -81,8 +89,12 @@ export default function toolsExtension(pi: ExtensionAPI) {
 			enabledTools = new Set(savedTools.filter((t: string) => allToolNames.includes(t)));
 			applyTools();
 		} else {
-			// No saved state - sync with currently active tools
-			enabledTools = new Set(pi.getActiveTools());
+			// No saved state - start from the tools currently active, minus
+			// the default-disabled list (user-only tools; issue #72). The
+			// defaults hold on every start and tree navigation until the
+			// operator makes a choice in /tools, which persists and wins.
+			enabledTools = new Set(pi.getActiveTools().filter((t: string) => !DEFAULT_DISABLED.includes(t)));
+			applyTools();
 		}
 	}
 

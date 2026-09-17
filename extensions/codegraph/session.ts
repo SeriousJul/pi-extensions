@@ -424,22 +424,29 @@ export class CodegraphSession {
     startDir: string,
     file?: string,
     projectRoot?: string,
+    onBuild?: (text: string) => void,
   ): Promise<ReadyInfo> {
-    return this.ready(startDir, file, true, projectRoot);
+    return this.ready(startDir, file, true, projectRoot, onBuild);
   }
 
   /**
    * `ensureReady` on the ready seam: every tool and command call waits for a
    * running background prewarm before it starts work of its own.
+   *
+   * `onBuild` receives one progress line per file-count report of a build
+   * this call starts (issue #72): a cold named-root call builds inline and
+   * streams the wait instead of looking like a hang. Calls that find a
+   * ready index run no build and report nothing.
    */
   private async ready(
     startDir: string,
     file: string | undefined,
     waitForPrewarm: boolean,
     projectRoot: string | undefined,
+    onBuild?: (text: string) => void,
   ): Promise<ReadyInfo> {
     const f = await this.factory();
-    return this.readyFrom(f, { startDir, file, projectRoot }, waitForPrewarm);
+    return this.readyFrom(f, { startDir, file, projectRoot }, waitForPrewarm, onBuild);
   }
 
   /**
@@ -472,6 +479,7 @@ export class CodegraphSession {
       resolved?: ResolvedRoot;
     },
     waitForPrewarm: boolean,
+    onBuild?: (text: string) => void,
   ): Promise<ReadyInfo> {
     this.assertRuntime(f);
     try {
@@ -499,7 +507,7 @@ export class CodegraphSession {
         await background;
         resolved = resolveFor();
       }
-      const ready = await this.ensureReadyCore(f, resolved);
+      const ready = await this.ensureReadyCore(f, resolved, onBuild);
       if (resolved.named === true) this.noteNamedOpened(resolved.root);
       if (resolved.file === undefined && resolved.named !== true) {
         return ready;
@@ -537,6 +545,7 @@ export class CodegraphSession {
   private async ensureReadyCore(
     f: IndexAdapterFactory,
     resolved: ResolvedRoot,
+    onBuild?: (text: string) => void,
   ): Promise<ReadyInfo> {
     let { needsCreate, mainCheckout, isMainCheckout } = resolved;
     const { root } = resolved;
@@ -596,6 +605,7 @@ export class CodegraphSession {
           mainCheckout,
           isMainCheckout,
           resolved.named === true,
+          onBuild,
         );
       } finally {
         this.inFlight.delete(root);
@@ -1159,6 +1169,7 @@ export class CodegraphSession {
     mainCheckout: string | undefined,
     isMainCheckout: boolean,
     named: boolean,
+    onBuild?: (text: string) => void,
   ): Promise<ReadyInfo> {
     if (!needsCreate) {
       return this.openExisting(f, root, mainCheckout, isMainCheckout, named);
@@ -1197,6 +1208,7 @@ export class CodegraphSession {
         mainCheckout,
         isMainCheckout,
         named,
+        onBuild,
       );
     }
   }
@@ -1386,6 +1398,7 @@ export class CodegraphSession {
     mainCheckout: string | undefined,
     isMainCheckout: boolean,
     named: boolean,
+    onBuild?: (text: string) => void,
   ): Promise<ReadyInfo> {
     const cg = f.create(root);
     try {
@@ -1422,7 +1435,13 @@ export class CodegraphSession {
       }
       this.status(`codegraph: building index at ${this.rootName(root)}`);
       const res = await cg.indexAll({
-        onProgress: (p) => this.status(formatProgress(p, this.rootName(root))),
+        onProgress: (p) => {
+          // The status line and the caller's build stream (issue #72) share
+          // the same file-count report from the adapter.
+          const text = formatProgress(p, this.rootName(root));
+          this.status(text);
+          onBuild?.(text);
+        },
       });
       this.status(undefined);
       if (!res.success) {

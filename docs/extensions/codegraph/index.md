@@ -15,11 +15,16 @@ index lifecycle, root resolution, labels, and the module map.
 | Tool | Purpose |
 | --- | --- |
 | `codegraph_search` | Quick symbol search by name. Locations only, no code. |
-| `codegraph_callers` | List functions that call a symbol. |
-| `codegraph_callees` | List functions called by a symbol. |
-| `codegraph_impact` | Show what could break if a symbol changes, by depth. |
+| `codegraph_impact` | Show what could break if a symbol changes, by depth. The prompt note tells the agent to call it before a refactor of a symbol. |
 | `codegraph_node` | Read a file (line numbers, dependents header) or a symbol (signature, body, top callers and callees). File mode behaves like the built-in `read`, plus which files depend on it. |
-| `codegraph_explore` | Source, call paths, and relationships for an area in one call. The default first tool for "how does X work" questions. |
+| `codegraph_explore` | Source, call paths, and relationships for an area in one call. The default first tool for "how does X work" questions. The call trail carries the caller and callee information the dedicated tools used to give. |
+
+The caller and callee tools (`codegraph_callers`, `codegraph_callees`) keep
+their definitions in the handlers module but are not registered (issue #72):
+`codegraph_explore` carries their information in its call trail, and the
+measurement showed the agent answered those jobs with explore. Re-adding
+either is one line in the `TOOL` map, a registration change, not a
+re-implementation.
 
 Every tool takes an optional `projectRoot` argument. Without it, the call is
 served from the worktree the call was made in, resolved automatically.
@@ -69,9 +74,13 @@ working directory). Rules:
   agent the path to hand to its next read or grep.
 - **Snapping.** A directory inside a cache entry serves that entry's tree,
   so a sub-directory of a dependency works.
-- **On demand.** A named root is built on demand, reconciled before every
-  query, cached per root for the session, and never prewarmed, seeded, or
-  watched.
+- **On demand, always finished.** A named root is built on demand, and a call
+  that starts the build waits for it and always finishes: no timeout, no
+  "retry later". While the build runs, its progress (the file counts the
+  adapter reports) streams to the caller as tool updates, so the wait is
+  visible and bounded instead of a silent hang. Later calls pay only the
+  reconcile. The root is reconciled before every query, cached per root for
+  the session, and never prewarmed, seeded, or watched.
 - **Missing sources.** A named directory that does not exist fails with
   `no such directory (<abs>)` plus a hint that names the `opensrc fetch`
   for the dependency. The extension never fetches on the agent's behalf.
@@ -122,8 +131,10 @@ the grep form the prompt note does not cover:
 ````markdown
 ## Source Code Reference
 
-Source code for dependencies is cached at `~/.opensrc/`. Each cache
-directory is indexed by codegraph. To explore a dependency, use the
+Source code for dependencies is cached at `~/.opensrc/`. A dependency is
+indexed on first use: the first codegraph call to its cache directory builds
+the index inline, may wait a few seconds, and reports progress as it builds.
+Later calls pay only the reconcile. To explore a dependency, use the
 codegraph tools with `projectRoot` set to its cache directory
 (`opensrc path <package>`). Use `codegraph_explore` for symbol source and
 call paths, `codegraph_search` for symbol names, and `codegraph_node` to
@@ -144,11 +155,16 @@ on disk.
 Every agent turn appends one note to the system prompt: a first line that
 states the index state (ready, building, or none), then fixed policy lines
 that say which tool fits which job. It is the only codegraph steering text
-in the prompt, so it is the single place to change policy. A dependency-source
-line joins the block only when at least one trusted root exists on disk. The
-note appears only when at least one `codegraph_*` tool is active, a call can
-actually be served from the working directory, and the runtime stack passes
-its preflight check.
+in the prompt, so it is the single place to change policy. The impact line
+targets the trigger the agent actually meets (a refactor of a symbol, not
+every change), and the dependency-source line carries the first-use promise
+(the first call to a dependency builds its index and may wait, and the build
+reports progress). A dependency-source line joins the block only when at
+least one trusted root exists on disk. The note carries no per-dependency
+state, so the system prompt stays stable turn to turn and the provider
+cache stays warm. The note appears only when at least one `codegraph_*` tool
+is active, a call can actually be served from the working directory, and the
+runtime stack passes its preflight check.
 
 ## `/codegraph` command
 

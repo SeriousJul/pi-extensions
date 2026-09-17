@@ -122,12 +122,17 @@ Every agent turn appends one note to the system prompt: the first line
 states the index state (ready, building, or none) and six fixed policy
 lines say which tool fits which job. It is the only codegraph steering
 text in the prompt, so the note is the single place to change policy. The
-text is contract (issue #9).
+impact line targets a refactor of a symbol, the trigger the agent actually
+meets (issue #72). The text is contract (issue #9).
 
 A seventh line - the dependency-source line that tells the model to pass a
 dependency's directory as `projectRoot` - joins the block when at least one
 trusted root (Named project roots, below) exists on disk, and is absent
 otherwise: a note must not advertise a query form every call would refuse.
+The line carries one static sentence with the first-use promise (issue
+#72 / ADR 0016): the first call to a dependency builds its index and may
+wait, and the build reports progress. No per-dependency state ever joins
+the note, so the system prompt stays stable turn to turn.
 
 The note appears only when all three conditions hold:
 
@@ -234,9 +239,10 @@ into.
 `/codegraph` status also shows local usage from
 `<worktree>/.codegraph/usage.jsonl`: per-tool counts, successful and
 failed calls, time since the last call, and the reason of the newest
-failure. The per-tool row lists the six tools in a fixed order, then any
-other tool name the ledger holds, so a recorded call can never be missing
-from the row that explains the totals above it. The file is append-only
+failure. The per-tool row lists the four registered tools in a fixed order, then
+any other tool name the ledger holds (including the unregistered caller
+and callee tools), so a recorded call can never be missing from the row
+that explains the totals above it. The file is append-only
 and is removed by `/codegraph uninit` with the rest of the index -
 including in a worktree that never got an index, where the ledger is all
 that is there. A worktree with no index gets an ignore file with its
@@ -315,7 +321,8 @@ it is complete. Delete the file to start the counts over.
   whole-file caps, so renderers never slice a file that drifted after its
   last index sync.
 - `format.ts` - rendering of query results.
-- `handlers.ts` - the six tool definitions, usage ledger wrapper, and the
+- `handlers.ts` - the tool definitions (four registered, the caller and
+  callee tools defined but unregistered), the usage ledger wrapper, and the
   `/codegraph` command.
 - `usage.ts` - the append-only local `usage.jsonl` ledger, the ignore
   file that keeps it out of git, and the incremental reader that folds it

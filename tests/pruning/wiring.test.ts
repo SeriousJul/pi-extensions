@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -169,12 +169,18 @@ beforeEach(() => {
 	cwd = mkdtempSync(join(tmpdir(), "pruning-wiring-"));
 	agentDir = mkdtempSync(join(tmpdir(), "pruning-wiring-agent-"));
 	sessionDir = join(agentDir, "sessions");
+	// Isolate the global settings: the extension reads the pruning section
+	// from $PI_CODING_AGENT_DIR/settings.json, and a machine whose global
+	// settings carry pruning settings (enabled=false or a custom reserve) would
+	// otherwise steer the extension away from the fixture's assumptions.
+	vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
 	mkdirSync(join(cwd, ".pi"), { recursive: true });
 	writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ compaction: { reserveTokens: RESERVE } }));
 	buildFixture();
 });
 
 afterEach(() => {
+	vi.unstubAllEnvs();
 	rmSync(cwd, { recursive: true, force: true });
 	rmSync(agentDir, { recursive: true, force: true });
 });

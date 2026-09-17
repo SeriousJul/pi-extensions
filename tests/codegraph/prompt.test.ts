@@ -90,7 +90,10 @@ function event(systemPrompt = "You are a coding agent."): BeforeAgentStartEvent 
 describe("extension entrypoint", () => {
   it("registers the tools, the command, and the lifecycle hooks", () => {
     const { handlers, tools, commands } = makeExtension();
-    expect(tools).toHaveLength(6);
+    // Four tools (issue #72): the caller and callee tools are defined in the
+    // handlers module but absent from the TOOL map, so they are not
+    // registered and cost no context.
+    expect(tools).toHaveLength(4);
     // The gate that keeps the note honest reads `CODEGRAPH_TOOL_NAMES`, so the
     // names the extension registers and the names that gate advertises must be
     // the same list. A rename that misses one side silences the note in every
@@ -183,6 +186,16 @@ describe("system prompt note", () => {
     expect(result?.systemPrompt).toContain("codegraph_explore");
   });
 
+  it("tells the agent to call impact before a refactor, not before every change", () => {
+    // The old "before you change a symbol" wording matched the agent's edit
+    // behavior five times in 12,239 edits, so the impact tool never fired.
+    // The trigger the agent actually meets is a refactor (issue #72).
+    expect(promptNoteFor("ready")).toContain(
+      "Before a refactor of a symbol, call codegraph_impact to see what your edit could break.",
+    );
+    expect(promptNoteFor("ready")).not.toContain("Before you change a symbol");
+  });
+
   it.skipIf(Boolean(process.versions.bun))(
     "does not advertise an existing index at an unsafe root",
     async () => {
@@ -220,10 +233,20 @@ describe("system prompt note", () => {
       expect(sp).toContain("not built yet");
       expect(sp).not.toContain(NAMED_LINE);
 
-      // A trusted root from the environment: the line joins the block.
+      // A trusted root from the environment: the line joins the block, and
+      // the first-use sentence rides on it (issue #72 / ADR 0016): the first
+      // call to a dependency builds its index and the build reports progress.
+      const FIRST_USE =
+        "The first call to a dependency builds its index and may wait; the build reports progress.";
       process.env.CODEGRAPH_PI_TRUSTED_ROOTS = fixture.base;
       handlers = makeExtension(["codegraph_search"]).handlers;
-      expect(turn(handlers, fixture.feature)).toContain(NAMED_LINE);
+      const sp2 = turn(handlers, fixture.feature);
+      expect(sp2).toContain(NAMED_LINE);
+      expect(sp2).toContain(FIRST_USE);
+      // No trusted root: the sentence is absent too.
+      delete process.env.CODEGRAPH_PI_TRUSTED_ROOTS;
+      handlers = makeExtension(["codegraph_search"]).handlers;
+      expect(turn(handlers, fixture.feature)).not.toContain(FIRST_USE);
     } finally {
       if (savedHome === undefined) delete process.env.HOME;
       else process.env.HOME = savedHome;

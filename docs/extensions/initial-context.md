@@ -22,6 +22,14 @@ Skill rows show how often the agent loaded that skill's SKILL.md (a rough
 proxy: it counts the load, not the outcome). The other section rows show
 `-`, and TOTAL sums the tool calls.
 
+With a usage view, a derived **waste** column appears (TUI and text):
+for a tool row with uses in the window it shows the cost a use pays
+(tokens per use), and for a tool row with zero uses it shows `never`,
+the mark that started the review of issue #72. The value is computed in
+the pure renderer from data the report already carries (the row's tokens
+and its call count); the usage scan and the window logic are untouched.
+Section rows and TOTAL show `-`.
+
 The usage window is the last 30 days by default. `w` cycles
 30d → 90d → all. In headless modes the command takes the window as an
 argument: `/ctx 90d`, `/ctx all`.

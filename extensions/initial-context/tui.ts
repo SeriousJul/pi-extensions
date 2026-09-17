@@ -15,6 +15,7 @@ import {
 	formatStatusText,
 	renderContextText,
 	rowLabel,
+	wasteFor,
 	type InitialContextReport,
 	type InitialContextRow,
 } from "./context.ts";
@@ -137,6 +138,12 @@ export function createContextTui(deps: ContextTuiDeps): ContextTuiComponent {
 		const usesText = (row: InitialContextRow): string =>
 			counts !== undefined ? String(usesForLabel(row.label, row.kind, counts) ?? "-") : "-";
 		const usesWidth = Math.max(4, ...rows.map((row) => usesText(row).length));
+		// The derived waste column (issue #72): tokens per use for a tool the
+		// window saw, `never` for one it never used. Shown only when the
+		// usage view is ready, like the uses column.
+		const wasteText = (row: InitialContextRow): string =>
+			counts !== undefined ? wasteFor(row, counts) : "-";
+		const wasteWidth = Math.max(5, ...rows.map((row) => wasteText(row).length));
 		let totalUses = 0;
 		if (counts !== undefined) {
 			for (const [key, n] of Object.entries(counts)) {
@@ -153,10 +160,11 @@ export function createContextTui(deps: ContextTuiDeps): ContextTuiComponent {
 			const ctxPct = report.totalTokens > 0 ? `${((tokens / report.totalTokens) * 100).toFixed(1)}%` : "0.0%";
 			const winPct = window && window > 0 ? `${((tokens / window) * 100).toFixed(1)}%` : "-";
 			const uses = isTotal ? (counts !== undefined ? INT.format(totalUses) : "-") : usesText(row);
+			const waste = isTotal ? "-" : wasteText(row);
 			const bar = barFor(report.totalTokens > 0 ? (tokens / report.totalTokens) * 100 : 0);
 			const line =
 				`${marker} ${label.slice(0, labelWidth).padEnd(labelWidth)}  ${source.padEnd(sourceWidth)}  ` +
-				`${INT.format(tokens).padStart(tokenWidth)}  ${ctxPct}  ${winPct}  ${uses.padStart(usesWidth)}` +
+				`${INT.format(tokens).padStart(tokenWidth)}  ${ctxPct}  ${winPct}  ${uses.padStart(usesWidth)}  ${waste.padStart(wasteWidth)}` +
 				(bar ? `  ${bar}` : "");
 			return isTotal ? dim(line.trimEnd()) : line.trimEnd();
 		};

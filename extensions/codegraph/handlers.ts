@@ -1,7 +1,13 @@
 /**
- * The six codegraph tools (names, parameters, and descriptions mirror the
+ * The codegraph tools (names, parameters, and descriptions mirror the
  * upstream MCP tools, minus the projectPath parameter: the index is always
  * the one for the call's own worktree), plus the /codegraph command.
+ *
+ * The caller and callee tools keep their definitions in this module but are
+ * not registered (issue #72): `codegraph_explore` carries their
+ * information in its call trail, so registering them cost context without
+ * adding a job the agent met. Re-adding either is one line in the `TOOL`
+ * map; the execute wrapper and the renderer stay as they are.
  */
 import { Type } from "typebox";
 import type { NodeKind } from "./indexAdapter";
@@ -36,16 +42,16 @@ import type {
 } from "@earendil-works/pi-agent-core";
 
 /**
- * The six tool names. Each one is written once, in `TOOL`, and every use (the
+ * The tool names. Each one is written once, in `TOOL`, and every use (the
  * registration, the shared execute wrapper, the prompt gate in the entrypoint)
  * names it through this map, so a rename cannot silently desynchronize the note
  * from the tools it advertises. The entrypoint test asserts the registered names
- * against `CODEGRAPH_TOOL_NAMES`.
+ * against `CODEGRAPH_TOOL_NAMES`, and `registerTools` registers exactly this
+ * set: the caller and callee tools are absent from the map, so their
+ * definitions below stay built but unregistered (issue #72).
  */
 const TOOL = {
   search: "codegraph_search",
-  callers: "codegraph_callers",
-  callees: "codegraph_callees",
   impact: "codegraph_impact",
   node: "codegraph_node",
   explore: "codegraph_explore",
@@ -56,7 +62,7 @@ export const CODEGRAPH_TOOL_NAMES = Object.values(TOOL);
 const PROMPT_POLICY = [
   "- To understand an area or find where code lives, call codegraph_explore first.",
   "- To read a file, call codegraph_node with the file name. Its output is the same as read, plus which files depend on it.",
-  "- Before you change a symbol, call codegraph_impact to see what your edit could break.",
+  "- Before a refactor of a symbol, call codegraph_impact to see what your edit could break.",
   "- To find a symbol by name, call codegraph_search.",
   "- Use bash grep only for text that is not a symbol: comments, config values, log strings, and non-code files.",
   "- This extension maintains the index. Do not build, reindex, or delete it yourself.",
@@ -77,7 +83,7 @@ const PROMPT_FIRST_LINE: Record<IndexPromptState, string> = {
  * every call would refuse.
  */
 const PROMPT_NAMED_ROOTS =
-  "- To query a dependency's source, pass its directory as projectRoot (`opensrc path <pkg>` prints it). One projectRoot serves one call; its results are labeled with the project's name and version.";
+  "- To query a dependency's source, pass its directory as projectRoot (`opensrc path <pkg>` prints it). One projectRoot serves one call; its results are labeled with the project's name and version. The first call to a dependency builds its index and may wait; the build reports progress.";
 
 export function promptNoteFor(
   state: IndexPromptState,
@@ -208,7 +214,7 @@ function makeExecute(
   ) => string | Promise<string>,
   fileAnchor?: (params: Record<string, unknown>) => string | undefined,
 ): Execute {
-  return async (_toolCallId, params, _signal, _onUpdate, ctx) => {
+  return async (_toolCallId, params, _signal, onUpdate, ctx) => {
     const startedAt = Date.now();
     // The file argument rides the same carrier on a named call (spec 0009)
     // as on an unanchored one, only the named root is the anchor and the
@@ -222,7 +228,14 @@ function makeExecute(
     const anchor = fileAnchor?.(params);
     let usageDir: string | undefined;
     try {
-      const info = await session.ensureReady(ctx.cwd, anchor, projectRoot);
+      // Build progress streams to the caller as tool updates (issue #72):
+      // a cold named-root call builds its index inline, and the wait is
+      // visible and bounded instead of a silent hang. Warm calls (the
+      // cached instance, the reconcile-only path) run no build and stream
+      // nothing.
+      const info = await session.ensureReady(ctx.cwd, anchor, projectRoot, (text) => {
+        onUpdate?.({ content: [{ type: "text", text }], details: undefined });
+      });
       // The ledger of the index that served this call. Naming it from the ready
       // result reuses the resolution the seam already did, so a call resolves
       // its project root once.
@@ -333,70 +346,82 @@ function nodeFileRead(
   return nodeFileAnchor(params) === undefined ? undefined : info.file;
 }
 
-/** Register the six codegraph tools. */
+type ToolDefinition = Parameters<ExtensionAPI["registerTool"]>[0];
+
+/**
+ * Register the codegraph tools. The definitions below hold every tool this
+ * module can register; only the names in the `TOOL` map are registered.
+ * The caller and callee tools are defined but absent from the map (issue
+ * #72): `codegraph_explore` carries their information in its call trail,
+ * so they cost context without adding a job. Re-adding either is one line
+ * in the map; nothing else moves.
+ */
 export function registerTools(
   pi: ExtensionAPI,
   session: CodegraphSession,
 ): void {
-  pi.registerTool({
-    name: TOOL.search,
-    label: "codegraph search",
-    description:
-      "Quick symbol search by name. Returns locations only (no code). Use codegraph_explore instead to get the actual source / understand an area in one call.",
-    promptSnippet:
-      "codegraph_search: find symbols by name (locations only).",
-    parameters: Type.Object({
-      query: Type.String({
-        description:
-          'Symbol name or partial name (e.g., "auth", "signIn", "UserService")',
+  const definitions: Record<string, ToolDefinition> = {
+    [TOOL.search]: {
+      name: TOOL.search,
+      label: "codegraph search",
+      description:
+        "Quick symbol search by name. Returns locations only (no code). Use codegraph_explore instead to get the actual source / understand an area in one call.",
+      promptSnippet:
+        "codegraph_search: find symbols by name (locations only).",
+      parameters: Type.Object({
+        query: Type.String({
+          description:
+            'Symbol name or partial name (e.g., "auth", "signIn", "UserService")',
+        }),
+        kind: NodeKinds,
+        limit: Type.Optional(
+          Type.Integer({
+            description: "Maximum results (default 10).",
+            default: 10,
+          }),
+        ),
+        offset: Type.Optional(
+          Type.Integer({
+            description: "Skip the first N results for pagination.",
+            default: 0,
+          }),
+        ),
+        projectRoot: ProjectRootParam,
       }),
-      kind: NodeKinds,
-      limit: Type.Optional(
-        Type.Integer({
-          description: "Maximum results (default 10).",
-          default: 10,
-        }),
+      execute: makeExecute(session, TOOL.search, (info, params) =>
+        renderSearch(
+          info.cg,
+          String(params.query),
+          normalizeKinds(params.kind),
+          typeof params.limit === "number" ? params.limit : 10,
+          typeof params.offset === "number" ? params.offset : 0,
+        ),
       ),
-      offset: Type.Optional(
-        Type.Integer({
-          description: "Skip the first N results for pagination.",
-          default: 0,
-        }),
-      ),
-      projectRoot: ProjectRootParam,
-    }),
-    execute: makeExecute(session, TOOL.search, (info, params) =>
-      renderSearch(
-        info.cg,
-        String(params.query),
-        normalizeKinds(params.kind),
-        typeof params.limit === "number" ? params.limit : 10,
-        typeof params.offset === "number" ? params.offset : 0,
-      ),
-    ),
-  });
+    },
 
-  pi.registerTool({
-    name: TOOL.callers,
-    label: "codegraph callers",
-    description: "List functions that call <symbol>. For the full flow, use codegraph_explore.",
-    promptSnippet: "codegraph_callers: list what calls a symbol.",
-    parameters: Type.Object({
-      symbol: Type.String({
-        description:
-          "Name of the function, method, or class to find callers for",
-      }),
-      file: FileParam,
-      line: LineParam,
-      limit: Type.Optional(
-        Type.Integer({
-          description: "Maximum number of callers to return (default: 20)",
-          default: 20,
+    // The caller tool: defined, not registered (issue #72). Re-add
+    // "codegraph_callers" to the TOOL map to register it again.
+    codegraph_callers: {
+      name: "codegraph_callers",
+      label: "codegraph callers",
+      description: "List functions that call <symbol>. For the full flow, use codegraph_explore.",
+      promptSnippet: "codegraph_callers: list what calls a symbol.",
+      parameters: Type.Object({
+        symbol: Type.String({
+          description:
+            "Name of the function, method, or class to find callers for",
         }),
-      ),
-      projectRoot: ProjectRootParam,
-    }),
-    execute: makeExecute(session, TOOL.callers, (info, params) =>
+        file: FileParam,
+        line: LineParam,
+        limit: Type.Optional(
+          Type.Integer({
+            description: "Maximum number of callers to return (default: 20)",
+            default: 20,
+          }),
+        ),
+        projectRoot: ProjectRootParam,
+      }),
+      execute: makeExecute(session, "codegraph_callers", (info, params) =>
         renderRefs(
           info.cg,
           String(params.symbol),
@@ -405,30 +430,32 @@ export function registerTools(
           typeof params.line === "number" ? params.line : undefined,
           typeof params.limit === "number" ? params.limit : undefined,
         ),
-    ),
-  });
-
-  pi.registerTool({
-    name: TOOL.callees,
-    label: "codegraph callees",
-    description: "List functions that <symbol> calls. For the full flow, use codegraph_explore.",
-    promptSnippet: "codegraph_callees: list what a symbol calls.",
-    parameters: Type.Object({
-      symbol: Type.String({
-        description:
-          "Name of the function, method, or class to find callees for",
-      }),
-      file: FileParam,
-      line: LineParam,
-      limit: Type.Optional(
-        Type.Integer({
-          description: "Maximum number of callees to return (default: 20)",
-          default: 20,
-        }),
       ),
-      projectRoot: ProjectRootParam,
-    }),
-    execute: makeExecute(session, TOOL.callees, (info, params) =>
+    },
+
+    // The callee tool: defined, not registered (issue #72). Re-add
+    // "codegraph_callees" to the TOOL map to register it again.
+    codegraph_callees: {
+      name: "codegraph_callees",
+      label: "codegraph callees",
+      description: "List functions that <symbol> calls. For the full flow, use codegraph_explore.",
+      promptSnippet: "codegraph_callees: list what a symbol calls.",
+      parameters: Type.Object({
+        symbol: Type.String({
+          description:
+            "Name of the function, method, or class to find callees for",
+        }),
+        file: FileParam,
+        line: LineParam,
+        limit: Type.Optional(
+          Type.Integer({
+            description: "Maximum number of callees to return (default: 20)",
+            default: 20,
+          }),
+        ),
+        projectRoot: ProjectRootParam,
+      }),
+      execute: makeExecute(session, "codegraph_callees", (info, params) =>
         renderRefs(
           info.cg,
           String(params.symbol),
@@ -437,191 +464,198 @@ export function registerTools(
           typeof params.line === "number" ? params.line : undefined,
           typeof params.limit === "number" ? params.limit : undefined,
         ),
-    ),
-  });
-
-  pi.registerTool({
-    name: TOOL.impact,
-    label: "codegraph impact",
-    description: "List symbols affected by changing <symbol>. Use before a refactor.",
-    promptSnippet: "codegraph_impact: show what breaks when a symbol changes.",
-    parameters: Type.Object({
-      symbol: Type.String({
-        description: "Name of the symbol to analyze impact for",
-      }),
-      depth: Type.Optional(
-        Type.Integer({
-          description:
-            "How many levels of dependencies to traverse (default: 2)",
-          default: 2,
-          minimum: 1,
-        }),
       ),
-      file: FileParam,
-      line: LineParam,
-      projectRoot: ProjectRootParam,
-    }),
-    execute: makeExecute(session, TOOL.impact, (info, params) =>
-        renderImpact(
-          info.cg,
-          String(params.symbol),
-          typeof params.depth === "number" ? params.depth : 2,
-          info.file,
-          typeof params.line === "number" ? params.line : undefined,
+    },
+
+    [TOOL.impact]: {
+      name: TOOL.impact,
+      label: "codegraph impact",
+      description: "List symbols affected by changing <symbol>. Use before a refactor.",
+      promptSnippet: "codegraph_impact: show what breaks when a symbol changes.",
+      parameters: Type.Object({
+        symbol: Type.String({
+          description: "Name of the symbol to analyze impact for",
+        }),
+        depth: Type.Optional(
+          Type.Integer({
+            description:
+              "How many levels of dependencies to traverse (default: 2)",
+            default: 2,
+            minimum: 1,
+          }),
         ),
-    ),
-  });
-
-  pi.registerTool({
-    name: TOOL.node,
-    label: "codegraph node",
-    description:
-      "Two modes. (1) READ A FILE - use INSTEAD of the built-in read tool: " +
-      "pass `file` (a path or basename) with no `symbol` and it returns that " +
-      "file's current on-disk source with line numbers, exactly the shape read " +
-      "gives you (`<n>\\t<line>`, safe to edit from), narrowable with " +
-      "`offset`/`limit` just like read - PLUS a one-line note of which files " +
-      "depend on it. Same bytes as read (always the current on-disk source, " +
-      "never stale), with the blast radius attached. Use it whenever you would read a source " +
-      "file. (2) ONE SYMBOL you can name - its location, signature, verbatim " +
-      "source (includeCode=true) and caller/callee trail in one call, so before " +
-      "changing it you see what calls it and what your edit would break. For an " +
-      "AMBIGUOUS name it returns EVERY matching definition's body in one call " +
-      "(so you never read a file to find the right overload); pass " +
-      "`file`/`line` to pin one. Use codegraph_explore for several related " +
-      "symbols or the full flow.",
-    promptSnippet: "codegraph_node: read one file or symbol with graph context.",
-    parameters: Type.Object({
-      file: NodeFileParam,
-      symbol: Type.Optional(
-        Type.String({
-          description:
-            "Name of the symbol to read (symbol mode). Omit it and pass " +
-            "`file` alone to read a whole file like the built-in read tool.",
-        }),
-      ),
-      includeCode: Type.Optional(
-        Type.Boolean({
-          description:
-            "Symbol mode: include the symbol's full body (default: true, " +
-            "differs from upstream's default: false; the spec mandates it). " +
-            "Ignored in file mode, which always returns source unless " +
-            "`symbolsOnly` is set.",
-        }),
-      ),
-      offset: Type.Optional(
-        Type.Integer({
-          description:
-            "File mode: 1-based line to start reading from, exactly like the read tool's offset. Defaults to the start of the file.",
-          default: 1,
-          minimum: 1,
-        }),
-      ),
-      limit: Type.Optional(
-        Type.Integer({
-          description:
-            "File mode: maximum number of lines to return, exactly like the read tool's limit. Defaults to the whole file (capped at 2000 lines, like read).",
-          default: 2000,
-          minimum: 1,
-        }),
-      ),
-      symbolsOnly: Type.Optional(
-        Type.Boolean({
-          description:
-            "File mode: return just the file's symbol map + dependents (a cheap structural overview) instead of its source.",
-        }),
-      ),
-      line: Type.Optional(
-        Type.Integer({
-          minimum: 1,
-          description:
-            "Symbol mode only: disambiguate to the definition at/around this line (use with the file:line a trail showed you).",
-        }),
-      ),
-      projectRoot: ProjectRootParam,
-    }),
-    execute: makeExecute(
-      session,
-      TOOL.node,
-      (info, params) => {
-        // Symbol mode wins when both are given: `file` then narrows the symbol
-        // to the definition in that file (the spec's file+symbol priority).
-        // This call is not anchored, so its root is the working directory;
-        // the wrapper expresses the disambiguating file in that root's form
-        // and carries it on the ready result.
-        if (params.symbol !== undefined) {
-          return renderSymbol(
+        file: FileParam,
+        line: LineParam,
+        projectRoot: ProjectRootParam,
+      }),
+      execute: makeExecute(session, TOOL.impact, (info, params) =>
+          renderImpact(
             info.cg,
-            info.root,
             String(params.symbol),
-            params.includeCode !== false,
+            typeof params.depth === "number" ? params.depth : 2,
             info.file,
             typeof params.line === "number" ? params.line : undefined,
-          );
-        }
-        // File mode. The anchor predicate decides the mode and the ready
-        // result carries the root-relative path, so the two cannot disagree
-        // about what a `{ file }` call means.
-        const fileToRead = nodeFileRead(params, info);
-        if (fileToRead !== undefined) {
-          return renderFileView(
-            info.cg,
-            info.root,
-            fileToRead,
-            typeof params.offset === "number" ? params.offset : 1,
-            typeof params.limit === "number" ? params.limit : 2000,
-            params.symbolsOnly === true,
-          );
-        }
-        return "Either `file` or `symbol` must be provided.";
-      },
-      nodeFileAnchor,
-    ),
-  });
+          ),
+      ),
+    },
 
-  pi.registerTool({
-    name: TOOL.explore,
-    label: "codegraph explore",
-    description:
-      "PRIMARY TOOL - call FIRST for almost any question OR before an edit: " +
-      "how does X work, architecture, a bug, where/what is X, surveying an " +
-      "area, or the symbols you are about to change. Returns the verbatim " +
-      "source of the relevant symbols grouped by file in ONE capped call " +
-      "(read-equivalent - treat the shown source as already read; do NOT " +
-      "re-open those files), plus the call path among them. Query can be a " +
-      "natural-language question OR a bag of symbol/file names. Usually the " +
-      "ONLY call you need - more accurate context, in far fewer tokens and " +
-      "round-trips than a search/read/grep loop.",
-    promptSnippet: "codegraph_explore: get source and call paths for an area in one call.",
-    parameters: Type.Object({
-      query: Type.String({
-        description:
-          "Symbol names, file names, or short code terms to explore (e.g., " +
-          '"AuthService loginUser session-manager", "GraphTraverser BFS ' +
-          'impact traversal.ts"). For a flow question, name the symbols ' +
-          'spanning the flow (e.g. "mutateElement renderScene"). A ' +
-          "natural-language question works too - no prior codegraph_search " +
-          "needed.",
+    [TOOL.node]: {
+      name: TOOL.node,
+      label: "codegraph node",
+      description:
+        "Two modes. (1) READ A FILE - use INSTEAD of the built-in read tool: " +
+        "pass `file` (a path or basename) with no `symbol` and it returns that " +
+        "file's current on-disk source with line numbers, exactly the shape read " +
+        "gives you (`<n>\\t<line>`, safe to edit from), narrowable with " +
+        "`offset`/`limit` just like read - PLUS a one-line note of which files " +
+        "depend on it. Same bytes as read (always the current on-disk source, " +
+        "never stale), with the blast radius attached. Use it whenever you would read a source " +
+        "file. (2) ONE SYMBOL you can name - its location, signature, verbatim " +
+        "source (includeCode=true) and caller/callee trail in one call, so before " +
+        "changing it you see what calls it and what your edit would break. For an " +
+        "AMBIGUOUS name it returns EVERY matching definition's body in one call " +
+        "(so you never read a file to find the right overload); pass " +
+        "`file`/`line` to pin one. Use codegraph_explore for several related " +
+        "symbols or the full flow.",
+      promptSnippet: "codegraph_node: read one file or symbol with graph context.",
+      parameters: Type.Object({
+        file: NodeFileParam,
+        symbol: Type.Optional(
+          Type.String({
+            description:
+              "Name of the symbol to read (symbol mode). Omit it and pass " +
+              "`file` alone to read a whole file like the built-in read tool.",
+          }),
+        ),
+        includeCode: Type.Optional(
+          Type.Boolean({
+            description:
+              "Symbol mode: include the symbol's full body (default: true, " +
+              "differs from upstream's default: false; the spec mandates it). " +
+              "Ignored in file mode, which always returns source unless " +
+              "`symbolsOnly` is set.",
+          }),
+        ),
+        offset: Type.Optional(
+          Type.Integer({
+            description:
+              "File mode: 1-based line to start reading from, exactly like the read tool's offset. Defaults to the start of the file.",
+            default: 1,
+            minimum: 1,
+          }),
+        ),
+        limit: Type.Optional(
+          Type.Integer({
+            description:
+              "File mode: maximum number of lines to return, exactly like the read tool's limit. Defaults to the whole file (capped at 2000 lines, like read).",
+            default: 2000,
+            minimum: 1,
+          }),
+        ),
+        symbolsOnly: Type.Optional(
+          Type.Boolean({
+            description:
+              "File mode: return just the file's symbol map + dependents (a cheap structural overview) instead of its source.",
+          }),
+        ),
+        line: Type.Optional(
+          Type.Integer({
+            minimum: 1,
+            description:
+              "Symbol mode only: disambiguate to the definition at/around this line (use with the file:line a trail showed you).",
+          }),
+        ),
+        projectRoot: ProjectRootParam,
       }),
-      maxFiles: Type.Optional(
-        Type.Integer({
+      execute: makeExecute(
+        session,
+        TOOL.node,
+        (info, params) => {
+          // Symbol mode wins when both are given: `file` then narrows the symbol
+          // to the definition in that file (the spec's file+symbol priority).
+          // This call is not anchored, so its root is the working directory;
+          // the wrapper expresses the disambiguating file in that root's form
+          // and carries it on the ready result.
+          if (params.symbol !== undefined) {
+            return renderSymbol(
+              info.cg,
+              info.root,
+              String(params.symbol),
+              params.includeCode !== false,
+              info.file,
+              typeof params.line === "number" ? params.line : undefined,
+            );
+          }
+          // File mode. The anchor predicate decides the mode and the ready
+          // result carries the root-relative path, so the two cannot disagree
+          // about what a `{ file }` call means.
+          const fileToRead = nodeFileRead(params, info);
+          if (fileToRead !== undefined) {
+            return renderFileView(
+              info.cg,
+              info.root,
+              fileToRead,
+              typeof params.offset === "number" ? params.offset : 1,
+              typeof params.limit === "number" ? params.limit : 2000,
+              params.symbolsOnly === true,
+            );
+          }
+          return "Either `file` or `symbol` must be provided.";
+        },
+        nodeFileAnchor,
+      ),
+    },
+
+    [TOOL.explore]: {
+      name: TOOL.explore,
+      label: "codegraph explore",
+      description:
+        "PRIMARY TOOL - call FIRST for almost any question OR before an edit: " +
+        "how does X work, architecture, a bug, where/what is X, surveying an " +
+        "area, or the symbols you are about to change. Returns the verbatim " +
+        "source of the relevant symbols grouped by file in ONE capped call " +
+        "(read-equivalent - treat the shown source as already read; do NOT " +
+        "re-open those files), plus the call path among them. Query can be a " +
+        "natural-language question OR a bag of symbol/file names. Usually the " +
+        "ONLY call you need - more accurate context, in far fewer tokens and " +
+        "round-trips than a search/read/grep loop.",
+      promptSnippet: "codegraph_explore: get source and call paths for an area in one call.",
+      parameters: Type.Object({
+        query: Type.String({
           description:
-            "Maximum number of files to include source code from (default: 12)",
-          default: 12,
-          minimum: 1,
+            "Symbol names, file names, or short code terms to explore (e.g., " +
+            '"AuthService loginUser session-manager", "GraphTraverser BFS ' +
+            'impact traversal.ts"). For a flow question, name the symbols ' +
+            'spanning the flow (e.g. "mutateElement renderScene"). A ' +
+            "natural-language question works too - no prior codegraph_search " +
+            "needed.",
         }),
+        maxFiles: Type.Optional(
+          Type.Integer({
+            description:
+              "Maximum number of files to include source code from (default: 12)",
+            default: 12,
+            minimum: 1,
+          }),
+        ),
+        projectRoot: ProjectRootParam,
+      }),
+      execute: makeExecute(session, TOOL.explore, (info, params) =>
+        renderExplore(
+          info.cg,
+          info.root,
+          String(params.query),
+          typeof params.maxFiles === "number" ? params.maxFiles : 12,
+        ),
       ),
-      projectRoot: ProjectRootParam,
-    }),
-    execute: makeExecute(session, TOOL.explore, (info, params) =>
-      renderExplore(
-        info.cg,
-        info.root,
-        String(params.query),
-        typeof params.maxFiles === "number" ? params.maxFiles : 12,
-      ),
-    ),
-  });
+    },
+  };
+
+  // The map is the registration: one entry per registered tool, and the two
+  // unregistered definitions above cost nothing until a name returns.
+  for (const name of CODEGRAPH_TOOL_NAMES) {
+    pi.registerTool(definitions[name]);
+  }
 }
 
 // ------------------------------------------------------------------
@@ -637,27 +671,22 @@ function fmtTime(ts?: number): string {
 }
 
 /**
- * The order the status block lists the tools in: the note's own order, then the
- * two tools `codegraph_explore` covers. Derived from the same `TOOL` map the
- * tools are registered with, so a renamed tool cannot survive here as a name the
- * ledger never writes.
+ * The order the status block lists the tools in. Derived from the same `TOOL`
+ * map the tools are registered with, so a renamed tool cannot survive here as a
+ * name the ledger never writes.
  */
-const USAGE_TOOL_ORDER = [
-  TOOL.explore,
-  TOOL.node,
-  TOOL.search,
-  TOOL.impact,
-  TOOL.callers,
-  TOOL.callees,
-].map((name) => name.replace(/^codegraph_/, ""));
+const USAGE_TOOL_ORDER = [TOOL.explore, TOOL.node, TOOL.search, TOOL.impact].map(
+  (name) => name.replace(/^codegraph_/, ""),
+);
 
 /**
- * The tools a status row shows: the registered six in the fixed order the issue
- * settles (so a tool with no calls still reads 0 and the row does not move),
- * then any other name the ledger carries.
+ * The tools a status row shows: the registered four in a fixed order (so a tool
+ * with no calls still reads 0 and the row does not move), then any other name
+ * the ledger carries - including the unregistered caller and callee tools, whose
+ * recorded calls must not disappear from the display that explains them.
  *
  * The extra names are what keeps the row total. `usage.ok` and `usage.failed`
- * count every recorded call, so a row that listed only the six names could hide
+ * count every recorded call, so a row that listed only the four names could hide
  * calls - a tool renamed in a later version, or a line written by one. A
  * recorded call must never disappear from the display that explains it.
  */
