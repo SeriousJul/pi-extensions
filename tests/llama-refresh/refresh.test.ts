@@ -39,6 +39,10 @@ interface Harness {
 	applied: Model<Api>[];
 	setRegistry(provider: string, id: string, window: number | undefined): void;
 	setRefreshOk(ok: boolean): void;
+	/** A hook the fake refresh runs before it resolves, to land a select mid-check. */
+	setOnRefresh(fn: (() => void) | undefined): void;
+	/** Make the fake registry read-back throw, as a stale session's getter would. */
+	setResolveThrows(throws: boolean): void;
 	start(): void;
 	select(provider: string, id: string): void;
 	settled(provider: string, id: string, window: number): Promise<RefreshDecision>;
@@ -48,14 +52,20 @@ function makeHarness(): Harness {
 	const registry = new Map<string, Model<Api>>();
 	let refreshOk = true;
 	let refreshCalls = 0;
+	let onRefresh: (() => void) | undefined;
+	let resolveThrows = false;
 	const applied: Model<Api>[] = [];
 
 	const llamaRefresh = createLlamaRefresh({
 		refreshCatalog: async () => {
 			refreshCalls += 1;
+			onRefresh?.();
 			return refreshOk;
 		},
-		resolveModel: (ref) => registry.get(`${ref.provider}/${ref.id}`),
+		resolveModel: (ref) => {
+			if (resolveThrows) throw new Error("stale session");
+			return registry.get(`${ref.provider}/${ref.id}`);
+		},
 		applyModel: async (m) => {
 			applied.push(m);
 			return true;
@@ -78,6 +88,12 @@ function makeHarness(): Harness {
 		},
 		setRefreshOk(ok: boolean) {
 			refreshOk = ok;
+		},
+		setOnRefresh(fn) {
+			onRefresh = fn;
+		},
+		setResolveThrows(throws) {
+			resolveThrows = throws;
 		},
 		start: () => llamaRefresh.onSessionStart(),
 		select: (provider, id) => llamaRefresh.onModelSelect({ provider, id }),
@@ -244,7 +260,7 @@ describe("attempt", () => {
 		expect(h.applied.map((m) => m.id)).toEqual(["m1", "m2"]);
 	});
 
-	it("re-arms a re-selection of the same model, so a switch away and back after a sleep still heals", async () => {
+	it("re-arms a switch away and back, so a return after a sleep still heals", async () => {
 		const h = makeHarness();
 		h.setRegistry(LA, "m1", TRUE_WINDOW);
 		h.setRegistry(LA, "m2", TRUE_WINDOW);
@@ -299,5 +315,74 @@ describe("attempt", () => {
 
 		expect(decision.kind).toBe("re-apply");
 		expect(after.applied).toHaveLength(1);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// In-flight selects and failure-proof
+// ---------------------------------------------------------------------------
+
+describe("a select during the check", () => {
+	it("skips the re-apply when the user selects a different model during the in-flight refresh", async () => {
+		const h = makeHarness();
+		h.setRegistry(LA, "m1", TRUE_WINDOW);
+		h.setRegistry(LA, "m2", TRUE_WINDOW);
+		h.setOnRefresh(() => h.select(LA, "m2")); // the user selects mid-refresh
+
+		const decision = await h.settled(LA, "m1", FALLBACK_WINDOW);
+
+		expect(decision).toEqual({ kind: "skip" });
+		expect(h.refreshCalls).toBe(1);
+		expect(h.applied).toHaveLength(0);
+	});
+
+	it("still lets the user's new selection heal on its own Attempt", async () => {
+		const h = makeHarness();
+		h.setRegistry(LA, "m1", TRUE_WINDOW);
+		h.setRegistry(LA, "m2", TRUE_WINDOW);
+		let selected = false;
+		// The user selects once, during the first refresh.
+		h.setOnRefresh(() => {
+			if (!selected) {
+				selected = true;
+				h.select(LA, "m2");
+			}
+		});
+
+		await h.settled(LA, "m1", FALLBACK_WINDOW); // the m1 check is voided by the select
+		const decision = await h.settled(LA, "m2", FALLBACK_WINDOW); // the user's model heals
+
+		expect(decision.kind).toBe("re-apply");
+		expect(h.applied.map((m) => m.id)).toEqual(["m2"]);
+	});
+
+	it("skips the re-apply even when the user re-selects the checked model", async () => {
+		const h = makeHarness();
+		h.setRegistry(LA, "m1", TRUE_WINDOW);
+		h.setOnRefresh(() => h.select(LA, "m1")); // the select moves the generation either way
+
+		const decision = await h.settled(LA, "m1", FALLBACK_WINDOW);
+
+		expect(decision).toEqual({ kind: "skip" });
+		expect(h.applied).toHaveLength(0);
+	});
+});
+
+describe("failure-proof", () => {
+	it("degrades to silence when the registry read-back throws, and spends the Attempt", async () => {
+		const h = makeHarness();
+		h.setRegistry(LA, "m1", TRUE_WINDOW);
+		h.setResolveThrows(true);
+
+		const decision = await h.settled(LA, "m1", FALLBACK_WINDOW);
+
+		expect(decision).toEqual({ kind: "re-resolve" });
+		expect(h.refreshCalls).toBe(1);
+		expect(h.applied).toHaveLength(0);
+
+		// The Attempt is spent: a late read failure does not retry.
+		h.setResolveThrows(false);
+		const second = await h.settled(LA, "m1", FALLBACK_WINDOW);
+		expect(second).toEqual({ kind: "skip" });
 	});
 });

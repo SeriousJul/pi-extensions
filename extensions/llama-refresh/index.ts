@@ -78,11 +78,15 @@ export default function (pi: ExtensionAPI): void {
 		ctx = sessionCtx;
 		const model = sessionCtx.model;
 		if (!llamaRefresh || !model) return;
-		void llamaRefresh.onTurnEnd({
-			provider: model.provider,
-			id: model.id,
-			contextWindow: model.contextWindow,
-		});
+		// The check runs unattended: a late failure must degrade to silence,
+		// never to an unhandled rejection.
+		void llamaRefresh
+			.onTurnEnd({
+				provider: model.provider,
+				id: model.id,
+				contextWindow: model.contextWindow,
+			})
+			.catch(() => undefined);
 	});
 
 	pi.on("session_shutdown", () => {

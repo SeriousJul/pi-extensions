@@ -27,6 +27,12 @@
  * 128000 context is indistinguishable from the Fallback window at check
  * time; its Attempt refresh confirms the same value and the module stays
  * silent, so the sentinel costs nothing in that case.
+ *
+ * The module never clobbers and never errors: a model select that lands
+ * while a check is in flight moves the selection's generation, and the
+ * check's re-apply sees the move and skips, so the user's choice wins. A
+ * registry read-back that throws (a stale or shut-down session) degrades
+ * to the model-not-listed path, so a dying session costs at most silence.
  */
 import type { Api, Model } from "@earendil-works/pi-ai";
 
@@ -56,7 +62,7 @@ export interface CurrentModel {
 
 /** The decision a turn end reaches. */
 export type RefreshDecision =
-	| /** Not eligible (not llama.cpp, not the Fallback window, Attempt spent, or the refresh failed). */
+	| /** Not eligible (not llama.cpp, not the Fallback window, Attempt spent, the refresh failed, or the selection moved mid-check). */
 	({ kind: "skip" })
 	| /** The refresh succeeded and the window did not change; no re-apply. */
 	({ kind: "re-resolve" })
@@ -79,7 +85,7 @@ export interface LlamaRefreshDeps {
 export interface LlamaRefresh {
 	/** A new session start: no selection has spent its Attempt. */
 	onSessionStart(): void;
-	/** A new model selection (including a re-selection of the same model): re-arms its Attempt. */
+	/** A new model selection: re-arms the selection's Attempt and moves the selection's generation. */
 	onModelSelect(model: ModelRef): void;
 	/** The agent turn ended: check the active model and, if eligible, heal it. */
 	onTurnEnd(current: CurrentModel): Promise<RefreshDecision>;
@@ -92,12 +98,19 @@ export function createLlamaRefresh(deps: LlamaRefreshDeps): LlamaRefresh {
 	// persisted catalog and the session model both re-resolve.
 	const spent = new Set<string>();
 	const key = (model: ModelRef) => `${model.provider}/${model.id}`;
+	// The selection's generation: bumped on every model select. A check
+	// captures the generation when it starts and skips its re-apply if the
+	// generation moved while the check was in flight, so a manual model
+	// select made during the network refresh is never clobbered (the same
+	// guard the model router applies to its own continuation).
+	let generation = 0;
 
 	return {
 		onSessionStart() {
 			spent.clear();
 		},
 		onModelSelect(model) {
+			generation += 1;
 			spent.delete(key(model));
 		},
 		async onTurnEnd(current) {
@@ -105,6 +118,7 @@ export function createLlamaRefresh(deps: LlamaRefreshDeps): LlamaRefresh {
 			if (current.contextWindow !== FALLBACK_WINDOW) return { kind: "skip" };
 			const selection = key(current);
 			if (spent.has(selection)) return { kind: "skip" };
+			const gen = generation;
 			// The Wake completes during the first request, so a refresh now sees
 			// the server's true `n_ctx`.
 			const refreshed = await deps.refreshCatalog();
@@ -114,13 +128,23 @@ export function createLlamaRefresh(deps: LlamaRefreshDeps): LlamaRefresh {
 				return { kind: "skip" };
 			}
 			spent.add(selection);
-			const resolved = deps.resolveModel(current);
+			let resolved: Model<Api> | undefined;
+			try {
+				resolved = deps.resolveModel(current);
+			} catch {
+				// The registry read threw (a stale or shut-down session). The
+				// Attempt is spent; the check degrades to silence.
+				resolved = undefined;
+			}
 			if (resolved === undefined || resolved.contextWindow === FALLBACK_WINDOW) {
 				// The server confirmed the Fallback window (a model genuinely
 				// loaded at 128000, or a model the refresh no longer lists):
 				// stay silent. The Attempt is spent either way.
 				return { kind: "re-resolve" };
 			}
+			// A manual model select landed during the in-flight check: the
+			// user's choice wins, and the re-apply would clobber it.
+			if (gen !== generation) return { kind: "skip" };
 			// The window changed: re-apply the model exactly as the registry
 			// resolved it - the only path that changes a running session's
 			// window (ADR 0019).
