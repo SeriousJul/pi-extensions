@@ -9,9 +9,19 @@
 //
 // The real dependencies the core receives: a forced, network-allowed catalog
 // refresh scoped to the llama.cpp provider, a registry read-back by provider
-// and id, and the model re-application through pi.setModel. A refresh that
-// fails (server down, aborted) is absorbed here as a plain false, so a down
-// server degrades to today's behavior instead of erroring every turn.
+// and id, a probe of whether the session is still current, and the model
+// re-application through pi.setModel. A refresh that fails (server down,
+// aborted, stale context) is absorbed here as a plain false, so a down
+// server or a dead session degrades to today's behavior instead of erroring
+// every turn.
+//
+// Every dependency reads the session context captured when the core was
+// built, not a shared "latest context" variable: pi re-binds the shared
+// extension runtime to the new session on a replacement (switch, resume,
+// reload) and invalidates the old one. A check that spans the replacement
+// then reads the invalidated context - its refresh degrades to a skip, and
+// the isCurrent probe rejects its re-apply - so the new session's model is
+// never touched by a check of the old session.
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
@@ -25,19 +35,14 @@ export default function (pi: ExtensionAPI): void {
 	// The core for the current session. Null before the first session start
 	// and after a shutdown.
 	let llamaRefresh: LlamaRefresh | null = null;
-	// The latest event context. pi builds a fresh context object per event
-	// whose fields are live getters; the dependencies always read through the
-	// latest one so they never act on a previous session's runtime.
-	let ctx: ExtensionContext | null = null;
 
-	pi.on("session_start", (_event, sessionCtx) => {
-		ctx = sessionCtx;
+	pi.on("session_start", (_event, sessionCtx: ExtensionContext) => {
 		llamaRefresh = createLlamaRefresh({
 			refreshCatalog: async () => {
-				const active = ctx;
-				if (!active) return false;
+				// A stale context's modelRegistry getter throws; the catch
+				// absorbs it as a failed refresh.
 				try {
-					const result = await active.modelRegistry.refresh({
+					const result = await sessionCtx.modelRegistry.refresh({
 						allowNetwork: true,
 						force: true,
 						providers: [LLAMA_CPP_PROVIDER],
@@ -47,13 +52,21 @@ export default function (pi: ExtensionAPI): void {
 					return false;
 				}
 			},
-			resolveModel: (ref) => {
-				const active = ctx;
-				return active ? active.modelRegistry.find(ref.provider, ref.id) : undefined;
-			},
+			resolveModel: (ref) => sessionCtx.modelRegistry.find(ref.provider, ref.id),
 			applyModel: async (model) => {
 				try {
 					return await pi.setModel(model);
+				} catch {
+					return false;
+				}
+			},
+			// Probes the captured context through its active getter. While the
+			// session lives it answers true; after a replacement or reload the
+			// getter throws, which the wiring absorbs as "not current."
+			isCurrent: () => {
+				try {
+					void sessionCtx.modelRegistry;
+					return true;
 				} catch {
 					return false;
 				}
@@ -63,8 +76,7 @@ export default function (pi: ExtensionAPI): void {
 		llamaRefresh.onSessionStart();
 	});
 
-	pi.on("model_select", (event, sessionCtx) => {
-		ctx = sessionCtx;
+	pi.on("model_select", (event) => {
 		// Every select re-arms the Attempt for its selection, including a
 		// re-selection of the same model after a sleep.
 		llamaRefresh?.onModelSelect({ provider: event.model.provider, id: event.model.id });
@@ -75,7 +87,6 @@ export default function (pi: ExtensionAPI): void {
 	// request, so this is the earliest moment the true context size is
 	// observable and a re-apply cannot race in-flight work.
 	pi.on("agent_settled", (_event, sessionCtx) => {
-		ctx = sessionCtx;
 		const model = sessionCtx.model;
 		if (!llamaRefresh || !model) return;
 		// The check runs unattended: a late failure must degrade to silence,

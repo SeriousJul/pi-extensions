@@ -39,10 +39,12 @@ interface Harness {
 	applied: Model<Api>[];
 	setRegistry(provider: string, id: string, window: number | undefined): void;
 	setRefreshOk(ok: boolean): void;
-	/** A hook the fake refresh runs before it resolves, to land a select mid-check. */
+	/** A hook the fake refresh runs before it resolves, to land a select or a second settled run mid-check. */
 	setOnRefresh(fn: (() => void) | undefined): void;
 	/** Make the fake registry read-back throw, as a stale session's getter would. */
 	setResolveThrows(throws: boolean): void;
+	/** Make the core's session look stale, as after a replacement or reload. */
+	setIsCurrent(current: boolean): void;
 	start(): void;
 	select(provider: string, id: string): void;
 	settled(provider: string, id: string, window: number): Promise<RefreshDecision>;
@@ -54,6 +56,7 @@ function makeHarness(): Harness {
 	let refreshCalls = 0;
 	let onRefresh: (() => void) | undefined;
 	let resolveThrows = false;
+	let isCurrent = true;
 	const applied: Model<Api>[] = [];
 
 	const llamaRefresh = createLlamaRefresh({
@@ -70,6 +73,7 @@ function makeHarness(): Harness {
 			applied.push(m);
 			return true;
 		},
+		isCurrent: () => isCurrent,
 	});
 
 	return {
@@ -94,6 +98,9 @@ function makeHarness(): Harness {
 		},
 		setResolveThrows(throws) {
 			resolveThrows = throws;
+		},
+		setIsCurrent(current) {
+			isCurrent = current;
 		},
 		start: () => llamaRefresh.onSessionStart(),
 		select: (provider, id) => llamaRefresh.onModelSelect({ provider, id }),
@@ -365,6 +372,75 @@ describe("a select during the check", () => {
 
 		expect(decision).toEqual({ kind: "skip" });
 		expect(h.applied).toHaveLength(0);
+	});
+});
+
+describe("concurrent checks", () => {
+	it("serializes two settled runs on one selection into one refresh and one re-apply", async () => {
+		const h = makeHarness();
+		h.setRegistry(LA, "m1", TRUE_WINDOW);
+		let second: Promise<RefreshDecision> | undefined;
+		// The second run settles while the first refresh is in flight.
+		h.setOnRefresh(() => {
+			second = h.settled(LA, "m1", FALLBACK_WINDOW);
+		});
+
+		const first = await h.settled(LA, "m1", FALLBACK_WINDOW);
+
+		expect(first.kind).toBe("re-apply");
+		// The checks serialized: the second ran after the first spent the
+		// selection's Attempt and skipped.
+		expect(await second!).toEqual({ kind: "skip" });
+		expect(h.refreshCalls).toBe(1);
+		expect(h.applied).toHaveLength(1);
+	});
+
+	it("lets the later settled run heal after the earlier one spends the Attempt", async () => {
+		const h = makeHarness();
+		h.setRegistry(LA, "m1", TRUE_WINDOW);
+		let second: Promise<RefreshDecision> | undefined;
+		// The first refresh fails while the second run settles on top of it.
+		h.setRefreshOk(false);
+		h.setOnRefresh(() => {
+			if (h.refreshCalls === 1) {
+				second = h.settled(LA, "m1", FALLBACK_WINDOW);
+			} else {
+				// The server comes back for the second check's refresh.
+				h.setRefreshOk(true);
+			}
+		});
+
+		const first = await h.settled(LA, "m1", FALLBACK_WINDOW);
+
+		expect(first).toEqual({ kind: "skip" });
+		// The first refresh failed, so the Attempt is unspent and the second,
+		// queued behind it, heals the selection.
+		expect(await second!).toEqual({ kind: "re-apply", model: expect.objectContaining({ contextWindow: TRUE_WINDOW }) });
+		expect(h.refreshCalls).toBe(2);
+		expect(h.applied).toHaveLength(1);
+	});
+});
+
+describe("a check that outlives its session", () => {
+	it("never re-applies when the session was replaced mid-check, and spends the Attempt", async () => {
+		const h = makeHarness();
+		h.setRegistry(LA, "m1", TRUE_WINDOW);
+		// The session is replaced during the in-flight refresh: the core's
+		// context is invalidated and the shared set-model now belongs to the
+		// new session.
+		h.setOnRefresh(() => h.setIsCurrent(false));
+
+		const decision = await h.settled(LA, "m1", FALLBACK_WINDOW);
+
+		expect(decision).toEqual({ kind: "skip" });
+		expect(h.refreshCalls).toBe(1);
+		expect(h.applied).toHaveLength(0);
+
+		// The Attempt is spent by the successful refresh: this (now dead)
+		// selection never retries through the old core.
+		h.setIsCurrent(true);
+		const second = await h.settled(LA, "m1", FALLBACK_WINDOW);
+		expect(second).toEqual({ kind: "skip" });
 	});
 });
 

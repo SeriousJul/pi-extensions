@@ -31,8 +31,14 @@
  * The module never clobbers and never errors: a model select that lands
  * while a check is in flight moves the selection's generation, and the
  * check's re-apply sees the move and skips, so the user's choice wins. A
- * registry read-back that throws (a stale or shut-down session) degrades
+ * check that outlived its session (a replacement or reload) fails the
+ * isCurrent probe and skips its re-apply, so the shared runtime that now
+ * belongs to the new session is never touched by a check of the old one.
+ * A registry read-back that throws (a stale or shut-down session) degrades
  * to the model-not-listed path, so a dying session costs at most silence.
+ * Two settled runs never check the same selection at once: the checks
+ * serialize through a promise chain, and the later one sees the Attempt
+ * spent and skips.
  */
 import type { Api, Model } from "@earendil-works/pi-ai";
 
@@ -80,6 +86,14 @@ export interface LlamaRefreshDeps {
 	resolveModel: (model: ModelRef) => Model<Api> | undefined;
 	/** Re-apply a model to the running session (set model). Resolves false when refused. */
 	applyModel: (model: Model<Api>) => Promise<boolean>;
+	/**
+	 * Whether the session this core belongs to is still current. The wiring
+	 * answers through the session context captured when the core was built:
+	 * a context that outlived its session (a replacement or reload) has its
+	 * getters throw. A check that spans a replacement must not re-apply
+	 * through the shared runtime, which now belongs to the new session.
+	 */
+	isCurrent: () => boolean;
 }
 
 export interface LlamaRefresh {
@@ -104,52 +118,74 @@ export function createLlamaRefresh(deps: LlamaRefreshDeps): LlamaRefresh {
 	// select made during the network refresh is never clobbered (the same
 	// guard the model router applies to its own continuation).
 	let generation = 0;
+	// All turn-end checks serialize through this chain, so two settled runs
+	// can never run their refreshes at once: the later check runs after the
+	// earlier one spent the selection's Attempt and skips (the same pattern
+	// the model router applies to its async entry points).
+	let queue: Promise<unknown> = Promise.resolve();
+	function enqueue<T>(work: () => Promise<T>): Promise<T> {
+		const run = queue.then(work, work);
+		queue = run.catch(() => undefined);
+		return run;
+	}
 
 	return {
 		onSessionStart() {
 			spent.clear();
+			// The wiring rebuilds the core per session; dropping the queue
+			// stops any check still in flight for the previous session.
+			queue = Promise.resolve();
 		},
 		onModelSelect(model) {
 			generation += 1;
 			spent.delete(key(model));
 		},
-		async onTurnEnd(current) {
-			if (current.provider !== LLAMA_CPP_PROVIDER) return { kind: "skip" };
-			if (current.contextWindow !== FALLBACK_WINDOW) return { kind: "skip" };
-			const selection = key(current);
-			if (spent.has(selection)) return { kind: "skip" };
-			const gen = generation;
-			// The Wake completes during the first request, so a refresh now sees
-			// the server's true `n_ctx`.
-			const refreshed = await deps.refreshCatalog();
-			if (!refreshed) {
-				// A failed refresh does not spend the Attempt: the selection
-				// retries on the next turn end.
-				return { kind: "skip" };
-			}
-			spent.add(selection);
-			let resolved: Model<Api> | undefined;
-			try {
-				resolved = deps.resolveModel(current);
-			} catch {
-				// The registry read threw (a stale or shut-down session). The
-				// Attempt is spent; the check degrades to silence.
-				resolved = undefined;
-			}
-			if (resolved === undefined || resolved.contextWindow === FALLBACK_WINDOW) {
-				// The server confirmed the Fallback window (a model genuinely
-				// loaded at 128000, or a model the refresh no longer lists):
-				// stay silent. The Attempt is spent either way.
-				return { kind: "re-resolve" };
-			}
-			// A manual model select landed during the in-flight check: the
-			// user's choice wins, and the re-apply would clobber it.
-			if (gen !== generation) return { kind: "skip" };
-			// The window changed: re-apply the model exactly as the registry
-			// resolved it - the only path that changes a running session's
-			// window (ADR 0019).
-			await deps.applyModel(resolved);
-			return { kind: "re-apply", model: resolved };
+		onTurnEnd(current) {
+			return enqueue(async () => {
+				if (current.provider !== LLAMA_CPP_PROVIDER) return { kind: "skip" };
+				if (current.contextWindow !== FALLBACK_WINDOW) return { kind: "skip" };
+				const selection = key(current);
+				if (spent.has(selection)) return { kind: "skip" };
+				const gen = generation;
+				// The Wake completes during the first request, so a refresh now sees
+				// the server's true `n_ctx`.
+				const refreshed = await deps.refreshCatalog();
+				if (!refreshed) {
+					// A failed refresh does not spend the Attempt: the selection
+					// retries on the next turn end.
+					return { kind: "skip" };
+				}
+				spent.add(selection);
+				let resolved: Model<Api> | undefined;
+				try {
+					resolved = deps.resolveModel(current);
+				} catch {
+					// The registry read threw (a stale or shut-down session). The
+					// Attempt is spent; the check degrades to silence.
+					resolved = undefined;
+				}
+				if (resolved === undefined || resolved.contextWindow === FALLBACK_WINDOW) {
+					// The server confirmed the Fallback window (a model genuinely
+					// loaded at 128000, or a model the refresh no longer lists):
+					// stay silent. The Attempt is spent either way.
+					return { kind: "re-resolve" };
+				}
+				// A manual model select landed during the in-flight check: the
+				// user's choice wins, and the re-apply would clobber it.
+				if (gen !== generation) return { kind: "skip" };
+				// The check outlived its session: a replacement or reload
+				// invalidated the context the check was built with, and the
+				// shared set-model now belongs to the new session. The
+				// re-apply would clobber that session's model, so the check
+				// degrades to silence (the Attempt is spent; the new session
+				// re-evaluates with its own core).
+				if (!deps.isCurrent()) return { kind: "skip" };
+				// The window changed: re-apply the model exactly as the registry
+				// resolved it - the only path that changes a running session's
+				// window (ADR 0019).
+				await deps.applyModel(resolved);
+				return { kind: "re-apply", model: resolved };
+			});
 		},
 	};
 }
