@@ -1,8 +1,9 @@
 # Pi Extensions
 
-Extensions for the pi coding agent. Seven today: Codegraph (semantic code
+Extensions for the pi coding agent. Eight today: Codegraph (semantic code
 search over the current project), Quota (subscription quota monitor), Model
-router (automatic recovery from quota exhaustion), Sync (device file
+router (automatic recovery from quota exhaustion), Llama refresh (self-heal
+of the context window for a lazily loaded local model), Sync (device file
 sync), Usage (token and cost reporting across all sessions), Compress
 (request-time compression of finished turns), and Pruning (two-level
 context control: request-time pruning of large tool outputs in front of
@@ -254,6 +255,33 @@ not say it is the maximum across windows)
 The one synthetic user message the router sends to resume the halted turn.
 _Avoid_: resume prompt, continuation (generic), retry message (a retry is a
 different concept)
+
+### Llama refresh
+
+**Fallback window**:
+The fixed 128000 context window the llama.cpp provider reports for a model
+whose `n_ctx` is not exposed because the model is asleep. The sentinel llama
+refresh tests against: a llama.cpp model resolved at this value was deduced,
+not reported.
+_Avoid_: default window, estimated window, 128k
+
+**Wake**:
+The lazy load of an asleep model triggered by its first request. After a
+Wake the server exposes the model's true `n_ctx`, but only to the next
+catalog read.
+_Avoid_: load (too generic), spin-up, boot
+
+**Attempt**:
+The one catalog refresh and window comparison a model selection may spend.
+A selection gets at most one Attempt; a new selection re-arms it.
+_Avoid_: retry (implies failure), probe, check
+
+**Re-resolution**:
+Reading the model back from the registry after a Wake and re-applying it so
+the running session's window changes. Happens only when the window actually
+changed, so it appends at most one model change entry per Attempt.
+_Avoid_: refresh (the refresh is the catalog read; the re-resolution is the
+read plus the re-apply), model update
 
 ### Resource toggle
 

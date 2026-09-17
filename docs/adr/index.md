@@ -23,3 +23,4 @@ chosen option, and the options that were considered.
 | [0016](/adr/0016-dependency-indexes-build-on-first-query) | Dependency indexes build on first query, with streamed progress. |
 | [0017](/adr/0017-docs-screenshots-render-by-capture-pipeline) | Docs screenshots render by a capture pipeline; none is taken by hand. |
 | [0018](/adr/0018-pruning-engagement-is-sticky) | Pruning engagement is sticky for the session; it holds until a reset. |
+| [0019](/adr/0019-llama-refresh-self-heals-the-fallback-window) | The fallback window self-heals via a one-shot re-resolution after the model's wake. |
