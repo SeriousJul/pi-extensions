@@ -287,6 +287,56 @@ describe("createToolUsageSource", () => {
 		expect(source.snapshot().error).toBe("subscriber boom");
 	});
 
+	it("re-runs a failed scan on the next kick without double counting", async () => {
+		const root = makeTree();
+		const source = makeSource(root, join(tmp, "cache.json"));
+		let boom = true;
+		source.subscribe(() => {
+			if (boom) throw new Error("subscriber boom");
+		});
+		const deadline = Date.now() + 1000;
+		while (source.snapshot().phase !== "error" && Date.now() < deadline) {
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		expect(source.snapshot().phase).toBe("error");
+		// The next /ctx kicks again. The failed pass already covered every
+		// file, so the retry parses none and counts nothing twice.
+		boom = false;
+		const settled = await source.counts();
+		expect(source.snapshot().phase).toBe("ready");
+		expect(settled.scanned).toBe(0);
+		expect(settled.counts).toEqual({
+			bash: 4,
+			"mcp:list_windows": 1,
+			read: 1,
+			"skill:domain-modeling": 1,
+		});
+	});
+
+	it("reports scan progress in the snapshot while the first scan runs", async () => {
+		// 70 files: the scan yields after 64, so the snapshot right after
+		// creation carries the progress the dialog renders.
+		tmp = mkdtempSync(join(tmpdir(), "tool-usage-"));
+		const root = join(tmp, "sessions");
+		const proj = join(root, "proj");
+		mkdirSync(proj, { recursive: true });
+		for (let i = 0; i < 70; i++) {
+			const line = JSON.stringify({
+				type: "message",
+				id: `p${i}`,
+				parentId: null,
+				timestamp: iso(1),
+				message: { role: "assistant", content: [{ type: "toolCall", id: "x", name: "bash", arguments: {} }] },
+			});
+			writeFileSync(join(proj, `s${i}.jsonl`), line + "\n");
+		}
+		const source = makeSource(root, join(tmp, "cache.json"));
+		expect(source.snapshot()).toMatchObject({ phase: "scanning", files: 70, scanned: 64 });
+		const settled = await source.counts();
+		expect(settled.counts).toEqual({ bash: 70 });
+		expect(source.snapshot()).toMatchObject({ phase: "ready", files: 70, scanned: 70 });
+	});
+
 	it("notifies subscribers when the scan settles and when the window changes", async () => {
 		const root = makeTree();
 		const source = makeSource(root, join(tmp, "cache.json"));
