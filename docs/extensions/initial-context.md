@@ -72,6 +72,7 @@ counts once (ADR 0009). A skill load is a tool call whose arguments
 reference the skill's SKILL.md, by path; the skill name is read off the
 directory that holds the file. The scan runs in the background on the
 first `/ctx`; the dialog shows a counting state until it settles. A
+scan that fails settles to an error state, and the next `/ctx` re-runs it. A
 per-file cache keyed on mtime and size
 (`~/.pi/agent/tool-usage-cache.json`, override `PI_TOOL_USAGE_CACHE`)
 makes every later open near instant and window switches a filter on

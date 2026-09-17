@@ -3,7 +3,7 @@
  * session tree, fork dedupe, the mcp subtool split, the windows, and the
  * per-file mtime+size cache.
  */
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync, appendFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -243,6 +243,98 @@ describe("createToolUsageSource", () => {
 			read: 1,
 			"skill:domain-modeling": 1,
 		});
+	});
+
+	it("drops a cache with a corrupt per-file entry and re-scans from empty", async () => {
+		const root = makeTree();
+		const cacheFile = join(tmp, "cache.json");
+		const first = makeSource(root, cacheFile);
+		const cold = await first.counts();
+		expect(cold.scanned).toBe(3);
+
+		// Corrupt one entry: drop `recent` and `lineHashes`.
+		const parsed = JSON.parse(readFileSync(cacheFile, "utf8"));
+		delete parsed.files[join(root, "proj", "a.jsonl")].recent;
+		delete parsed.files[join(root, "proj", "a.jsonl")].lineHashes;
+		writeFileSync(cacheFile, JSON.stringify(parsed));
+
+		// A shape-invalid entry reads as an empty cache: a full re-scan with
+		// no throw and the exact same counts.
+		const next = makeSource(root, cacheFile);
+		const counts = await next.counts();
+		expect(counts.scanned).toBe(3);
+		expect(counts.counts).toEqual(cold.counts);
+	});
+
+	it("settles a failed initial scan as an error, never an unhandled rejection", async () => {
+		// The TUI never awaits counts(); a scan that rejects at the initial
+		// kick must not leak an unhandled rejection. A subscriber that throws
+		// inside the publish makes the first scan reject; without the no-op
+		// handler on the initial kick, the rejection is an unhandled error
+		// and fails the run.
+		const root = makeTree();
+		const source = makeSource(root, join(tmp, "cache.json"));
+		source.subscribe(() => {
+			throw new Error("subscriber boom");
+		});
+		// Wait on the snapshot, like the TUI does; never attach a handler to
+		// the scan promise itself.
+		const deadline = Date.now() + 1000;
+		while (source.snapshot().phase !== "error" && Date.now() < deadline) {
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		expect(source.snapshot().phase).toBe("error");
+		expect(source.snapshot().error).toBe("subscriber boom");
+	});
+
+	it("re-runs a failed scan on the next kick without double counting", async () => {
+		const root = makeTree();
+		const source = makeSource(root, join(tmp, "cache.json"));
+		let boom = true;
+		source.subscribe(() => {
+			if (boom) throw new Error("subscriber boom");
+		});
+		const deadline = Date.now() + 1000;
+		while (source.snapshot().phase !== "error" && Date.now() < deadline) {
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		expect(source.snapshot().phase).toBe("error");
+		// The next /ctx kicks again. The failed pass already covered every
+		// file, so the retry parses none and counts nothing twice.
+		boom = false;
+		const settled = await source.counts();
+		expect(source.snapshot().phase).toBe("ready");
+		expect(settled.scanned).toBe(0);
+		expect(settled.counts).toEqual({
+			bash: 4,
+			"mcp:list_windows": 1,
+			read: 1,
+			"skill:domain-modeling": 1,
+		});
+	});
+
+	it("reports scan progress in the snapshot while the first scan runs", async () => {
+		// 70 files: the scan yields after 64, so the snapshot right after
+		// creation carries the progress the dialog renders.
+		tmp = mkdtempSync(join(tmpdir(), "tool-usage-"));
+		const root = join(tmp, "sessions");
+		const proj = join(root, "proj");
+		mkdirSync(proj, { recursive: true });
+		for (let i = 0; i < 70; i++) {
+			const line = JSON.stringify({
+				type: "message",
+				id: `p${i}`,
+				parentId: null,
+				timestamp: iso(1),
+				message: { role: "assistant", content: [{ type: "toolCall", id: "x", name: "bash", arguments: {} }] },
+			});
+			writeFileSync(join(proj, `s${i}.jsonl`), line + "\n");
+		}
+		const source = makeSource(root, join(tmp, "cache.json"));
+		expect(source.snapshot()).toMatchObject({ phase: "scanning", files: 70, scanned: 64 });
+		const settled = await source.counts();
+		expect(settled.counts).toEqual({ bash: 70 });
+		expect(source.snapshot()).toMatchObject({ phase: "ready", files: 70, scanned: 70 });
 	});
 
 	it("notifies subscribers when the scan settles and when the window changes", async () => {

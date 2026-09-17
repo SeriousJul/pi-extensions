@@ -98,6 +98,11 @@ export default function (pi: ExtensionAPI): void {
 			}
 
 			if (ctx.hasUI && ctx.mode === "tui") {
+				// Re-kick the scan so a previously failed run retries; the dialog
+				// shows the counting state until it settles.
+				void usage.counts().catch(() => {
+					// The snapshot carries the error; the dialog renders it.
+				});
 				let component: ReturnType<typeof createContextTui> | undefined;
 				await ctx.ui.custom((tui, theme, _keybindings, done) => {
 					component = createContextTui({

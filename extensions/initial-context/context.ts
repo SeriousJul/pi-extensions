@@ -593,8 +593,8 @@ export function renderContextText(report: InitialContextReport, usage?: { window
 	const usesWidth = usage ? Math.max(4, ...report.rows.map((row) => usesText(row).length)) : 0;
 	let totalUses = 0;
 	if (usage) {
-		for (const row of report.rows) {
-			if (row.kind === "tool") totalUses += usesForLabel(row.label, row.kind, usage.counts) ?? 0;
+		for (const [key, n] of Object.entries(usage.counts)) {
+			if (!key.startsWith("skill:")) totalUses += n;
 		}
 	}
 
