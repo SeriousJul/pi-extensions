@@ -2,7 +2,7 @@
  * codegraph extension entrypoint.
  *
  * Embeds the codegraph library in-process (no MCP, no daemon): registers the
- * six codegraph tools and the /codegraph command, and keeps one index open
+ * four codegraph tools and the /codegraph command, and keeps one index open
  * per project root in this pi session. Every worktree of a git repository
  * gets its own index, seeded from a sibling worktree's index and kept
  * current by codegraph's own file watcher (with a reconcile before every
