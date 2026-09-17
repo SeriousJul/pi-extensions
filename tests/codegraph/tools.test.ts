@@ -68,7 +68,9 @@ interface RegisteredTool {
     toolCallId: string,
     params: Record<string, unknown>,
     signal: AbortSignal | undefined,
-    onUpdate: undefined,
+    onUpdate:
+      | ((partial: { content: Array<{ type: string; text: string }> }) => void)
+      | undefined,
     ctx: ExtensionContext,
   ) => Promise<{ content: Array<{ type: string; text: string }> }>;
 }
@@ -167,16 +169,19 @@ function namedSession(): { h: Harness; opensrcHome: string } {
 }
 
 describe("tool registration", () => {
-  it("registers the six codegraph tools, every one with an optional projectRoot and none with a projectPath", () => {
+  it("registers the four codegraph tools, the caller and callee tools left unregistered", () => {
     const { tools } = makeHarness(newSession(), fixture.main);
+    // The registered set equals the TOOL map (issue #72): the caller and
+    // callee tools are defined in the handlers module but not registered;
+    // codegraph_explore carries their information in its call trail.
     expect([...tools.keys()].sort()).toEqual([
-      "codegraph_callees",
-      "codegraph_callers",
       "codegraph_explore",
       "codegraph_impact",
       "codegraph_node",
       "codegraph_search",
     ]);
+    expect(tools.has("codegraph_callers")).toBe(false);
+    expect(tools.has("codegraph_callees")).toBe(false);
     for (const t of tools.values()) {
       const schema = t.parameters as { properties?: Record<string, unknown> };
       // Spec 0009: every tool can be served from a named project root.
@@ -255,16 +260,6 @@ describe("tool outputs", () => {
     expect(text).toContain("return x + ANSWER");
     expect(text).toContain("Top callers");
     expect(text).toContain("Top callees");
-  });
-
-  it("callers lists what calls the symbol", async () => {
-    const text = await h.call("codegraph_callers", { symbol: "helper" });
-    expect(text).toContain("mainEntry");
-  });
-
-  it("callees lists what the symbol calls", async () => {
-    const text = await h.call("codegraph_callees", { symbol: "mainEntry" });
-    expect(text).toContain("helper");
   });
 
   it("impact lists dependent code by file", async () => {
@@ -387,15 +382,11 @@ describe("tool outputs", () => {
     expect(h.session.statusFor(pkg).needsCreate).toBe(false);
   });
 
-  it("disambiguates the same way in callers, callees, and impact", async () => {
+  it("disambiguates a same-named symbol from a sub-directory by its root-relative file in impact", async () => {
     const pkg = path.join(fixture.main, "pkg");
     // Without the root-relative form the bare `src/x.ts` suffix-matches both
-    // definitions and reports the ambiguity in every renderer.
-    for (const tool of [
-      "codegraph_callers",
-      "codegraph_callees",
-      "codegraph_impact",
-    ]) {
+    // definitions and reports the ambiguity.
+    for (const tool of ["codegraph_impact"]) {
       const ambiguous = await h.call(
         tool,
         { symbol: "overloaded", file: "src/x.ts" },
@@ -656,7 +647,7 @@ describe("/codegraph command", () => {
     await h.commands.get("codegraph")!.handler("", makeCtx(fixture.main, ui));
     const joined = ui.notifications.map(([, m]) => m).join("\n");
     expect(joined).toContain("usage: 1 ok, 0 failed (last call");
-    expect(joined).toContain("explore: 0  node: 0  search: 1  impact: 0  callers: 0  callees: 0");
+    expect(joined).toContain("explore: 0  node: 0  search: 1  impact: 0");
     expect(joined).not.toContain("last failure:");
 
     const failedHarness = makeHarness(newSession({ autoIndex: false }), fixture.feature);
@@ -688,9 +679,9 @@ describe("/codegraph command", () => {
     await h.commands.get("codegraph")!.handler("", makeCtx(fixture.main, ui));
     const joined = ui.notifications.map(([, m]) => m).join("\n");
 
-    // The six keep their settled order and the extra name follows them.
+    // The four keep their settled order and the extra name follows them.
     expect(joined).toContain(
-      "explore: 0  node: 0  search: 1  impact: 0  callers: 0  callees: 0  dropped_away: 1",
+      "explore: 0  node: 0  search: 1  impact: 0  dropped_away: 1",
     );
     // The totals and the row now account for the same two calls.
     expect(joined).toContain("usage: 1 ok, 1 failed (last call");
@@ -710,7 +701,7 @@ describe("/codegraph command", () => {
     await second.commands.get("codegraph")!.handler("", makeCtx(fixture.main, ui));
     const joined = ui.notifications.map(([, m]) => m).join("\n");
     expect(joined).toContain("usage: 2 ok, 0 failed");
-    expect(joined).toContain("explore: 1  node: 0  search: 1  impact: 0  callers: 0  callees: 0");
+    expect(joined).toContain("explore: 1  node: 0  search: 1  impact: 0");
   });
 
   it("status reports file/node/edge counts and index state once ready", async () => {
@@ -979,6 +970,45 @@ describe("the named-root file rule (spec 0009)", () => {
     expect(escape).toBe(
       `Project: featurelib @9.9.9 - ${featureReal}\n\nSymbol "mainOnlySymbol" not found`,
     );
+    fs.rmSync(opensrcHome, { recursive: true, force: true });
+  });
+});
+
+describe("build progress stream (issue #72)", () => {
+  it("streams at least one progress update on a cold named call and none on a warm one", async () => {
+    const { h, opensrcHome } = namedSession();
+    const tool = h.tools.get("codegraph_search")!;
+
+    // Cold: the feature tree has no index, so the call builds it inline and
+    // the wait must be visible. At least one update reaches the caller
+    // before the call completes.
+    const cold: string[] = [];
+    const coldResult = await tool.execute(
+      "1",
+      { query: "featureOnlySymbol", projectRoot: fixture.feature },
+      undefined,
+      (partial) => {
+        cold.push(partial.content.map((c) => c.text).join("\n"));
+      },
+      makeCtx(fixture.main, freshUi()),
+    );
+    expect(coldResult.content.map((c) => c.text).join("\n")).toContain("featureOnlySymbol");
+    expect(cold.length).toBeGreaterThanOrEqual(1);
+    expect(cold.some((text) => text.includes("indexing"))).toBe(true);
+
+    // Warm: the index exists, the call reconciles only, and streams nothing.
+    const warm: string[] = [];
+    const warmResult = await tool.execute(
+      "2",
+      { query: "featureOnlySymbol", projectRoot: fixture.feature },
+      undefined,
+      (partial) => {
+        warm.push(partial.content.map((c) => c.text).join("\n"));
+      },
+      makeCtx(fixture.main, freshUi()),
+    );
+    expect(warmResult.content.map((c) => c.text).join("\n")).toContain("featureOnlySymbol");
+    expect(warm).toEqual([]);
     fs.rmSync(opensrcHome, { recursive: true, force: true });
   });
 });

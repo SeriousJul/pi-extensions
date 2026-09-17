@@ -559,6 +559,21 @@ export function rowLabel(row: InitialContextRow): string {
 }
 
 /**
+ * The derived waste value of one row for the usage view (issue #72): the
+ * cost a use pays (tokens per use) for a tool the window saw, `never` for a
+ * tool the window never used, and `-` for rows a usage count does not
+ * describe (non-tool rows and the absent usage view). Computed from data
+ * the report already carries: the row's tokens and its call count.
+ */
+export function wasteFor(row: InitialContextRow, counts?: Record<string, number>): string {
+	if (!counts) return "-";
+	if (row.kind !== "tool") return "-";
+	const uses = usesForLabel(row.label, row.kind, counts) ?? 0;
+	if (uses === 0) return "never";
+	return `${(row.tokens / uses).toFixed(1)}/u`;
+}
+
+/**
  * The plain-text breakdown, used by the print and RPC modes.
  *
  * Rows are sorted by size, largest first.
@@ -572,7 +587,9 @@ export function rowLabel(row: InitialContextRow): string {
  *     provider report (first call): 44,900 input tokens
  *
  * With a usage view, a `uses(<window>)` column is added: the call count of
- * each tool in the window (section rows show `-`, TOTAL the sum).
+ * each tool in the window (section rows show `-`, TOTAL the sum), and a
+ * derived `waste` column: tokens per use for a tool the window saw, `never`
+ * for a tool the window never used (section rows and TOTAL show `-`).
  */
 export function renderContextText(report: InitialContextReport, usage?: { window: string; counts: Record<string, number> }): string {
 	const lines: string[] = [];
@@ -591,6 +608,8 @@ export function renderContextText(report: InitialContextReport, usage?: { window
 	const usesText = (row: InitialContextRow): string =>
 		usage ? String(usesForLabel(row.label, row.kind, usage.counts) ?? "-") : "";
 	const usesWidth = usage ? Math.max(4, ...report.rows.map((row) => usesText(row).length)) : 0;
+	const wasteText = (row: InitialContextRow): string => (usage ? wasteFor(row, usage.counts) : "-");
+	const wasteWidth = usage ? Math.max(5, ...report.rows.map((row) => wasteText(row).length)) : 0;
 	let totalUses = 0;
 	if (usage) {
 		for (const row of report.rows) {
@@ -600,7 +619,7 @@ export function renderContextText(report: InitialContextReport, usage?: { window
 
 	lines.push(
 		`  name  ${"src".padEnd(sourceWidth)}  ${"tokens".padStart(tokenWidth)}  ctx%   win%` +
-		(usage ? `  uses(${usage.window})` : ""),
+		(usage ? `  uses(${usage.window})  waste` : ""),
 	);
 	for (const row of report.rows) {
 		const line =
@@ -609,7 +628,7 @@ export function renderContextText(report: InitialContextReport, usage?: { window
 			`${formatInt(row.tokens).padStart(tokenWidth)}  ` +
 			`${percentOf(row.tokens, total)}  ` +
 			`${windowPercentOf(row.tokens, window)}` +
-			(usage ? `  ${usesText(row).padStart(usesWidth)}` : "") +
+			(usage ? `  ${usesText(row).padStart(usesWidth)}  ${wasteText(row).padStart(wasteWidth)}` : "") +
 			(barFor(total > 0 ? (row.tokens / total) * 100 : 0) ? `  ${barFor((row.tokens / total) * 100)}` : "");
 		lines.push(line);
 	}
@@ -618,7 +637,7 @@ export function renderContextText(report: InitialContextReport, usage?: { window
 			`${formatInt(total).padStart(tokenWidth)}  ` +
 			`${total > 0 ? "100.0%" : "0.0%"}  ` +
 			`${windowPercentOf(total, window)}  ` +
-			(usage ? `${formatInt(totalUses).padStart(usesWidth)}  ` : "") +
+			(usage ? `${formatInt(totalUses).padStart(usesWidth)}  ${"-".padStart(wasteWidth)}  ` : "") +
 			barFor(100),
 	);
 

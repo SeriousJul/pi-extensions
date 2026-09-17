@@ -215,13 +215,16 @@ try {
 		if (!line) fail(`/ctx (first) missing the ${name} row:\n${message}`);
 		return line;
 	};
-	if (!firstMessage.includes("uses(30d)")) fail(`/ctx (first) missing the uses(30d) header:\n${firstMessage}`);
-	if (!rowLine(firstMessage, "bash").match(/ 3(  \u2588+)?\s*$/)) fail(`/ctx (first) bash row does not end in 3:\n${rowLine(firstMessage, "bash")}`);
-	if (!rowLine(firstMessage, "read").match(/ 2(  \u2588+)?\s*$/)) fail(`/ctx (first) read row does not end in 2:\n${rowLine(firstMessage, "read")}`);
-	if (!rowLine(firstMessage, "write").match(/ 0(  \u2588+)?\s*$/)) fail(`/ctx (first) write row does not end in 0:\n${rowLine(firstMessage, "write")}`);
-	if (!rowLine(firstMessage, "e2e-skill").match(/ 1(  \u2588+)?\s*$/)) fail(`/ctx (first) e2e-skill row does not end in 1:\n${rowLine(firstMessage, "e2e-skill")}`);
-	if (!rowLine(firstMessage, "TOTAL").match(/ 5  \u2588/)) fail(`/ctx (first) TOTAL row does not sum to 5:\n${rowLine(firstMessage, "TOTAL")}`);
+	if (!firstMessage.includes("uses(30d)  waste")) fail(`/ctx (first) missing the uses(30d) and waste headers:\n${firstMessage}`);
+	// bash 3 and read 2 uses carry the derived waste (tokens per use); write
+	// 0 uses carries the never mark; the skill row and TOTAL carry dashes.
+	if (!rowLine(firstMessage, "bash").match(/ 3  +[\d,.]+\/u(  \u2588+)?\s*$/)) fail(`/ctx (first) bash row does not end in 3 with its waste:\n${rowLine(firstMessage, "bash")}`);
+	if (!rowLine(firstMessage, "read").match(/ 2  +[\d,.]+\/u(  \u2588+)?\s*$/)) fail(`/ctx (first) read row does not end in 2 with its waste:\n${rowLine(firstMessage, "read")}`);
+	if (!rowLine(firstMessage, "write").match(/ 0  +never(  \u2588+)?\s*$/)) fail(`/ctx (first) write row does not end in 0 with the never mark:\n${rowLine(firstMessage, "write")}`);
+	if (!rowLine(firstMessage, "e2e-skill").match(/ 1  +-  (\u2588+)?\s*$/)) fail(`/ctx (first) e2e-skill row does not end in 1 with a dash:\n${rowLine(firstMessage, "e2e-skill")}`);
+	if (!rowLine(firstMessage, "TOTAL").match(/ 5  +-  \u2588/)) fail(`/ctx (first) TOTAL row does not sum to 5:\n${rowLine(firstMessage, "TOTAL")}`);
 	console.log("ok: the uses column counts the fixture tree, fork copies once, skill loads count, 30d window");
+	console.log("ok: the waste column shows tokens per use and the never mark");
 
 	const status = await waitFor(
 		() => rpc.statuses[rpc.statuses.length - 1],
@@ -264,15 +267,16 @@ try {
 	if (secondMessage.includes("injection") || secondMessage.includes("modified by extension")) {
 		fail(`/ctx (second) flags an injection; the reconstruction does not match pi:\n${secondMessage}`);
 	}
-	// The 90d window admits the 40-day write call.
-	if (!secondMessage.includes("uses(90d)")) fail(`/ctx (second) missing the uses(90d) header:\n${secondMessage}`);
+	// The 90d window admits the 40-day write call, and the write row's waste
+	// value appears with it.
+	if (!secondMessage.includes("uses(90d)  waste")) fail(`/ctx (second) missing the uses(90d) and waste headers:\n${secondMessage}`);
 	const rowLine90 = (name) => {
 		const line = secondMessage.split("\n").find((l) => l.trim().startsWith(name));
 		if (!line) fail(`/ctx (second) missing the ${name} row:\n${secondMessage}`);
 		return line;
 	};
-	if (!rowLine90("write").match(/ 1(  \u2588+)?\s*$/)) fail(`/ctx (second) write row does not end in 1:\n${rowLine90("write")}`);
-	if (!rowLine90("TOTAL").match(/ 6  \u2588/)) fail(`/ctx (second) TOTAL row does not sum to 6:\n${rowLine90("TOTAL")}`);
+	if (!rowLine90("write").match(/ 1  +[\d,.]+\/u(  \u2588+)?\s*$/)) fail(`/ctx (second) write row does not end in 1 with its waste:\n${rowLine90("write")}`);
+	if (!rowLine90("TOTAL").match(/ 6  +-  \u2588/)) fail(`/ctx (second) TOTAL row does not sum to 6:\n${rowLine90("TOTAL")}`);
 	console.log("ok: /ctx after the first call shows captured tools and the provider reference, with no injection");
 	console.log("ok: /ctx 90d switches the window and admits the older call");
 } finally {

@@ -114,20 +114,25 @@ describe("initial context TUI", () => {
 		expect(lines.filter((l) => l.includes("█")).length).toBeGreaterThan(3);
 	});
 
-	it("shows the uses column: counts on tool rows, dashes on sections, sum on TOTAL", () => {
+	it("shows the uses and waste columns: counts on tool rows, tokens per use, the never mark, dashes on sections", () => {
 		const rig = makeRig(fixtureReport());
 		const lines = rig.rendered();
-		// Section rows carry no count; the dash sits where the count column is.
+		// Section rows carry no count and no waste value; dashes sit where the
+		// columns are.
 		const baseLine = lines.find((l) => l.includes("base prompt")) as string;
-		expect(baseLine).toMatch(/  -  █/);
-		// Tool rows show their call count (bash 3, read 5, edit and write 0).
+		expect(baseLine).toMatch(/  -  + -  █/);
+		// Tool rows show their call count and the derived waste: tokens per
+		// use for a tool the window saw (bash 3, read 5), the never mark for
+		// one it did not (edit, write 0).
 		const bashLine = lines.find((l) => /\bbash\b/.test(l)) as string;
-		expect(bashLine).toMatch(/ 3(  █+)?$/);
+		expect(bashLine).toMatch(/ 3  +[\d,.]+\/u(  █+)?$/);
 		const readLine = lines.find((l) => /\bread\b/.test(l)) as string;
-		expect(readLine).toMatch(/ 5(  █+)?$/);
-		// TOTAL sums the tool calls.
+		expect(readLine).toMatch(/ 5  +[\d,.]+\/u(  █+)?$/);
+		const editLine = lines.find((l) => /\bedit\b/.test(l)) as string;
+		expect(editLine).toMatch(/ 0  +never(  █+)?$/);
+		// TOTAL sums the tool calls and carries no waste value.
 		const total = lines.find((l) => l.includes("TOTAL")) as string;
-		expect(total).toMatch(/ 8  █/);
+		expect(total).toMatch(/ 8  +-  █/);
 	});
 
 	it("w cycles the usage window 30d -> 90d -> all", () => {
