@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -168,6 +168,10 @@ function referencesOf(messages: AgentMessage[]): string[] {
 beforeEach(() => {
 	cwd = mkdtempSync(join(tmpdir(), "pruning-wiring-"));
 	agentDir = mkdtempSync(join(tmpdir(), "pruning-wiring-agent-"));
+	// Point the settings readers at the fake agent dir, so the test never
+	// reads the machine's real global settings (a machine with pruning
+	// globally disabled would otherwise see the handlers stay silent).
+	vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
 	sessionDir = join(agentDir, "sessions");
 	mkdirSync(join(cwd, ".pi"), { recursive: true });
 	writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ compaction: { reserveTokens: RESERVE } }));
@@ -175,6 +179,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	vi.unstubAllEnvs();
 	rmSync(cwd, { recursive: true, force: true });
 	rmSync(agentDir, { recursive: true, force: true });
 });
