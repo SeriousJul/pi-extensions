@@ -15,6 +15,13 @@ if the context estimate after pruning is at most the window minus twice
 pi's native compaction runs unchanged as the second level. A `recall` tool
 resolves any recall reference back to the full output.
 
+## Screenshot
+
+The `/pruning settings` display: the active settings and the current
+prune state, in dim text under the last message.
+
+![pruning settings display](./pruning-settings.png)
+
 ## Behavior
 
 - **Engagement.** Pruning engages the first time the context estimate exceeds

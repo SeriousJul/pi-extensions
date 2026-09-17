@@ -10,6 +10,14 @@ being edited.
 [Internals](/extensions/codegraph/internals): the runtime patch, the full
 index lifecycle, root resolution, labels, and the module map.
 
+## Screenshot
+
+The bare `/codegraph` command over a small fixture repo: the root with
+its index counts, index state, last reconcile, watcher, auto-index,
+and per-tool usage.
+
+![codegraph status](./codegraph-status.png)
+
 ## Tools
 
 | Tool | Purpose |

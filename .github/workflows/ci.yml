@@ -87,3 +87,26 @@ jobs:
         working-directory: docs
       - run: npm run build
         working-directory: docs
+
+  screenshots:
+    # ADR 0017: every extension screenshot is rendered by the capture
+    # pipeline, never drawn by hand. This job re-renders all of them and
+    # fails if any committed PNG drifts from what the pipeline produces.
+    name: screenshots
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run docs:screenshots
+      - name: Fail on screenshot drift
+        run: |
+          if ! git diff --exit-code -- docs/extensions; then
+            echo "Screenshot drift: run 'npm run docs:screenshots' and commit the updated PNGs."
+            git diff --stat -- docs/extensions
+            exit 1
+          fi

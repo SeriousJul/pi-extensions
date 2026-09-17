@@ -1,0 +1,3 @@
+{"type":"session","id":"sess_ic01","version":3,"timestamp":"2026-01-14T09:00:00.000Z","cwd":"/home/julian/acme"}
+{"type":"message","id":"ic000001","parentId":null,"timestamp":"2026-01-14T09:01:00.000Z","message":{"role":"assistant","provider":"anthropic","model":"claude-sonnet-4-5","content":[{"type":"toolCall","name":"bash","arguments":{"command":"npm test"}},{"type":"toolCall","name":"read","arguments":{"path":"src/app.ts"}}]}}
+{"type":"message","id":"ic000002","parentId":"ic000001","timestamp":"2026-01-14T10:30:00.000Z","message":{"role":"assistant","provider":"anthropic","model":"claude-sonnet-4-5","content":[{"type":"toolCall","name":"bash","arguments":{"command":"npm test"}},{"type":"toolCall","name":"grep","arguments":{"pattern":"TODO"}}]}}

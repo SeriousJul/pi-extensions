@@ -7,6 +7,13 @@ percentages, and bars. Tool rows also show the tool's call count in a
 usage window (the last 30 days by default), so the cost of a tool can be
 weighed against how often it is used.
 
+## Screenshot
+
+The `/ctx` view: one row per section and per tool, with tokens,
+percentages of the context window, and the 30-day tool call counts.
+
+![initial context TUI](./initial-context.png)
+
 ## /ctx (TUI)
 
 Opens the breakdown. There is one row per part: the base prompt (or
