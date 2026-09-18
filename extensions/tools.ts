@@ -9,7 +9,7 @@
  * 2. Use /tools to open the tool selector
  */
 
-import type { ExtensionAPI, ExtensionContext, ToolInfo } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, Theme, ToolInfo } from "@earendil-works/pi-coding-agent";
 import { getSettingsListTheme } from "@earendil-works/pi-coding-agent";
 import { Container, type SettingItem, SettingsList } from "@earendil-works/pi-tui";
 
@@ -31,7 +31,7 @@ interface ToolsState {
 // pi marks built-ins "builtin" and SDK tools "sdk". Every loaded extension
 // file (npm, git, user, project) gets "local", so fall back to the file
 // path for a useful name.
-function originTag(tool: ToolInfo): string | undefined {
+export function originTag(tool: ToolInfo): string | undefined {
 	const source = tool.sourceInfo.source;
 	if (source === "sdk") return "sdk";
 	if (source === "builtin") return undefined;
@@ -42,11 +42,42 @@ function originTag(tool: ToolInfo): string | undefined {
 	return file.replace(/\.[cm]?[jt]s$/, "");
 }
 
-function originDescription(tool: ToolInfo): string {
+export function originDescription(tool: ToolInfo): string {
 	const info = tool.sourceInfo;
 	if (info.source === "builtin") return "Built-in pi tool";
 	if (info.source === "sdk") return "Custom tool registered via SDK";
 	return `Extension tool from ${originTag(tool)}: ${info.path}`;
+}
+
+/**
+ * One settings row per tool, as /tools shows it. Shared with the
+ * screenshot pipeline (issue #73), which mounts the same rows over a
+ * fixture catalogue.
+ */
+export function toolSettingItems(tools: ToolInfo[], isEnabled: (name: string) => boolean, theme: Theme): SettingItem[] {
+	return tools.map((tool) => {
+		const tag = originTag(tool);
+		const label = tag ? `${tool.name} ${theme.fg("muted", `(${tag})`)}` : tool.name;
+		return {
+			id: tool.name,
+			label,
+			description: originDescription(tool),
+			currentValue: isEnabled(tool.name) ? "enabled" : "disabled",
+			values: ["enabled", "disabled"],
+		};
+	});
+}
+
+/** The header lines above the /tools list. */
+export function toolsHeader(theme: Theme): { render: (width: number) => string[]; invalidate: () => void } {
+	return {
+		render: () => [
+			theme.fg("accent", theme.bold("Tool Configuration")),
+			theme.fg("muted", "Tag = extension or SDK origin. No tag = built-in."),
+			"",
+		],
+		invalidate: () => {},
+	};
 }
 
 export default function toolsExtension(pi: ExtensionAPI) {
@@ -111,32 +142,10 @@ export default function toolsExtension(pi: ExtensionAPI) {
 			allTools = pi.getAllTools();
 
 			await ctx.ui.custom((tui, theme, _kb, done) => {
-				// Build settings items for each tool
-				const items: SettingItem[] = allTools.map((tool) => {
-					const tag = originTag(tool);
-					const label = tag ? `${tool.name} ${theme.fg("muted", `(${tag})`)}` : tool.name;
-					return {
-						id: tool.name,
-						label,
-						description: originDescription(tool),
-						currentValue: enabledTools.has(tool.name) ? "enabled" : "disabled",
-						values: ["enabled", "disabled"],
-					};
-				});
+				const items = toolSettingItems(allTools, (name) => enabledTools.has(name), theme);
 
 				const container = new Container();
-				container.addChild(
-					new (class {
-						render(_width: number) {
-							return [
-								theme.fg("accent", theme.bold("Tool Configuration")),
-								theme.fg("muted", "Tag = extension or SDK origin. No tag = built-in."),
-								"",
-							];
-						}
-						invalidate() {}
-					})(),
-				);
+				container.addChild(toolsHeader(theme));
 
 				const settingsList = new SettingsList(
 					items,

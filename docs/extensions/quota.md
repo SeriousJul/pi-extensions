@@ -12,6 +12,16 @@ refresh ([ADR 0005](/adr/0005-quota-owns-chatgpt-token-refresh)). The
 [model-router](/extensions/model-router) extension reuses the same
 module.
 
+## Screenshots
+
+The detail view (`/quota`) with the fixture snapshot:
+
+![quota detail view](./quota-detail.png)
+
+The footer line in the status bar:
+
+![quota footer line](./quota-footer.png)
+
 ## Behavior
 
 - **Footer line.** `GPT 5h 42% · 7d 18%` in the status bar. An exhausted
@@ -53,7 +63,7 @@ Account: julian@example.com
 5h  42%   resets 19:00 (in 5h)
 7d  18%   resets Thu 14:00 (in 7d)
 
-Fetched: 14:03:22 (4m ago)
+Fetched: 13:56:00 (4m ago)
 ```
 
 An exhausted window's line reads `FULL` in the error color. A stale
