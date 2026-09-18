@@ -9,6 +9,9 @@ export default defineConfig({
     pool: "forks",
     maxWorkers: 1,
     isolate: false,
+    // Pin the capture environment (TZ, FORCE_COLOR, COLORTERM) before any
+    // test file loads a pi module; see the setup file for why.
+    setupFiles: ["tests/screenshots/vitest-setup.ts"],
     testTimeout: 240_000,
     hookTimeout: 240_000,
   },
