@@ -73,6 +73,7 @@ export default defineConfig({
           { text: "context-cap", link: "/extensions/context-cap" },
           { text: "initial-context", link: "/extensions/initial-context" },
           { text: "model-router", link: "/extensions/model-router" },
+          { text: "llama-refresh", link: "/extensions/llama-refresh" },
           { text: "quota", link: "/extensions/quota" },
           { text: "sync", link: "/extensions/sync/" },
           { text: "sync internals", link: "/extensions/sync/internals" },

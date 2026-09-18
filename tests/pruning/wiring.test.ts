@@ -168,6 +168,10 @@ function referencesOf(messages: AgentMessage[]): string[] {
 beforeEach(() => {
 	cwd = mkdtempSync(join(tmpdir(), "pruning-wiring-"));
 	agentDir = mkdtempSync(join(tmpdir(), "pruning-wiring-agent-"));
+	// Point the settings readers at the fake agent dir, so the test never
+	// reads the machine's real global settings (a machine with pruning
+	// globally disabled would otherwise see the handlers stay silent).
+	vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
 	sessionDir = join(agentDir, "sessions");
 	// Isolate the global settings: the extension reads the pruning section
 	// from $PI_CODING_AGENT_DIR/settings.json, and a machine whose global

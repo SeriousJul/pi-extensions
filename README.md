@@ -8,6 +8,7 @@ VitePress from the [`docs/`](docs/) folder.
 - **tools** - the `/tools` command to enable and disable tools per session.
 - **context-cap** - `--context-window <tokens>` caps the session's context window so compaction fires early.
 - **model-router** - recovers a session from a provider usage-limit halt (switch to a fallback or wait for the reset, then resume).
+- **llama-refresh** - self-heals the context window of a session that resolved a local llama.cpp model while it was asleep.
 - **quota** - monitors the OpenAI ChatGPT plan quota: a footer line with the used windows, and a `/quota` detail view.
 - **resource-toggle** - `/resources`, `/enable`, `/disable`, `/inherit`: enable and disable extensions, skills, prompt templates, and themes from inside a running session.
 - **usage** - token and cost reporting across all pi sessions: the `/usage` TUI view, the `usage_report` agent tool, and the `pi-usage` CLI.
