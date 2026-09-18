@@ -1,14 +1,15 @@
 # Pi Extensions
 
-Extensions for the pi coding agent. Eight today: Codegraph (semantic code
+Extensions for the pi coding agent. Nine today: Codegraph (semantic code
 search over the current project), Quota (subscription quota monitor), Model
 router (automatic recovery from quota exhaustion), Llama refresh (self-heal
 of the context window for a lazily loaded local model), Sync (device file
 sync), Usage (token and cost reporting across all sessions), Compress
-(request-time compression of finished turns), and Pruning (two-level
-context control: request-time pruning of large tool outputs in front of
-native compaction). The package also ships a Skill tree, kept in step with
-upstream repos by the skill sync script.
+(request-time compression of finished turns), Pruning (two-level context
+control: request-time pruning of large tool outputs in front of native
+compaction), and Edit assist (corrects and diagnoses failing edit calls
+around the built-in edit tool). The package also ships a Skill tree, kept in
+step with upstream repos by the skill sync script.
 
 ## Language
 
@@ -499,6 +500,49 @@ cache. User instructions inside the span appear in it verbatim.
 _Avoid_: summary (a summary is what compaction writes into the session), gist
 (gist tokens are the research form of soft-prompt compression; this works in
 text), digest
+
+### Edit assist
+
+**Extended match**:
+The match Edit assist performs against the file's current content after an
+exact match fails: pi's built-in fuzzy normalization plus a
+leading-whitespace-insensitive comparison. One Extended match makes the edit
+correctable; several, or none, leave it to the Diagnosis.
+_Avoid_: fuzzy match (pi's built-in matching step, narrower), close match,
+approximation
+
+**Input correction**:
+Replacing one edit's oldText with the file's actual text before the built-in
+edit executes. Only an edit with one Extended match and a Whitespace-only
+diff is eligible. The built-in tool executes the corrected input, so the
+write still goes through its own queue and the session records a successful
+edit.
+_Avoid_: rewrite (too generic), auto-apply (names the rejected handler-write
+design), patch (implies the result changed)
+
+**Whitespace-only diff**:
+The safety boundary of an Input correction: the same line count, with every
+line differing only in leading whitespace. The only difference class Edit
+assist corrects in the input; any character drift always degrades to a
+Diagnosis instead.
+_Avoid_: whitespace difference (also covers the trailing case the built-in
+already absorbs), indentation fix, safe diff
+
+**Diagnosis**:
+The size-bounded block Edit assist appends to a failed edit result: the
+Nearest region with a unified diff between the model's oldText and the
+file's real text for a no-match, the occurrence line numbers for an
+ambiguous match, or one targeted hint for a malformed argument. Bounded
+because the block re-enters the model context on every later call until
+compaction.
+_Avoid_: error hint (too generic), explanation, post-mortem
+
+**Nearest region**:
+The file region a no-match Diagnosis names: the span that most resembles the
+oldText that failed to match. It anchors the diff, so the model sees what the
+file actually has where it expected its own text.
+_Avoid_: fuzzy match (a matching strategy, not a region), candidate, closest
+match
 
 ### Docs
 
