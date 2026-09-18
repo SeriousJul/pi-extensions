@@ -153,6 +153,19 @@ Text another extension appends to the system prompt via
 extension replaced or rewrote the prompt and no suffix can be detected.
 _Avoid_: prompt modification (too generic), suffix
 
+**Prompt snippet**:
+The one-line entry a tool registers in the `Available tools:` section of the
+default system prompt.
+_Avoid_: tool summary, one-liner, description (description is the tool's
+full schema text)
+
+**Prompt guideline**:
+A bullet a tool registers in the `Guidelines:` section of the default system
+prompt. It is added flat without a tool name prefix and appears only while
+the tool is active.
+_Avoid_: instruction, rule, system note, prompt injection (injection is text
+an extension appends; a guideline is text a tool registers)
+
 **Provider reference**:
 The input tokens the provider reported on the first assistant message of the
 session. Display only: the bars and percentages stay on the estimator's
