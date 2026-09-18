@@ -35,6 +35,17 @@ export function compressionSystemPrompt(capTokens: number): string {
 	].join("\n");
 }
 
+/**
+ * Headroom added to the form cap for a thinking model's internal reasoning.
+ * Without it, a thinking model that runs past the cap returns a thinking
+ * block and no note, so the call fails on "no text". The form itself is
+ * still trimmed back to the cap after extraction.
+ */
+export const THINKING_RESERVE_TOKENS = 1024;
+
+/** The estimator scale used across pi: 4 characters per token. */
+const CHARS_PER_TOKEN = 4;
+
 export interface CompressionResult {
 	/** The compressed form text. */
 	text: string;
@@ -64,7 +75,7 @@ export function createModelRunner(model: Model<Api>, registry: ModelRegistry): C
 					messages: [{ role: "user", content: job.input, timestamp: Date.now() } as UserMessage],
 				},
 				{
-					maxTokens: job.capTokens,
+					maxTokens: job.capTokens + THINKING_RESERVE_TOKENS,
 					cacheRetention: "none",
 					sessionId: randomUUID(),
 				},
@@ -72,8 +83,12 @@ export function createModelRunner(model: Model<Api>, registry: ModelRegistry): C
 			if (message.stopReason === "error") {
 				throw new Error(message.errorMessage ?? "compression call failed");
 			}
-			const text = extractText(message);
+			let text = extractText(message);
 			if (text.length === 0) throw new Error("compression model returned no text");
+			// The request carried thinking headroom; trim the form back to the
+			// cap, as a provider truncation at the cap would have done.
+			const capChars = job.capTokens * CHARS_PER_TOKEN;
+			if (text.length > capChars) text = text.slice(0, capChars);
 			return { text, usage: message.usage };
 		},
 	};

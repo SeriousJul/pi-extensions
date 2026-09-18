@@ -21,7 +21,10 @@ is set with `/compression-model`.
   pi's role labels, every tool result cut to head + tail (2000 characters
   total, so a failure's error line at the tail survives), and a prompt that
   keeps user instructions verbatim and quotes error strings exactly as
-  shown. `maxTokens` caps the form at `spanCapTokens`.
+  shown. The form is capped at `spanCapTokens`; the request's token budget
+  is the cap plus a 1024-token thinking reserve, so a thinking model can
+  reason before writing the note, and the form is trimmed back to the cap
+  afterwards.
 - **The swap.** The next outgoing request replaces each cached span with one
   user message: a fixed lossy-view frame, then the form. The extension
   rewrites a request only when it can reconcile pi's exact message list from

@@ -8,6 +8,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import compressExtension from "../../extensions/compress/index";
 import { SPAN_FRAME } from "../../extensions/compress/core";
+import { THINKING_RESERVE_TOKENS } from "../../extensions/compress/runner";
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -282,5 +283,75 @@ describe("the swap", () => {
 		}
 		// The rest of the conversation goes out untouched.
 		expect(result!.messages.slice(1)).toEqual(outgoing.slice(2));
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Thinking reserve: a model that reasons before writing still returns a form
+// ---------------------------------------------------------------------------
+
+describe("thinking reserve", () => {
+	it("requests the cap plus the reserve and trims the form to the cap", async () => {
+		const options: unknown[] = [];
+		const longForm = "f".repeat(500 * 4 + 100); // over the 500-token cap
+		const t = setup();
+		t.ctx.modelRegistry.complete = async (_m, _context, opt) => {
+			options.push(opt);
+			return {
+				role: "assistant",
+				content: [
+					{ type: "thinking", thinking: "t".repeat(2000) },
+					{ type: "text", text: longForm },
+				],
+				api: "openai-completions",
+				provider: "test",
+				model: "comp-model",
+				usage: ZERO_USAGE,
+				stopReason: "length",
+				timestamp: Date.now(),
+			} as AssistantMessage;
+		};
+		await t.start();
+
+		t.turnEnd();
+		await settle();
+		expect(options).toHaveLength(1);
+		expect((options[0] as { maxTokens: number }).maxTokens).toBe(500 + THINKING_RESERVE_TOKENS);
+
+		const outgoing = structuredClone(t.sm.buildSessionContext().messages);
+		const result = t.context(outgoing);
+		expect(result).toBeDefined();
+		const first = result!.messages[0];
+		expect(first.role).toBe("user");
+		if (first.role === "user") {
+			const content = typeof first.content === "string" ? first.content : "";
+			// The form was trimmed back to the 500-token cap (4 chars per token).
+			expect(content).toContain("f".repeat(500 * 4));
+			expect(content).not.toContain("f".repeat(500 * 4 + 1));
+		}
+	});
+
+	it("still fails a call that returns thinking and no text", async () => {
+		const thinkingOnly = {
+			role: "assistant",
+			content: [{ type: "thinking", thinking: "t".repeat(2000) }],
+			api: "openai-completions",
+			provider: "test",
+			model: "comp-model",
+			usage: ZERO_USAGE,
+			stopReason: "length",
+			timestamp: Date.now(),
+		} as AssistantMessage;
+		const t = setup({ complete: async () => thinkingOnly });
+		await t.start();
+
+		t.turnEnd();
+		await settle();
+		expect(t.completeCalls).toHaveLength(1);
+		expect(t.notifications.some((n) => n.includes("returned no text"))).toBe(true);
+
+		// The span stayed raw: no swap in the outgoing request.
+		const outgoing = structuredClone(t.sm.buildSessionContext().messages);
+		expect(t.context(outgoing)).toBeUndefined();
 	});
 });
