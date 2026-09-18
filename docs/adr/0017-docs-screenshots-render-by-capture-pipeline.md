@@ -25,6 +25,15 @@ and fails when a committed Screenshot no longer matches.
 - The terminal font TTF and golden PNG files are checked into the repo, and
   the render pins grid size, theme, and font, so local and CI renders are
   byte-identical.
+- The font pin is exact at the rasterizer boundary: the SVG font-family is
+  the family name inside the committed TTFs' name tables, resvg loads only
+  the committed file paths with system fonts disabled, and the theme color
+  mode is pinned by environment (COLORTERM) before pi's theme loader runs.
+  A golden test proves the committed TTFs are what rasterizes: the same
+  screen rendered without the font files must differ.
+- The real-pi captures run with stub `fd` and `rg` binaries on PATH so pi's
+  "not found" startup warnings - which depend on what the rendering machine
+  has installed - never reach the screen.
 - Adding a Screenshot is a Capture definition (extension, view, capture
   method, fixture); the pipeline does not change.
 - A UI change that alters a view's appearance is a capture re-run, and CI

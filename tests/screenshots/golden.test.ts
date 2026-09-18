@@ -8,7 +8,8 @@
  *
  * The text assertions pin the content of each capture, so a silently
  * broken view cannot be re-blessed into the goldens without a visible
- * diff in the test output.
+ * diff in the test output. The font test proves the committed TTFs are
+ * what the renderer rasterizes, not a font the machine happens to have.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
@@ -16,8 +17,16 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { applyEnvPins, LOOK, WORK_ROOT } from "../../scripts/screenshots/look.mjs";
 import { CAPTURES, type CaptureContext, type CaptureDefinition } from "../../scripts/screenshots/definitions.mjs";
+import { EXPECTED_LINES } from "../../scripts/screenshots/expected.mjs";
 import { captureComponentBytes } from "../../scripts/screenshots/offscreen.mjs";
-import { renderScreenToPng, screenToText } from "../../scripts/screenshots/render-png.mjs";
+import {
+	gridToSvg,
+	renderScreenToPng,
+	renderScreenToPngWithoutFontFiles,
+	resvgOptions,
+	screenToGrid,
+	screenToText,
+} from "../../scripts/screenshots/render-png.mjs";
 import { captureTerminal } from "../../scripts/screenshots/terminal-capture.mjs";
 import { startMockGistServer, type MockGistServer } from "../../scripts/screenshots/mock-gist.mjs";
 
@@ -27,63 +36,8 @@ const repoRoot = join(here, "..", "..");
 const captures: CaptureDefinition[] = CAPTURES;
 const fastCaptures = captures.filter((def) => def.kind === "offscreen" || def.fast === true);
 
-/** The lines every capture must show (compared trimmed, in any order). */
-const EXPECTED_LINES: Record<string, string[]> = {
-	"quota-detail": [
-		"ChatGPT plan quota",
-		"Plan: plus",
-		"Account: julian@example.com",
-		"5h  42%   resets 19:00 (in 5h)",
-		"7d  18%   resets Thu 14:00 (in 7d)",
-		"Fetched: 13:56:00 (4m ago)",
-		"Press Enter or Esc to close",
-	],
-	"quota-footer": ["GPT 5h 42% · 7d 18%"],
-	"usage-tui": [
-		"pi usage",
-		"b week   w all   g provider+model   s time   c full   p none   m none",
-		"9 events · all time",
-		"TOTAL                                 1325      200      100      625       50     2900    $0.10",
-	],
-	"usage-cli": [
-		"2026-09 · week · provider+model · sort: time · 6 events",
-		"TOTAL                                      1,325          300          625        2,300        $0.08",
-	],
-	"initial-context": [
-		"initial context",
-		"ctx: 1.3K (1.0%) - uses: 30d",
-		"1,272  100.0%  1.0%",
-		"375.0/u",
-	],
-	tools: [
-		"Tool Configuration",
-		"Tag = extension or SDK origin. No tag = built-in.",
-		"→ read                     enabled",
-		"resource_toggle (index)  enabled",
-		"web_search (web-search)  enabled",
-	],
-	resources: [
-		"pi resources",
-		"Extensions",
-		">  [x] codegraph  global  /home/julian/.pi/agent/extensions/codegraph/index.",
-		"[ ] usage  global  /home/julian/.pi/agent/extensions/usage/index.ts",
-		"[x] lint-gate  project  /home/julian/acme/.pi/extensions/lint-gate/index.",
-		"Skills",
-		"Themes",
-	],
-	"sync-view": [
-		"pi sync",
-		"pi sync status (gist 9f2c41ab)",
-		"ahead 0, behind 0",
-		"in sync",
-	],
-	"sync-status": ["pi sync status (gist 9f2c41ab)", "ahead 0, behind 0", "in sync"],
-	"pruning-settings": [
-		"pruning: enabled=true, minResultTokens=1000, protectCurrentTurn=true",
-		"state: no outputs pruned yet; last gate: none",
-	],
-	"compress-status": ["3 spans, 12.4k saved"],
-};
+/** One fixed screen the font test renders. */
+const FONT_CHECK_BYTES = "\x1b[2J\x1b[HFont family check: ABCdefgh 0123456789";
 
 /** PNG header: 8-byte signature, IHDR length, "IHDR", then width and height. */
 function pngSize(png: Buffer): { width: number; height: number } {
@@ -138,6 +92,33 @@ describe("docs screenshot pipeline (ADR 0017)", () => {
 			expect(width, `${def.id} width`).toBe(780);
 			expect(height, `${def.id} height`).toBe(510);
 		}
+	});
+
+	// The render must depend on the committed TTFs: the same screen rendered
+	// without font files (system fonts disabled, so resvg falls back to its
+	// built-in font) must differ, and the committed-font render must carry
+	// real ink. If the committed files were silently ignored, the no-files
+	// and machine-font renders would match and this test would fail.
+	it("renders the pinned screen with the committed font files, not a machine font", { timeout: 120_000 }, async () => {
+		const withFiles = Buffer.from(await renderScreenToPng(FONT_CHECK_BYTES, LOOK));
+		const withoutFiles = Buffer.from(await renderScreenToPngWithoutFontFiles(FONT_CHECK_BYTES, LOOK));
+		expect(
+			withFiles.equals(withoutFiles),
+			"rendered identically with and without the committed font files: the provided TTFs are not the rendered font",
+		).toBe(false);
+		// The committed-font render must actually draw glyphs: count the
+		// non-background pixels of the rasterized SVG.
+		const grid = await screenToGrid(FONT_CHECK_BYTES, { cols: LOOK.cols, rows: LOOK.rows });
+		const svg = gridToSvg(grid, LOOK);
+		const mod = await import("@resvg/resvg-js");
+		const Resvg = mod.Resvg ?? mod.default?.Resvg;
+		const pixels: Buffer = new Resvg(svg, resvgOptions(LOOK)).render().pixels;
+		const [r, g, b] = [1, 3, 5].map((i) => Number.parseInt(LOOK.background.slice(i, i + 2), 16));
+		let ink = 0;
+		for (let i = 0; i < pixels.length; i += 4) {
+			if (pixels[i] !== r || pixels[i + 1] !== g || pixels[i + 2] !== b) ink++;
+		}
+		expect(ink, "the pinned font drew no visible ink").toBeGreaterThan(100);
 	});
 
 	for (const def of fastCaptures) {

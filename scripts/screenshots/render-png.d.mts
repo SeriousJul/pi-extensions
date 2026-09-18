@@ -29,7 +29,21 @@ export declare function screenToText(
 export declare function gridToSvg(grid: ScreenCell[][], look?: Look): string;
 
 /**
+ * The resvg options every render uses: the committed font files only, no
+ * system fonts, all family fallbacks pinned to the look's font family.
+ */
+export declare function resvgOptions(look?: Look): object;
+
+/**
  * Render one screen to a PNG. `data` is the terminal byte stream; the
  * result is the exact PNG bytes the capture pipeline commits.
  */
 export declare function renderScreenToPng(data: string, look?: Look): Promise<Uint8Array>;
+
+/**
+ * Render one screen with no font files at all (system fonts disabled, so
+ * resvg falls back to its built-in font). Test helper: its output must
+ * differ from renderScreenToPng's, proving the committed TTFs are the
+ * rendered font.
+ */
+export declare function renderScreenToPngWithoutFontFiles(data: string, look?: Look): Promise<Uint8Array>;

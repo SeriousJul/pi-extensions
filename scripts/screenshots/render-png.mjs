@@ -6,12 +6,14 @@
  * @xterm/headless terminal, the final cell grid is read, and each cell is
  * drawn into an SVG (one rect per background run, one text run per styled
  * run, one line per underline). resvg rasterizes the SVG with the pinned
- * font from look.mjs.
+ * font from look.mjs. resvg loads exactly the committed font files
+ * (fontFiles is a list of file paths, system fonts disabled), and the
+ * font-family in the SVG is the family name inside those files, so the
+ * pixels come from the committed TTFs on every machine.
  *
  * Every choice is fixed: the grid size, the font, the font metrics, the
  * palette. Two runs over the same byte stream produce identical PNG bytes.
  */
-import { readFileSync } from "node:fs";
 import pkg from "@xterm/headless";
 import resvgJs from "@resvg/resvg-js";
 
@@ -35,9 +37,9 @@ const PALETTE = [
 export async function screenToGrid(data, { cols = LOOK.cols, rows = LOOK.rows } = {}) {
 	const term = new Terminal({ cols, rows, allowProposedApi: true });
 	term.onData(() => {});
-	term.write(data, () => {});
-	// Wait one tick for the parser to finish draining the input.
-	await new Promise((resolve) => setTimeout(resolve, 50));
+	// Resolve when the terminal has fully consumed the input, not after a
+	// fixed sleep.
+	await new Promise((resolve) => term.write(data, resolve));
 	const active = term.buffer.active;
 	const viewportY = active.viewportY;
 	const grid = [];
@@ -151,13 +153,21 @@ function sameStyle(a, b) {
 	return a.fg === b.fg && a.bold === b.bold && a.dim === b.dim && a.italic === b.italic && a.underline === b.underline;
 }
 
-/** The font files as resvg wants them (Buffers). */
-let fontBuffers;
-function getFontBuffers(look) {
-	if (!fontBuffers) {
-		fontBuffers = look.fontFiles.map((p) => readFileSync(p));
-	}
-	return fontBuffers;
+/**
+ * Build the resvg options for one render: the committed font files only,
+ * no system fonts. `fontFiles` takes file paths; the family fallbacks all
+ * point at the pinned family so no machine font can be picked up.
+ */
+export function resvgOptions(look = LOOK) {
+	return {
+		background: look.background,
+		font: {
+			loadSystemFonts: false,
+			fontFiles: look.fontFiles,
+			defaultFontFamily: look.fontFamily,
+			monospaceFamily: look.fontFamily,
+		},
+	};
 }
 
 /**
@@ -166,13 +176,22 @@ function getFontBuffers(look) {
 export async function renderScreenToPng(data, look = LOOK) {
 	const grid = await screenToGrid(data, { cols: look.cols, rows: look.rows });
 	const svg = gridToSvg(grid, look);
+	const resvg = new Resvg(svg, resvgOptions(look));
+	return resvg.render().asPng();
+}
+
+/**
+ * Render one screen with no font files at all (system fonts disabled, so
+ * resvg falls back to its built-in font). Used by the golden test to prove
+ * the committed TTFs are what the normal render rasterizes: the two outputs
+ * must differ, and the normal one must carry the real glyphs.
+ */
+export async function renderScreenToPngWithoutFontFiles(data, look = LOOK) {
+	const grid = await screenToGrid(data, { cols: look.cols, rows: look.rows });
+	const svg = gridToSvg(grid, look);
 	const resvg = new Resvg(svg, {
 		background: look.background,
-		font: {
-			loadSystemFonts: false,
-			fontFamily: look.fontFamily,
-			fontFiles: getFontBuffers(look),
-		},
+		font: { loadSystemFonts: false },
 	});
 	return resvg.render().asPng();
 }

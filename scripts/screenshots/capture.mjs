@@ -19,22 +19,40 @@ import { fileURLToPath } from "node:url";
 
 import { applyEnvPins, LOOK, WORK_ROOT } from "./look.mjs";
 import { CAPTURES } from "./definitions.mjs";
+import { EXPECTED_LINES } from "./expected.mjs";
 import { captureComponentBytes } from "./offscreen.mjs";
-import { renderScreenToPng } from "./render-png.mjs";
+import { renderScreenToPng, screenToText } from "./render-png.mjs";
 import { captureTerminal } from "./terminal-capture.mjs";
 import { startMockModelServer } from "./mock-model.mjs";
 import { startMockGistServer } from "./mock-gist.mjs";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
+/**
+ * Assert the settled screen shows every expected line (spec seam 3).
+ * Without this, a live pty capture that loses its content would be
+ * re-blessed into the goldens by the very command meant to fix them.
+ */
+async function assertExpectedLines(def, bytes) {
+	const expected = EXPECTED_LINES[def.id] ?? [];
+	if (expected.length === 0) return;
+	const rows = (await screenToText(bytes, { cols: LOOK.cols, rows: LOOK.rows })).map((line) => line.trim());
+	const missing = expected.filter((line) => !rows.some((row) => row.includes(line.trim())));
+	if (missing.length > 0) {
+		throw new Error(`missing expected content: ${missing.map((l) => JSON.stringify(l)).join(" ")}`);
+	}
+}
+
 async function captureOffscreen(def) {
 	const bytes = await captureComponentBytes(def.build, { cols: LOOK.cols, rows: LOOK.rows });
+	await assertExpectedLines(def, bytes);
 	return renderScreenToPng(bytes, LOOK);
 }
 
 async function capturePty(def, ctx) {
 	const spec = await def.setup(ctx);
 	const result = await captureTerminal({ ...spec, cols: LOOK.cols, rows: LOOK.rows });
+	await assertExpectedLines(def, result.bytes);
 	return renderScreenToPng(result.bytes, LOOK);
 }
 

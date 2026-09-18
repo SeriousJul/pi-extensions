@@ -22,8 +22,13 @@ export const LOOK = {
 	/** The terminal grid every screenshot renders into. */
 	cols: 100,
 	rows: 30,
-	/** The font family all cells are drawn with. */
-	fontFamily: "MesloLGMDZNFMono",
+	/**
+	 * The font family all cells are drawn with. This is the family name in the
+	 * committed TTFs' name tables (fc-scan), not the file names: resvg matches
+	 * SVG font-family against the family name of every loaded font, so the
+	 * name must equal what the file declares.
+	 */
+	fontFamily: "MesloLGLDZ Nerd Font Mono",
 	/** Font files, checked into the repo so CI renders the same glyphs. */
 	fontFiles: [
 		join(here, "fonts", "MesloLGMDZNFMono-Regular.ttf"),
@@ -57,12 +62,20 @@ export const LOOK = {
  * Environment pins every capture run with. UTC keeps clock-derived strings
  * ("resets Thu 14:00") machine-independent; FORCE_COLOR=3 makes chalk emit
  * bold/italic/underline codes outside a TTY, the way pi's theme emits them
- * in a real terminal.
+ * in a real terminal; COLORTERM=truecolor makes pi's theme loader pick the
+ * truecolor mode regardless of the rendering terminal.
  */
 export function applyEnvPins(env = process.env) {
 	env.TZ = "UTC";
 	env.FORCE_COLOR = "3";
+	env.COLORTERM = "truecolor";
 }
+
+// Pi's theme loader reads these at module load (initTheme, called from
+// views.mjs's top level), so the pins must be in effect before any capture
+// module body runs. look.mjs is the first import of every entry point and a
+// dependency of views.mjs, which makes this the one guaranteed hook.
+applyEnvPins();
 
 /**
  * The fixed working root. Captures never use mktemp: a fixed path keeps

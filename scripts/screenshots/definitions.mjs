@@ -13,7 +13,7 @@
  * it.
  */
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { WORK_ROOT } from "./look.mjs";
@@ -30,6 +30,31 @@ function piHome(root, settings) {
 	return { home: join(root, "home"), cwd: join(root, "cwd") };
 }
 
+/**
+ * The fixed bin dir with stub `fd` and `rg` binaries.
+ *
+ * pi probes its PATH at startup with `<cmd> --version` and prints a
+ * "not found. Offline mode enabled" warning when a binary is missing.
+ * The probe result depends on what the rendering machine happens to have
+ * installed, so the captures ship their own stubs: the probe always
+ * succeeds, the warning never appears, and the screen is identical
+ * everywhere. The stubs only ever answer --version; no capture runs a
+ * search tool.
+ */
+function stubBinDir() {
+	const dir = join(WORK_ROOT, "bin");
+	mkdirSync(dir, { recursive: true });
+	const stubs = { fd: "fd 10.0.0", rg: "ripgrep 14.1.0" };
+	for (const [name, version] of Object.entries(stubs)) {
+		const file = join(dir, name);
+		const source = `#!/bin/sh\necho "${version}"\nexit 0\n`;
+		if (!existsSync(file) || readFileSync(file, "utf8") !== source) {
+			writeFileSync(file, source, { mode: 0o755 });
+		}
+	}
+	return dir;
+}
+
 /** The environment every real-pi capture runs with. */
 function piEnv(root, extra = {}) {
 	return {
@@ -38,6 +63,9 @@ function piEnv(root, extra = {}) {
 		PI_OFFLINE: "1",
 		TZ: "UTC",
 		FORCE_COLOR: "3",
+		// Same codegraph build as the indexing step in buildIndexedRepo.
+		CODEGRAPH_NO_FAST_INIT: "1",
+		PATH: `${stubBinDir()}:${process.env.PATH ?? ""}`,
 		...extra,
 	};
 }
@@ -101,6 +129,12 @@ function gitInit(root) {
 async function buildIndexedRepo() {
 	const root = fixtures.buildCodegraphFixture();
 	gitInit(root);
+	// Fast init switches the fresh database's journal mode from the store
+	// worker's second connection; on slow filesystems that lands inside a
+	// locked window and the worker aborts with "database is locked". The
+	// kill switch keeps the WAL build, which is deterministic here. Set
+	// before the library loads, as the runtime's env defaults require.
+	process.env.CODEGRAPH_NO_FAST_INIT = "1";
 	const { CodeGraph } = await import("../../extensions/codegraph/runtime.ts");
 	await CodeGraph.init(root);
 	const graph = await CodeGraph.open(root, { sync: false });
@@ -236,18 +270,27 @@ export const CAPTURES = [
 		kind: "pty",
 		setup: async (ctx) => {
 			const repo = await buildIndexedRepo();
-			piHome(join(WORK_ROOT, "codegraph"));
+			const root = join(WORK_ROOT, "codegraph");
+			piHome(root);
+			// Register the mock provider like the other real-pi captures do,
+			// so a model exists and pi's "No models available" warning
+			// (which embeds this machine's path) never reaches the screen.
+			const extension = mockProviderExtension();
 			return {
 				file: process.execPath,
 				args: [
 					PI_CLI(ctx.repoRoot),
 					"--tui-mode",
 					"fullscreen",
+					"--model",
+					"mock/mock-orig",
+					"--extension",
+					extension,
 					"--extension",
 					join(ctx.repoRoot, "extensions", "codegraph", "index.ts"),
 				],
 				cwd: repo,
-				env: piEnv(join(WORK_ROOT, "codegraph")),
+				env: piEnv(root, { MOCK_MODEL_PORT: String(ctx.modelPort) }),
 				input: [{ data: "/codegraph\r", delayMs: 200 }],
 				marker: "auto-index",
 				startupMs: 8000,

@@ -26,7 +26,9 @@ import {
 } from "./fixtures.mjs";
 
 // getSettingsListTheme reads the global theme pi's interactive mode sets at
-// startup; initialize it with the same bundled dark theme.
+// startup; initialize it with the same bundled dark theme. The color mode
+// comes from look.mjs's env pins (COLORTERM=truecolor), which run before
+// this module body because look.mjs is imported above.
 initTheme("dark");
 const theme = darkTheme();
 
