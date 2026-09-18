@@ -340,6 +340,25 @@ function modelOptions(ctx: ExtensionContext): Model<Api>[] {
 	return withAuth.length > 0 ? withAuth : available;
 }
 
+/**
+ * Resolve the configured compression model from the registry.
+ *
+ * A local provider may register its models only after session start
+ * (on-demand load, wake from sleep), so a startup miss is not final: the
+ * caller retries after every turn until the model resolves. Exported for
+ * the wiring regression tests.
+ */
+export function resolveCompressionModel(
+	ctx: ExtensionContext,
+	settings: { enabled: boolean; model: ModelRef | null },
+): { model: Model<Api> | null; runner: CompressionRunner | null; error: "missing" | "auth" | null } {
+	if (!settings.enabled || !settings.model) return { model: null, runner: null, error: null };
+	const found = ctx.modelRegistry.find(settings.model.provider, settings.model.id);
+	if (!found) return { model: null, runner: null, error: "missing" };
+	if (!ctx.modelRegistry.hasConfiguredAuth(found)) return { model: null, runner: null, error: "auth" };
+	return { model: found, runner: createModelRunner(found, ctx.modelRegistry), error: null };
+}
+
 async function setModel(ctx: ExtensionContext, ref: ModelRef | null): Promise<void> {
 	const s = state;
 	if (!s) return;
@@ -403,26 +422,21 @@ export default function compressExtension(pi: ExtensionAPI): void {
 		const startupRequest = fullRequest(ctx.sessionManager.buildContextEntries());
 		if (startupRequest) core.plan(startupRequest, configOf(settings));
 
-		let model: Model<Api> | null = null;
-		let runner: CompressionRunner | null = null;
-		if (settings.enabled && settings.model) {
-			const found = ctx.modelRegistry.find(settings.model.provider, settings.model.id);
-			if (!found) {
-				ctx.ui.notify(`compress: configured model ${modelRefString(settings.model)} not found; compression is off`, "error");
-			} else if (!ctx.modelRegistry.hasConfiguredAuth(found)) {
-				ctx.ui.notify(`compress: no auth configured for ${modelRefString(settings.model)}; compression is off`, "error");
-			} else {
-				model = found;
-				runner = createModelRunner(found, ctx.modelRegistry);
-			}
+		// A startup miss is not final: a local provider can register its
+		// models after session start, so turn_end retries the resolution.
+		const resolved = resolveCompressionModel(ctx, settings);
+		if (resolved.error === "missing" && settings.model) {
+			ctx.ui.notify(`compress: configured model ${modelRefString(settings.model)} not found yet; retrying after each turn`, "error");
+		} else if (resolved.error === "auth" && settings.model) {
+			ctx.ui.notify(`compress: no auth configured for ${modelRefString(settings.model)}; retrying after each turn`, "error");
 		}
 		state = {
 			pi,
 			ctx,
 			settings,
 			core,
-			model,
-			runner,
+			model: resolved.model,
+			runner: resolved.runner,
 			inFlight: new Set(),
 			warned: new Set(),
 			attempts: new Map(),
@@ -457,9 +471,23 @@ export default function compressExtension(pi: ExtensionAPI): void {
 	});
 
 	// After each finished turn, compress the spans that are still raw.
-	pi.on("turn_end", () => {
+	pi.on("turn_end", (_event, ctx) => {
 		const s = state;
 		if (!s) return;
+		// Self-heal a startup model miss: the provider may have registered
+		// the model meanwhile. Once it resolves, compression starts on this
+		// turn and the failure counters restart for the new model.
+		if (!s.model && s.settings.model) {
+			const resolved = resolveCompressionModel(s.ctx, s.settings);
+			if (resolved.model && resolved.runner) {
+				s.model = resolved.model;
+				s.runner = resolved.runner;
+				s.warned.clear();
+				s.attempts.clear();
+				s.gaveUp.clear();
+				ctx.ui.notify(`compress: model ${modelRefString(s.settings.model)} is available; compression on`, "info");
+			}
+		}
 		prewarm(s);
 	});
 

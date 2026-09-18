@@ -35,6 +35,12 @@ is set with `/compression-model`.
   the compression model resets the counter. A span whose serialized input
   does not fit the compression model's context window (input plus the cap
   plus a 1k-token margin) never earns a call.
+- **Startup retry.** If the configured model is not in the registry at
+  session start, compression starts off and the resolution re-runs after each
+  turn. A local provider registers its models on demand, so a model that is
+  still loading or asleep at start resolves later in the session. When it
+  resolves, compression turns on from that turn and the failure counters
+  restart.
 - **Restart.** Spans already have their persisted form, so no compression is
   re-run after a restart.
 - **Usage.** Each compression call is a normal LLM event: its usage is in

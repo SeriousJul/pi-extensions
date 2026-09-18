@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage, TextContent, Usage, UserMessage } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { reconcileContext } from "../../extensions/compress/index";
+import { reconcileContext, resolveCompressionModel } from "../../extensions/compress/index";
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -57,6 +57,35 @@ function piContext(sm: SessionManager): AgentMessage[] {
 // Reconciliation: pi's own context projection, verified against the real
 // SessionManager
 // ---------------------------------------------------------------------------
+
+describe("resolveCompressionModel", () => {
+	const model = { id: "model-a", provider: "prov" } as never;
+	function ctxWith(found: unknown, auth = true) {
+		return { modelRegistry: { find: () => found, hasConfiguredAuth: () => auth } } as never;
+	}
+
+	it("resolves the model and a runner when found and authed", () => {
+		const result = resolveCompressionModel(ctxWith(model), { enabled: true, model: { provider: "prov", id: "model-a" } });
+		expect(result.error).toBeNull();
+		expect(result.model).toBe(model);
+		expect(result.runner).not.toBeNull();
+	});
+
+	it("reports missing when the registry has no such model", () => {
+		const result = resolveCompressionModel(ctxWith(null), { enabled: true, model: { provider: "prov", id: "model-a" } });
+		expect(result).toEqual({ model: null, runner: null, error: "missing" });
+	});
+
+	it("reports auth when the model has no configured auth", () => {
+		const result = resolveCompressionModel(ctxWith(model, false), { enabled: true, model: { provider: "prov", id: "model-a" } });
+		expect(result).toEqual({ model: null, runner: null, error: "auth" });
+	});
+
+	it("stays off without error when disabled or unset", () => {
+		expect(resolveCompressionModel(ctxWith(null), { enabled: false, model: { provider: "prov", id: "model-a" } })).toEqual({ model: null, runner: null, error: null });
+		expect(resolveCompressionModel(ctxWith(null), { enabled: true, model: null })).toEqual({ model: null, runner: null, error: null });
+	});
+});
 
 describe("reconcileContext", () => {
 	it("equals pi's session context for a plain branch", () => {
