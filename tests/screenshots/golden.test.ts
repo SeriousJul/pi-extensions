@@ -52,7 +52,8 @@ const EXPECTED_LINES: Record<string, string[]> = {
 	"initial-context": [
 		"initial context",
 		"ctx: 1.3K (1.0%) - uses: 30d",
-		"TOTAL                                  1,272  100.0%  1.0%     5  ████████████",
+		"1,272  100.0%  1.0%",
+		"375.0/u",
 	],
 	tools: [
 		"Tool Configuration",
