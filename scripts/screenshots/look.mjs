@@ -80,6 +80,9 @@ applyEnvPins();
 /**
  * The fixed working root. Captures never use mktemp: a fixed path keeps
  * fixture-derived strings (repo paths, session roots) byte-identical, and
- * every run starts from the same clean state.
+ * every run starts from the same clean state. The fixed path is also the
+ * weak spot: two concurrent runs (capture pipeline and test suite, or two
+ * pipelines) share and wipe each other's state. Run them sequentially on
+ * one machine; there is no lock by design.
  */
 export const WORK_ROOT = "/tmp/pi-extensions-capture";

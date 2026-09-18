@@ -8,7 +8,7 @@
  */
 import { join } from "node:path";
 
-import { Box, Text, Container, SettingsList } from "@earendil-works/pi-tui";
+import { Container, SettingsList } from "@earendil-works/pi-tui";
 import { getSettingsListTheme, initTheme } from "@earendil-works/pi-coding-agent";
 
 import { WORK_ROOT } from "./look.mjs";
@@ -32,50 +32,31 @@ import {
 initTheme("dark");
 const theme = darkTheme();
 
-/** Map a quota line tone to its theme paint, like the extension wiring does. */
-function paint(line) {
-	if (line.tone === "error") return theme.fg("error", line.text);
-	if (line.tone === "warning") return theme.fg("warning", line.text);
-	if (line.tone === "dim") return theme.fg("dim", line.text);
-	return line.text;
-}
-
-/** The /quota detail view: the Box exactly as quota/index.ts builds it. */
+/**
+ * The /quota detail view: the exact component the /quota command mounts
+ * (createQuotaDetailComponent in quota/index.ts), over the fixture snapshot.
+ */
 export async function quotaDetailView() {
 	const { renderQuotaDetail } = await import("../../extensions/quota/render.ts");
-	const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
-	box.addChild(new Text(theme.fg("accent", "ChatGPT plan quota"), 0, 0));
-	for (const line of renderQuotaDetail(QUOTA_SNAPSHOT, false, NOW_MS)) {
-		box.addChild(new Text(paint(line), 0, 0));
-	}
-	box.addChild(new Text(theme.fg("dim", "Press Enter or Esc to close"), 0, 0));
-	return {
-		render: (width) => box.render(width),
-		invalidate: () => box.invalidate(),
-		handleInput: () => {},
-	};
+	const { createQuotaDetailComponent } = await import("../../extensions/quota/index.ts");
+	return createQuotaDetailComponent(renderQuotaDetail(QUOTA_SNAPSHOT, false, NOW_MS), theme, () => {});
 }
 
-/** The /sync status view: the Box exactly as sync/index.ts builds it. */
-export function syncStatusView(lines) {
-	const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
-	box.addChild(new Text(theme.fg("accent", "pi sync"), 0, 0));
-	for (const line of lines) {
-		box.addChild(new Text(line, 0, 0));
-	}
-	box.addChild(new Text(theme.fg("dim", "Press Enter or Esc to close"), 0, 0));
-	return {
-		render: (width) => box.render(width),
-		invalidate: () => box.invalidate(),
-		handleInput: () => {},
-	};
+/**
+ * The /sync status view: the exact component the /sync command mounts
+ * (createSyncStatusComponent in sync/index.ts), over the report lines.
+ */
+export async function syncStatusView(lines) {
+	const { createSyncStatusComponent } = await import("../../extensions/sync/index.ts");
+	return createSyncStatusComponent(lines, false, theme, () => {});
 }
 
 /** The quota footer line, as a plain terminal line. */
 export async function quotaFooterLine() {
 	const { renderFooter } = await import("../../extensions/quota/render.ts");
+	const { paintQuotaLine } = await import("../../extensions/quota/index.ts");
 	const text = renderFooter(QUOTA_SNAPSHOT, false)
-		.map((line) => paint(line))
+		.map((line) => paintQuotaLine(line, theme))
 		.join("");
 	return {
 		render: (width) => [text, ...Array.from({ length: Math.max(0, width - 1) }, () => " ")],
@@ -147,49 +128,16 @@ export async function contextTui(tui) {
 	});
 }
 
-/** The origin tag, exactly as tools.ts derives it. */
-function originTag(tool) {
-	const source = tool.sourceInfo.source;
-	if (source === "sdk") return "sdk";
-	if (source === "builtin") return undefined;
-	const path = tool.sourceInfo.path;
-	const pkg = path.match(/node_modules\/((?:@[^/]+\/)?[^/]+)\//);
-	if (pkg) return pkg[1];
-	const file = path.split("/").pop() ?? path;
-	return file.replace(/\.[cm]?[jt]s$/, "");
-}
-
-/** The row description, exactly as tools.ts derives it. */
-function originDescription(tool) {
-	const info = tool.sourceInfo;
-	if (info.source === "builtin") return "Built-in pi tool";
-	if (info.source === "sdk") return "Custom tool registered via SDK";
-	return `Extension tool from ${originTag(tool)}: ${info.path}`;
-}
-
-/** The /tools list over the fixture tool catalogue. */
-export function toolsView() {
-	const items = toolInfos().map((tool) => {
-		const tag = originTag(tool);
-		const label = tag ? `${tool.name} ${theme.fg("muted", `(${tag})`)}` : tool.name;
-		return {
-			id: tool.name,
-			label,
-			description: originDescription(tool),
-			currentValue: "enabled",
-			values: ["enabled", "disabled"],
-		};
-	});
-	const header = {
-		render: () => [
-			theme.fg("accent", theme.bold("Tool Configuration")),
-			theme.fg("muted", "Tag = extension or SDK origin. No tag = built-in."),
-			"",
-		],
-		invalidate: () => {},
-	};
+/**
+ * The /tools list: the exact rows and header the /tools command mounts
+ * (toolSettingItems and toolsHeader in tools.ts), over the fixture tool
+ * catalogue with every tool enabled.
+ */
+export async function toolsView() {
+	const { toolSettingItems, toolsHeader } = await import("../../extensions/tools.ts");
+	const items = toolSettingItems(toolInfos(), () => true, theme);
 	const container = new Container();
-	container.addChild(header);
+	container.addChild(toolsHeader(theme));
 	container.addChild(new SettingsList(items, Math.min(items.length + 2, 15), getSettingsListTheme(), () => {}, () => {}));
 	return {
 		render: (width) => container.render(width),

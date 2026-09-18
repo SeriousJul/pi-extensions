@@ -20,11 +20,43 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Box, Text, matchesKey } from "@earendil-works/pi-tui";
 
-import { renderFooter, renderQuotaDetail, type QuotaLine, type Tone } from "./render.ts";
+import { renderFooter, renderQuotaDetail, type QuotaLine } from "./render.ts";
 import { createQuotaSource, type QuotaSource, type UsageSnapshot } from "./source.ts";
 import { setPiece } from "../shared/status-line.ts";
 /** Fixed by design: the interval is not configurable (issue #28). */
 const POLL_INTERVAL_MS = 5 * 60 * 1000;
+
+/** Paint one quota line with the theme color its tone names. */
+export function paintQuotaLine(line: QuotaLine, theme: Theme): string {
+	if (line.tone === "error") return theme.fg("error", line.text);
+	if (line.tone === "warning") return theme.fg("warning", line.text);
+	if (line.tone === "dim") return theme.fg("dim", line.text);
+	return line.text;
+}
+
+/**
+ * The /quota detail view: the detail lines in a boxed panel, closed with
+ * Enter or Esc. The extension command and the screenshot pipeline (issue
+ * #73) mount this same component, so the committed shot cannot drift from
+ * what the command shows.
+ */
+export function createQuotaDetailComponent(lines: QuotaLine[], theme: Theme, onClose: () => void) {
+	const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
+	box.addChild(new Text(theme.fg("accent", "ChatGPT plan quota"), 0, 0));
+	for (const line of lines) {
+		box.addChild(new Text(paintQuotaLine(line, theme), 0, 0));
+	}
+	box.addChild(new Text(theme.fg("dim", "Press Enter or Esc to close"), 0, 0));
+	return {
+		render: (width: number) => box.render(width),
+		invalidate: () => box.invalidate(),
+		handleInput: (data: string) => {
+			if (matchesKey(data, "enter") || matchesKey(data, "escape")) {
+				onClose();
+			}
+		},
+	};
+}
 
 export default function (pi: ExtensionAPI): void {
 	let source: QuotaSource | null = null;
@@ -46,21 +78,13 @@ export default function (pi: ExtensionAPI): void {
 		}
 	}
 
-	function paint(line: QuotaLine, theme: Theme): string {
-		const tone: Tone = line.tone;
-		if (tone === "error") return theme.fg("error", line.text);
-		if (tone === "warning") return theme.fg("warning", line.text);
-		if (tone === "dim") return theme.fg("dim", line.text);
-		return line.text;
-	}
-
 	function updateFooter(ctx: ExtensionContext): void {
 		if (!ctx.hasUI) return;
 		if (!snapshot) {
 			setPiece(ctx, "quota", "right", undefined);
 			return;
 		}
-		setPiece(ctx, "quota", "right", renderFooter(snapshot, stale).map((line) => paint(line, ctx.ui.theme)).join(""));
+		setPiece(ctx, "quota", "right", renderFooter(snapshot, stale).map((line) => paintQuotaLine(line, ctx.ui.theme)).join(""));
 	}
 
 	function notifyFailure(ctx: ExtensionContext, reason: string, message: string): void {
@@ -140,23 +164,7 @@ export default function (pi: ExtensionAPI): void {
 				return;
 			}
 			const lines = renderQuotaDetail(snapshot, stale, Date.now());
-			await ctx.ui.custom((_tui, theme, _keybindings, done) => {
-				const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
-				box.addChild(new Text(theme.fg("accent", "ChatGPT plan quota"), 0, 0));
-				for (const line of lines) {
-					box.addChild(new Text(paint(line, theme), 0, 0));
-				}
-				box.addChild(new Text(theme.fg("dim", "Press Enter or Esc to close"), 0, 0));
-				return {
-					render: (width: number) => box.render(width),
-					invalidate: () => box.invalidate(),
-					handleInput: (data: string) => {
-						if (matchesKey(data, "enter") || matchesKey(data, "escape")) {
-							done(undefined);
-						}
-					},
-				};
-			});
+			await ctx.ui.custom((_tui, theme, _keybindings, done) => createQuotaDetailComponent(lines, theme, () => done(undefined)));
 		},
 	});
 }
