@@ -185,6 +185,12 @@ export function parseProviderPayload(payload: unknown): ParsedPayload {
 
 const DEFAULT_TOOLS = ["read", "bash", "edit", "write"];
 
+/** The requested tool list, or pi's default set when none or an empty list is requested. */
+function effectiveTools(options: { selectedTools?: string[] } | null | undefined): string[] {
+	const selected = options?.selectedTools;
+	return selected && selected.length > 0 ? selected : DEFAULT_TOOLS;
+}
+
 /** The first line of pi's default base prompt. */
 const IDENTITY_LINE =
 	"You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.";
@@ -237,7 +243,7 @@ function toolGuideline(tools: string[]): string | undefined {
  * bullet identical to a default keeps the builtin source).
  */
 export function defaultGuidelines(options: BuildSystemPromptOptions): PromptGuideline[] {
-	const tools = options.selectedTools && options.selectedTools.length > 0 ? options.selectedTools : DEFAULT_TOOLS;
+	const tools = effectiveTools(options);
 	const builtinTexts = new Set<string>(FIXED_GUIDELINES);
 	const bullet = toolGuideline(tools);
 	if (bullet) builtinTexts.add(bullet);
@@ -259,7 +265,7 @@ export function defaultGuidelines(options: BuildSystemPromptOptions): PromptGuid
 
 /** The available-tools list of the default base prompt. */
 function toolsListFor(options: BuildSystemPromptOptions): string {
-	const tools = options.selectedTools && options.selectedTools.length > 0 ? options.selectedTools : DEFAULT_TOOLS;
+	const tools = effectiveTools(options);
 	const snippets = options.toolSnippets ?? {};
 	const visibleTools = tools.filter((name) => snippets[name] !== undefined && snippets[name] !== "");
 	return visibleTools.length > 0 ? visibleTools.map((name) => `- ${name}: ${snippets[name]}`).join("\n") : "(none)";
@@ -358,7 +364,7 @@ export function buildPromptSections(options: BuildSystemPromptOptions): Section[
 		sections.push({ key: `file:${file.path}`, label: file.path, kind: "file", source: "file", text });
 	});
 
-	const tools = options.selectedTools && options.selectedTools.length > 0 ? options.selectedTools : DEFAULT_TOOLS;
+	const tools = effectiveTools(options);
 	const skillFileReadTool = (["read", "bash"] as const).find((tool) => tools.includes(tool));
 	const skills = (options.skills ?? []).filter((skill) => !skill.disableModelInvocation);
 	if (skillFileReadTool && skills.length > 0) {
@@ -468,7 +474,7 @@ function buildToolRows(options: BuildSystemPromptOptions, captured: CapturedCont
 	if (captured.tools && captured.tools.length > 0) {
 		entries = captured.tools.map((tool) => ({ name: tool.name, raw: tool.raw }));
 	} else {
-		const names = options.selectedTools && options.selectedTools.length > 0 ? options.selectedTools : DEFAULT_TOOLS;
+		const names = effectiveTools(options);
 		entries = names.map((name) => {
 			const raw = builtinToolRaw(name, options.cwd);
 			if (raw !== undefined) {
@@ -672,8 +678,7 @@ export function estimateInitialContextTotal(input: StatusEstimateInput): {
 	if (input.captured.tools && input.captured.tools.length > 0) {
 		for (const tool of input.captured.tools) total += estimateTextTokens(tool.raw);
 	} else {
-		const names =
-			input.options && input.options.selectedTools && input.options.selectedTools.length > 0 ? input.options.selectedTools : DEFAULT_TOOLS;
+		const names = effectiveTools(input.options);
 		const factoryCwd = input.options?.cwd ?? input.cwd;
 		for (const name of names) {
 			const raw = builtinToolRaw(name, factoryCwd);

@@ -208,7 +208,12 @@ describe("initial context TUI", () => {
 	});
 
 	it("expands a row to the exact text and collapses again", () => {
-		const rig = makeRig(fixtureReport());
+		const report = fixtureReport();
+		const rig = makeRig(report);
+		// Rows sort by size, so the base prompt row is not guaranteed to be row
+		// 0; select it by label before expanding.
+		const baseIdx = report.rows.findIndex((r) => r.label === "base prompt");
+		for (let i = 0; i < baseIdx; i++) rig.component.handleInput("j");
 		rig.component.handleInput("e");
 		const lines = rig.rendered();
 		expect(lines.some((l) => l.startsWith("\u25be"))).toBe(true);
@@ -242,7 +247,8 @@ describe("initial context TUI", () => {
 	});
 
 	it("copies the whole breakdown with the uses column when ready", async () => {
-		const rig = makeRig(fixtureReport());
+		const report = fixtureReport();
+		const rig = makeRig(report);
 		rig.component.handleInput("c");
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		expect(rig.copied).toHaveLength(1);
@@ -254,6 +260,10 @@ describe("initial context TUI", () => {
 		expect(totalLine).toMatch(/\b8\b/);
 		expect(rig.rendered().some((l) => l.includes("copied"))).toBe(true);
 
+		// Rows sort by size, so the base prompt row is not guaranteed to be row
+		// 0; select it by label before expanding.
+		const baseIdx = report.rows.findIndex((r) => r.label === "base prompt");
+		for (let i = 0; i < baseIdx; i++) rig.component.handleInput("j");
 		rig.component.handleInput("e");
 		rig.component.handleInput("c");
 		await new Promise((resolve) => setTimeout(resolve, 10));

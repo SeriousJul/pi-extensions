@@ -157,7 +157,12 @@ export function createContextTui(deps: ContextTuiDeps): ContextTuiComponent {
 			if (text.length <= labelWidth) return text;
 			if (note) {
 				const suffix = ` (${note})`;
-				if (suffix.length < labelWidth) return text.slice(0, labelWidth - suffix.length) + suffix;
+				if (suffix.length < labelWidth) {
+					let cut = text.slice(0, labelWidth - suffix.length);
+					// A cut right after a space would leave a double space before the note.
+					if (cut.endsWith(" ")) cut = cut.slice(0, -1);
+					return cut + suffix;
+				}
 			}
 			return text.slice(0, labelWidth);
 		};
