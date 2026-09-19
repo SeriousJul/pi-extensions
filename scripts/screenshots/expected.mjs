@@ -68,8 +68,8 @@ export const EXPECTED_LINES = {
 	],
 	"compress-status": ["3 spans, 12.4k saved"],
 	"codegraph-status": [
-		// The status block shows twice: /codegraph both sets the persistent
-		// widget and emits an info notification with the same lines.
+		// The status block shows once, as the info notification in the
+		// transcript; /codegraph no longer sets the persistent widget (#80).
 		"codegraph: /tmp/pi-extensions-capture/codegraph/repo",
 		"index: 3 files, 9 nodes, 14 edges",
 		"index state: complete",
