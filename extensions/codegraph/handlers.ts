@@ -859,11 +859,12 @@ export function registerCommand(
       try {
         if (verb === "status" || verb === "") {
           // `status <path>` selects a named root by the parameter's path
-          // rule (spec 0009); no argument is the session root.
+          // rule (spec 0009); no argument is the session root. The block is
+          // reported once, as the info notification the other verbs use; the
+          // widget stays empty so the reader sees no stacked duplicate.
           const target = bare ? undefined : parts.slice(1).join(" ") || undefined;
           const lines = statusLines(session, ctx, target);
           if (bare) lines.push(...namedRootLines(session));
-          ui.setWidget?.("codegraph", lines);
           ui.notify("info", lines.join("\n"));
           return;
         }

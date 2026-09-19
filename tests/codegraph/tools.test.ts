@@ -637,7 +637,21 @@ describe("/codegraph command", () => {
     const joined = ui.notifications.map(([, m]) => m).join("\n");
     expect(joined).toContain("codegraph: " + fixture.main);
     expect(joined).toContain("index: none yet");
-    expect(ui.widgets.some(([key]) => key === "codegraph")).toBe(true);
+  });
+
+  it("status shows the block once: the notification, not a widget", async () => {
+    // The status block used to render twice - a persistent widget above the
+    // input and an info notification in the transcript. The notification is
+    // the single surface, so status must never set the codegraph widget.
+    const h = makeHarness(newSession(), fixture.main);
+    await h.session.ensureReady(fixture.main);
+    const ui = freshUi();
+    await h.commands.get("codegraph")!.handler("", makeCtx(fixture.main, ui));
+    expect(ui.widgets).toHaveLength(0);
+    const statusNotes = ui.notifications.filter(([, m]) =>
+      m.includes("index:"),
+    );
+    expect(statusNotes).toHaveLength(1);
   });
 
   it("status reports usage counts and the last failure", async () => {
@@ -758,6 +772,9 @@ describe("/codegraph command", () => {
     await h.commands.get("codegraph")!.handler("uninit", makeCtx(fixture.main, acceptUi));
     expect(acceptUi.confirms).toBe(1);
     expect(acceptUi.notifications.some(([, m]) => m.includes("removed index"))).toBe(true);
+    // The index-mutating verb clears the codegraph widget, so no stale
+    // widget survives a rebuild or an uninit.
+    expect(acceptUi.widgets).toContainEqual(["codegraph", undefined]);
     // The index is gone and a build is possible again: the note returns in its
     // "none" state, which is the promise the tools can keep.
     expect(h.session.indexStateFor(fixture.main)).toBe("none");
