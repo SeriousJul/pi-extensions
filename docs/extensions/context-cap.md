@@ -12,6 +12,13 @@ PI_CONTEXT_WINDOW=32000 pi
 The flag wins over the env var. The value is a token count, not a
 percentage.
 
+## Screenshot
+
+Startup with `--context-window 100000`: the one-time notice, and the
+footer showing the capped window as the model's budget.
+
+![context-cap startup notice](./context-cap.png)
+
 ## Behavior
 
 - The cap is a ceiling: the effective window is the smaller of the cap and

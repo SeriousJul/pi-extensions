@@ -13,6 +13,16 @@ network failure leaves the tree intact.
 [Internals](/extensions/sync/internals): the manifest, the merge
 semantics, the token lifecycle, and the Gist backend reference.
 
+## Screenshots
+
+The `/sync status` view in the TUI, with the device in sync:
+
+![sync status view](./sync-view.png)
+
+The same status from the `pi-sync status` CLI:
+
+![pi-sync status CLI](./sync-status.png)
+
 ## Onboarding (one command per device)
 
 The whole setup is a guided wizard. Each human action is either one

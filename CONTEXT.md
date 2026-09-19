@@ -153,6 +153,19 @@ Text another extension appends to the system prompt via
 extension replaced or rewrote the prompt and no suffix can be detected.
 _Avoid_: prompt modification (too generic), suffix
 
+**Prompt snippet**:
+The one-line entry a tool registers in the `Available tools:` section of the
+default system prompt.
+_Avoid_: tool summary, one-liner, description (description is the tool's
+full schema text)
+
+**Prompt guideline**:
+A bullet a tool registers in the `Guidelines:` section of the default system
+prompt. It is added flat without a tool name prefix and appears only while
+the tool is active.
+_Avoid_: instruction, rule, system note, prompt injection (injection is text
+an extension appends; a guideline is text a tool registers)
+
 **Provider reference**:
 The input tokens the provider reported on the first assistant message of the
 session. Display only: the bars and percentages stay on the estimator's
@@ -543,6 +556,21 @@ oldText that failed to match. It anchors the diff, so the model sees what the
 file actually has where it expected its own text.
 _Avoid_: fuzzy match (a matching strategy, not a region), candidate, closest
 match
+
+**Failure class**:
+One of the four buckets a failed edit call lands in: no-match (the oldText is
+not in the file), ambiguous (it appears more than once), validation (the
+arguments are invalid, including edits that overlap), or other (every other
+rejection, like a missing file).
+_Avoid_: error type (too generic), failure mode (implies a cause)
+
+**Health report**:
+What `scripts/edit-health.mjs` derives from the session tree: the edit
+tool's call count, failure count, failure rate, and the failures split by
+Failure class, for all time or a date window. The before/after instrument
+for Edit assist (ADR 0020).
+_Avoid_: usage report (the Usage extension measures tokens), edit stats
+(tool-generic)
 
 ### Docs
 

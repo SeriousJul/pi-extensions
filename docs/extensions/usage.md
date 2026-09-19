@@ -4,6 +4,16 @@ LLM token and cost reporting across all pi sessions: every `.jsonl`
 under `~/.pi/agent/sessions/`, all working directories, including
 subagent sessions.
 
+## Screenshots
+
+The TUI (`/usage`) over the fixture session files, all-time window:
+
+![usage TUI](./usage-tui.png)
+
+The CLI (`pi-usage report --month 2026-09`):
+
+![usage CLI report](./usage-cli.png)
+
 ## What is counted
 
 A usage event is one recorded LLM call:

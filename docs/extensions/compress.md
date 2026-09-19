@@ -10,6 +10,13 @@ each compressed span is persisted as a `compress-span` custom session entry
 Compression is opt-in: the extension does nothing until a compression model
 is set with `/compression-model`.
 
+## Screenshot
+
+The status bar line the extension adds once spans exist: the span count
+and the tokens saved, in dim text.
+
+![compress status line](./compress-status.png)
+
 ## Behavior
 
 - **Keep window.** The last `keepTurns` finished turns, plus the turn in

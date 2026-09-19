@@ -7,12 +7,43 @@ percentages, and bars. Tool rows also show the tool's call count in a
 usage window (the last 30 days by default), so the cost of a tool can be
 weighed against how often it is used.
 
+## Screenshot
+
+The `/ctx` view: one row per section and per tool - the base-prompt
+boilerplate, the available-tools snippet block, and one row per prompt
+guideline - with tokens, percentages of the context window, and the
+30-day tool call counts.
+
+![initial context TUI](./initial-context.png)
+
 ## /ctx (TUI)
 
-Opens the breakdown. There is one row per part: the base prompt (or
-custom prompt), the append text, project instruction files, skills, the
-cwd line, a prompt injection when another extension touched the prompt,
-and each tool. Rows are sorted by size, largest first.
+Opens the breakdown. There is one row per part: the base-prompt region
+(ADR 0021), the append text, project instruction files, skills, the cwd
+line, a prompt injection when another extension touched the prompt, and
+each tool. Rows are sorted by size, largest first.
+
+The default base prompt splits into report-sized rows. The `base prompt`
+row holds the boilerplate: the identity line, the custom-tools line, and
+the pi documentation block. The `available tools` row carries all the
+Prompt snippets (the one-line entries tools register). Each Prompt
+guideline gets its own row, attributed to its source: `builtin` for pi's
+default bullets, `extension` for the rest. A custom prompt stays a single
+row, as it has always been. The split changes presentation only: the
+section texts still concatenate to the exact base prompt, so the prompt
+injection detection and the token totals are unchanged.
+
+Once the session has at least one provider request, a guideline whose
+text largely restates a sent tool description shows a
+`duplicates tool description` note, in the text table and the TUI
+(ADR 0022). The tool description is already resent on every call as part
+of the tool entry, so such a guideline pays cost without adding
+information. The check is deliberately conservative - it catches verbatim
+and prefixed-verbatim restatements, not paraphrases - and it compares
+against the descriptions of the last captured provider request, the text
+actually sent. Before the first provider request the rows show with no
+note, and the available-tools snippets are never flagged: the one-line
+restatement is the design of that section.
 
 Every row shows its source (builtin, settings, file, skill, or extension;
 a tool is builtin or the extension that added it), its token count, its
@@ -57,11 +88,15 @@ a notify record in RPC mode, the console in print mode.
 
 The prompt rows come from the same structured inputs pi uses to build
 the system prompt (base template, append text, project files, skills,
-cwd). Tool rows come from the tool entries actually sent to the
-provider, captured read-only from the last provider request payload.
-Before the first call, built-in schemas are rebuilt from pi's exported
-tool factories and marked `built-in schema`; tools that cannot be
-resolved are listed by name with `waiting for first call`.
+cwd). The base-template rows (boilerplate, snippets, guidelines) are the
+structured pieces of the default prompt, and their texts concatenate to
+the exact base prompt pi sends, which is what the injection detection
+compares against (ADR 0021). Tool rows come from the tool entries
+actually sent to the provider, captured read-only from the last provider
+request payload. Before the first call, built-in schemas are rebuilt
+from pi's exported tool factories and marked `built-in schema`; tools
+that cannot be resolved are listed by name with `waiting for first
+call`.
 
 Token counts use pi's own estimator (chars / 4), so every row shares one
 consistent scale. The first assistant response also records the input

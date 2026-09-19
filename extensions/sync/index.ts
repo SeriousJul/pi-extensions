@@ -44,6 +44,29 @@ interface ParsedArgs {
 }
 
 /** The /sync arg line: a command, then the shared init parser. */
+/**
+ * The /sync status view: the report lines in a boxed panel, closed with
+ * Enter or Esc. The extension and the screenshot pipeline (issue #73)
+ * mount this same component, so the committed shot cannot drift from what
+ * the command shows.
+ */
+export function createSyncStatusComponent(lines: string[], isError: boolean, theme: Theme, onClose: () => void) {
+	const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
+	box.addChild(new Text(theme.fg("accent", `pi sync${isError ? " (error)" : ""}`), 0, 0));
+	for (const line of lines) {
+		box.addChild(new Text(isError ? theme.fg("error", line) : line, 0, 0));
+	}
+	box.addChild(new Text(theme.fg("dim", "Press Enter or Esc to close"), 0, 0));
+	return {
+		render: (width: number) => box.render(width),
+		invalidate: () => box.invalidate(),
+		handleInput: (data: string) => {
+			if (matchesKey(data, "enter") || matchesKey(data, "escape")) onClose();
+		},
+	};
+}
+
+
 function parseArgs(args: string): ParsedArgs {
 	const parts = args.trim().split(/\s+/).filter(Boolean);
 	const [command, ...rest] = parts;
@@ -114,21 +137,7 @@ export default function (pi: ExtensionAPI): void {
 			return;
 		}
 		void ctx.ui
-			.custom((_tui, theme: Theme, _keybindings, done) => {
-				const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
-				box.addChild(new Text(theme.fg("accent", `pi sync${isError ? " (error)" : ""}`), 0, 0));
-				for (const line of lines) {
-					box.addChild(new Text(isError ? theme.fg("error", line) : line, 0, 0));
-				}
-				box.addChild(new Text(theme.fg("dim", "Press Enter or Esc to close"), 0, 0));
-				return {
-					render: (width: number) => box.render(width),
-					invalidate: () => box.invalidate(),
-					handleInput: (data: string) => {
-						if (matchesKey(data, "enter") || matchesKey(data, "escape")) done(undefined);
-					},
-				};
-			})
+			.custom((_tui, theme: Theme, _keybindings, done) => createSyncStatusComponent(lines, isError, theme, () => done(undefined)))
 			.catch(() => undefined);
 	}
 

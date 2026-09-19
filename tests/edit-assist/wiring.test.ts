@@ -60,14 +60,18 @@ describe("diagnoseEditResult", () => {
 		const patch = await diagnoseEditResult(event, cwd, env);
 		expect(patch).toBeDefined();
 		const content = patch!.content as TextContent[];
-		expect(content[0]).toEqual({ type: "text", text: STOCK_ERROR });
-		expect(content[1]?.text).toContain("Diagnosis for edits[0] in src/app.ts:");
-		expect(content[1]?.text).toContain("Nearest region: lines 1-4");
-		expect(content[1]?.text).toContain(
+		expect(content.length).toBe(1);
+		// The Diagnosis is appended after the stock error, which stays verbatim.
+		expect(content[0].text.startsWith(STOCK_ERROR)).toBe(true);
+		const diagnosis = content[0].text.slice(STOCK_ERROR.length);
+		expect(diagnosis.startsWith("\n\n")).toBe(true);
+		expect(diagnosis).toContain("Diagnosis for edits[0] in src/app.ts:");
+		expect(diagnosis).toContain("Nearest region: lines 1-4");
+		expect(diagnosis).toContain(
 			"The difference is a whitespace-only difference: same line count, leading whitespace only.",
 		);
-		expect(content[1]?.text).toMatch(/\n-/m);
-		expect(content[1]?.text).toMatch(/\n\+/m);
+		expect(diagnosis).toMatch(/\n-/m);
+		expect(diagnosis).toMatch(/\n\+/m);
 	});
 
 	it("also appends the Diagnosis for the multi-edit no-match error form", async () => {
@@ -82,9 +86,10 @@ describe("diagnoseEditResult", () => {
 		const patch = await diagnoseEditResult(event, cwd, env);
 		expect(patch).toBeDefined();
 		const content = patch!.content as TextContent[];
-		expect(content[0]).toEqual({ type: "text", text: expect.stringContaining("Could not find edits[1] in") });
-		expect(content[1]?.text).toContain("Diagnosis for edits[1] in src/app.ts:");
-		expect(content[1]?.text).toContain("Nearest region: lines 2-2");
+		expect(content.length).toBe(1);
+		expect(content[0].text.startsWith("Could not find edits[1] in")).toBe(true);
+		expect(content[0].text).toContain("Diagnosis for edits[1] in src/app.ts:");
+		expect(content[0].text).toContain("Nearest region: lines 2-2");
 	});
 
 	it("returns undefined when the extension is disabled (off switch)", async () => {
@@ -112,7 +117,7 @@ describe("diagnoseEditResult", () => {
 		const event = editEvent({ path: "src/limit.ts", edits: [{ oldText: "line 4242X", newText: "x" }] });
 		const patch = await diagnoseEditResult(event, cwd, env);
 		expect(patch).toBeDefined();
-		expect((patch!.content as TextContent[])[1]?.text).toContain("Diagnosis for edits[0] in src/limit.ts:");
+		expect((patch!.content as TextContent[])[0]?.text).toContain("Diagnosis for edits[0] in src/limit.ts:");
 	});
 
 	it("returns undefined for a file over the byte limit (stock error unchanged)", async () => {

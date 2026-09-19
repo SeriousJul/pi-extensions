@@ -8,7 +8,7 @@
  * toggle writes the settings at once; one reload runs on close if anything
  * changed. Package resources appear dimmed and read-only.
  */
-import { matchesKey } from "@earendil-works/pi-tui";
+import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { TUI } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import {
@@ -203,8 +203,11 @@ export function createResourceToggleTui(deps: ResourceTuiDeps) {
     const hints = deps.projectTrusted
       ? "tab mode  ·  space toggle  ·  / search  ·  esc close"
       : "space toggle  ·  / search  ·  esc close";
+    // Pad by visible width: title and hints carry ANSI codes, so byte
+    // length would shift the hint left by the code bytes on styled themes.
+    const pad = Math.max(1, width - visibleWidth(title) - visibleWidth(hints));
     const lines: string[] = [
-      `${title}${" ".repeat(Math.max(1, width - title.length - hints.length))}${theme.fg("dim", hints)}`,
+      truncateToWidth(`${title}${" ".repeat(pad)}${theme.fg("dim", hints)}`, width),
       theme.fg("muted", `> ${search || "search"}`),
       "",
     ];
@@ -230,7 +233,9 @@ export function createResourceToggleTui(deps: ResourceTuiDeps) {
         const name = row.resource.displayName + (row.packageRow ? " (package)" : "");
         const nameText = i === cursor ? theme.bold(name) : name;
         const body = `${cursorMark} ${renderCheckbox(row)} ${nameText}  ${row.resource.scope === "user" ? "global" : "project"}  ${row.resource.path}${suffix(row)}`;
-        const clipped = body.slice(0, width);
+        // The styled rows carry ANSI codes, so a raw slice would clip by
+        // byte length and eat visible characters on narrow terminals.
+        const clipped = truncateToWidth(body, width);
         lines.push(row.inherited || row.packageRow ? theme.fg("dim", clipped) : clipped);
       }
       if (top + rendered < visible.length || top > 0) {
@@ -240,7 +245,7 @@ export function createResourceToggleTui(deps: ResourceTuiDeps) {
 
     lines.push("");
     const pending = changed ? theme.fg("warning", "  reload pending on close") : "";
-    lines.push(theme.fg("dim", hints) + pending);
+    lines.push(truncateToWidth(theme.fg("dim", hints) + pending, width));
     if (busy) lines.push(theme.fg("muted", "writing settings..."));
     if (writeError) lines.push(theme.fg("error", writeError));
     return lines;

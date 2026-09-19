@@ -22,3 +22,11 @@ entry - the extension API has no settings reader, and one line per tool
 is the size of the decision (issue #72).
 
 The command requires TUI mode; in print or RPC modes it reports that.
+
+## Screenshot
+
+The list with the fixture tool set: built-in tools, a package extension
+tool tagged with its origin, and a local extension tool tagged with its
+file name.
+
+![tools list TUI](./tools.png)

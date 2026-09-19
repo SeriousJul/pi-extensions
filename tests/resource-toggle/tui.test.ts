@@ -18,6 +18,16 @@ const fakeTheme = {
 } as unknown as Theme;
 const fakeTui = { requestRender: () => {}, terminal: { rows: 40, columns: 120 } } as unknown as TUI;
 
+// A theme that emits ANSI codes like pi's real theme, so styled rows carry
+// escape codes in the rendered lines.
+const ansiTheme = {
+  fg: (_color: string, s: string) => `\x1b[36m${s}\x1b[39m`,
+  bg: (_color: string, s: string) => s,
+  bold: (s: string) => `\x1b[1m${s}\x1b[22m`,
+} as unknown as Theme;
+
+const stripAnsi = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, "");
+
 const machine: MachineContext = { cwd: "/proj", agentDir: "/home/u/.pi/agent", configDir: ".pi" };
 
 const res = (partial: Partial<ResourceInfo> & { path: string; displayName: string }): ResourceInfo => ({
@@ -48,12 +58,16 @@ interface Rig {
   tick: () => Promise<void>;
 }
 
-function makeRig(settings?: SettingsState, applyImpl?: (next: SettingsState) => Promise<WriteOutcome>): Rig {
+function makeRig(
+  settings?: SettingsState,
+  applyImpl?: (next: SettingsState) => Promise<WriteOutcome>,
+  theme: Theme = fakeTheme,
+): Rig {
   const applyCalls: SettingsState[] = [];
   const closed = { called: false } as { called: boolean; changed?: boolean };
   const component = createResourceToggleTui({
     tui: fakeTui,
-    theme: fakeTheme,
+    theme,
     resources,
     settings: settings ?? { global: emptyScopeArrays(), project: emptyScopeArrays() },
     machine,
@@ -212,5 +226,21 @@ describe("resource list TUI", () => {
     });
     component.handleInput("\t");
     expect(component.render(120).join("\n")).toContain("Project mode unavailable");
+  });
+
+  it("clips styled rows by visible width, not by byte length", () => {
+    // A raw byte slice of a styled row counts escape bytes as content and
+    // eats the trailing visible characters on narrow terminals; the clip
+    // must keep the full visible width and end with the ellipsis.
+    const rig = makeRig(undefined, undefined, ansiTheme);
+    const width = 40;
+    const lines = rig.render(width);
+    for (const line of lines) {
+      expect(stripAnsi(line).length, `line overflows the grid: ${line}`).toBeLessThanOrEqual(width);
+    }
+    const visible = lines.map(stripAnsi);
+    const cursorRow = visible.find((l) => /^> +\[/.test(l)) ?? "";
+    const full = ">  [x] dummy.ts  global  /home/u/.pi/agent/extensions/dummy.ts";
+    expect(cursorRow).toBe(`${full.slice(0, width - 3)}...`);
   });
 });

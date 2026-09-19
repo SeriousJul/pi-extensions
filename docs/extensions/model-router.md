@@ -13,6 +13,14 @@ Works from any session. It reads the OpenAI ChatGPT plan's quota windows
 through the Quota source module (`extensions/quota/source.ts`, issue
 #28), which owns the ChatGPT token refresh (ADR 0005).
 
+## Screenshot
+
+A usage-limit halt and the `switch` recovery in one turn: the 429, the
+router notification, the resume message, and the fallback model's
+answer. The status bar has moved to the fallback model.
+
+![model-router halt and switch](./model-router-halt.png)
+
 ## Behavior
 
 - **Quota halt detection.** After a turn settles with an error, the

@@ -46,4 +46,4 @@ list with `pi list`.
 | [sync](/extensions/sync/) | Cross-device pi config sync: `/sync` plus the `pi-sync` CLI, three-way merge, v1 backend a secret GitHub Gist. |
 | [usage](/extensions/usage) | The `pi-usage` CLI and the usage report: token and cost usage across all pi sessions. |
 | [compress](/extensions/compress) | Replaces finished turns in outgoing requests with one short standing-in message; the session file stays intact. |
-| [edit-assist](/extensions/edit-assist) | Corrects and diagnoses failing edit calls around the built-in edit tool: a size-bounded Diagnosis on no-match failures. |
+| [edit-assist](/extensions/edit-assist) | Corrects and diagnoses built-in edit calls: leading-whitespace drift corrected before execution, a Nearest region diff on no-match, occurrence lines on ambiguous matches, one targeted hint on malformed calls; the stock error text is always kept. |

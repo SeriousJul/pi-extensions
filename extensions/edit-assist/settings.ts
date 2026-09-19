@@ -12,7 +12,8 @@ import os from "node:os";
 import path from "node:path";
 
 export interface EditAssistSettings {
-	/** Append the Diagnosis to failed edit results. */
+	/** Enable the whole extension. Disabled, the built-in edit tool runs
+	 * stock: no input correction, no honesty note, no Diagnosis, no hint. */
 	enabled: boolean;
 }
 
