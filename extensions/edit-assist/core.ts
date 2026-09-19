@@ -11,13 +11,15 @@
  *
  * The stock error text is never rewritten; a Diagnosis is appended after it
  * (ADR 0020). The ambiguous Diagnosis re-derives pi's own occurrence set and
- * checks it against the count in the stock error: pi counts non-overlapping
- * matches in fuzzy-normalized content when any edit in the call fuzzy-matches
- * and in raw LF-normalized content otherwise. This module derives the lines
- * in fuzzy mode first, re-derives them in raw mode when the fuzzy count
- * differs from the stock count, and gives up (stock error only) when neither
- * derivation reproduces it. That keeps the line numbers naming exactly the
- * occurrences the stock error counts.
+ * checks it against the count in the stock error. pi's countOccurrences
+ * normalizes both the file content and the oldText through the fuzzy
+ * normalization before counting, so the stock count is the fuzzy count in
+ * both of pi's replacement modes. This module derives the lines in fuzzy
+ * mode; when that count differs from the stock count, the file changed after
+ * execution (or the normalization mirror drifted), and it re-derives the
+ * lines in raw mode against the non-fuzzy LF-normalized content, listing the
+ * literal matches in the current file. It gives up (stock error only) when
+ * neither derivation reproduces the stock count.
  */
 
 /** Max occurrence lines shown in an ambiguous Diagnosis (ticket #84). */
@@ -59,8 +61,10 @@ function normalizeToLF(text: string): string {
 
 /**
  * The matching mode: "fuzzy" applies pi's fuzzy normalization per line
- * (mirroring pi's countOccurrences), "raw" matches only the LF-normalized
- * text exactly (the count pi takes when no edit in the call fuzzy-matched).
+ * (mirroring pi's countOccurrences); "raw" matches the LF-normalized text
+ * exactly. pi always reports the fuzzy count, so "raw" is only the fallback
+ * used to re-derive the lines when the file no longer reproduces the stock
+ * count.
  */
 export type OccurrenceMode = "fuzzy" | "raw";
 
@@ -156,7 +160,7 @@ export function malformedEditHint(errorText: string): string | null {
 	const args = parseReceivedArguments(errorText);
 	if (args === null) return null;
 	if (typeof args.edits === "string") {
-		return "Edit assist: edits must be an array of {oldText, newText} objects; a JSON string is not accepted. Send the array itself.";
+		return "Edit assist: edits was sent as a string and pi could not parse it as the edits array. Send edits as an array of {oldText, newText} objects.";
 	}
 	if (isReadToolShaped(args)) {
 		return "Edit assist: a path with offset and limit and no edits is the read tool call. Use read to view the file, and edit with a path and an edits array to change it.";

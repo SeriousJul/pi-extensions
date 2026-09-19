@@ -216,8 +216,9 @@ describe("ambiguousDiagnosis", () => {
 	});
 	it("re-derives the lines in raw mode when only the raw count matches the stock count", () => {
 		// Exact matches on lines 1 and 3; line 2 differs only by an en dash.
-		// The stock count (2) is the raw count, so the lines must come from
-		// the raw derivation and skip line 2.
+		// The fuzzy count (3) does not reproduce the stock count (2), so the
+		// lines come from the raw derivation against the literal text and
+		// skip line 2.
 		const file = "x - y\nx – y\nx - y\n";
 		const text = "Found 2 occurrences of the text in f.ts. The text must be unique. Please provide more context to make it unique.";
 		expect(ambiguousDiagnosis(text, { path: "f.ts", edits: [{ oldText: "x - y", newText: "" }] }, file)).toBe(
@@ -248,7 +249,7 @@ describe("malformedEditHint", () => {
 		const stock = realValidationError({ edits: "\n[{\"newText\": * One row of complete key hints, packed from the control catalogue: the\n * control module owns the content" });
 		expect(stock).toContain("- edits.0: must be object");
 		expect(malformedEditHint(stock)).toBe(
-			"Edit assist: edits must be an array of {oldText, newText} objects; a JSON string is not accepted. Send the array itself.",
+			"Edit assist: edits was sent as a string and pi could not parse it as the edits array. Send edits as an array of {oldText, newText} objects.",
 		);
 	});
 	it("gives no hint to any other malformed shape", () => {

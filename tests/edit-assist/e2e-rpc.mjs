@@ -49,7 +49,7 @@ const AMBIGUOUS_STOCK =
 const READ_SHAPE_HINT =
 	"Edit assist: a path with offset and limit and no edits is the read tool call. Use read to view the file, and edit with a path and an edits array to change it.";
 const STRING_EDITS_HINT =
-	"Edit assist: edits must be an array of {oldText, newText} objects; a JSON string is not accepted. Send the array itself.";
+	"Edit assist: edits was sent as a string and pi could not parse it as the edits array. Send edits as an array of {oldText, newText} objects.";
 
 function fail(message) {
 	console.error(`FAIL: ${message}`);

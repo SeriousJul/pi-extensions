@@ -24,7 +24,10 @@ adds one honesty line to the success of a corrected call. pi skips the
 tool result event fires for it. The validation-error hint therefore rides on
 the `message_end` event of the toolResult message instead; every other
 Diagnosis, including the ambiguous occurrence list, rides on `tool_result`
-as described.
+as described. The live TUI renders the tool result from `tool_execution_end`,
+which fires before `message_end`, so the validation-error hint first appears
+in the transcript on resume; the model context, the seam's target, receives
+it in the same turn.
 
 The governing invariant: the extension never writes a file. Every write goes
 through the built-in tool, under pi's per-path file-mutation queue, so a
