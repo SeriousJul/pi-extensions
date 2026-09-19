@@ -19,7 +19,12 @@ exact-matches it by construction, so the session records a successful edit.
 After execution, a `tool_result` hook appends a bounded Diagnosis to the
 error of every call that still fails (nearest-region diff for no-match,
 occurrence list for ambiguous, one targeted hint for validation errors) and
-adds one honesty line to the success of a corrected call.
+adds one honesty line to the success of a corrected call. pi skips the
+`tool_result` hook for validation failures: the call never executes, so no
+tool result event fires for it. The validation-error hint therefore rides on
+the `message_end` event of the toolResult message instead; every other
+Diagnosis, including the ambiguous occurrence list, rides on `tool_result`
+as described.
 
 The governing invariant: the extension never writes a file. Every write goes
 through the built-in tool, under pi's per-path file-mutation queue, so a

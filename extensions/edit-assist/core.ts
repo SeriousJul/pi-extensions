@@ -10,9 +10,13 @@
  * later call until compaction.
  *
  * The stock error text is never rewritten; a Diagnosis is appended after it
- * (ADR 0020). The ambiguous Diagnosis re-derives pi's own occurrence set:
- * pi counts non-overlapping fuzzy-normalized matches, and this module finds
- * the same matches line by line, so the line numbers name exactly the
+ * (ADR 0020). The ambiguous Diagnosis re-derives pi's own occurrence set and
+ * checks it against the count in the stock error: pi counts non-overlapping
+ * matches in fuzzy-normalized content when any edit in the call fuzzy-matches
+ * and in raw LF-normalized content otherwise. This module derives the lines
+ * in fuzzy mode first, re-derives them in raw mode when the fuzzy count
+ * differs from the stock count, and gives up (stock error only) when neither
+ * derivation reproduces it. That keeps the line numbers naming exactly the
  * occurrences the stock error counts.
  */
 
@@ -54,18 +58,26 @@ function normalizeToLF(text: string): string {
 }
 
 /**
- * 1-based line numbers where oldText fuzzy-matches fileText, in file order.
- * Line-by-line fuzzy normalization keeps line structure intact, so a match
- * in the joined normalized text maps to an exact line of the file.
+ * The matching mode: "fuzzy" applies pi's fuzzy normalization per line
+ * (mirroring pi's countOccurrences), "raw" matches only the LF-normalized
+ * text exactly (the count pi takes when no edit in the call fuzzy-matched).
+ */
+export type OccurrenceMode = "fuzzy" | "raw";
+
+/**
+ * 1-based line numbers where oldText matches fileText in file order.
+ * Line-by-line normalization keeps line structure intact, so a match in the
+ * joined normalized text maps to an exact line of the file.
  * Non-overlapping, mirroring pi's countOccurrences.
  */
-export function occurrenceLineNumbers(fileText: string, oldText: string): number[] {
+export function occurrenceLineNumbers(fileText: string, oldText: string, mode: OccurrenceMode = "fuzzy"): number[] {
+	const normalizeLine = mode === "fuzzy" ? normalizeFuzzyLine : (line: string) => line;
 	const fileLines = stripBom(normalizeToLF(fileText))
 		.split("\n")
-		.map(normalizeFuzzyLine);
+		.map(normalizeLine);
 	const needle = normalizeToLF(oldText)
 		.split("\n")
-		.map(normalizeFuzzyLine)
+		.map(normalizeLine)
 		.join("\n");
 	if (needle.length === 0) return [];
 	const haystack = fileLines.join("\n");
@@ -91,9 +103,17 @@ export function isEditValidationError(text: string): boolean {
 }
 
 /**
+ * The count the stock error names, or null when the text does not carry one.
+ */
+function stockOccurrenceCount(errorText: string): number | null {
+	const match = /Found (\d+) occurrences of /.exec(errorText);
+	return match !== null ? Number(match[1]) : null;
+}
+
+/**
  * The Diagnosis for an ambiguous failure, or null when the input does not
- * carry the failing oldText or the file no longer reproduces the match.
- * errorText selects the failing edit: the stock error names it as
+ * carry the failing oldText or the file no longer reproduces the stock
+ * count. errorText selects the failing edit: the stock error names it as
  * edits[i] for multi-edit calls and leaves it out for single-edit calls.
  */
 export function ambiguousDiagnosis(errorText: string, input: unknown, fileText: string): string | null {
@@ -103,8 +123,13 @@ export function ambiguousDiagnosis(errorText: string, input: unknown, fileText: 
 	const editIndex = named !== null ? Number(named[1]) : 0;
 	const oldText = parsed.edits[editIndex];
 	if (typeof oldText !== "string") return null;
-	const lines = occurrenceLineNumbers(fileText, oldText);
-	if (lines.length === 0) return null;
+	const stockCount = stockOccurrenceCount(errorText);
+	let lines: number[] | null = occurrenceLineNumbers(fileText, oldText, "fuzzy");
+	if (stockCount !== null && lines.length !== stockCount) {
+		const rawLines = occurrenceLineNumbers(fileText, oldText, "raw");
+		lines = rawLines.length === stockCount ? rawLines : null;
+	}
+	if (lines === null || lines.length === 0) return null;
 	const shown = lines.slice(0, MAX_OCCURRENCES);
 	const context = fileLines(fileText);
 	const rows = shown.map((line, i) => {

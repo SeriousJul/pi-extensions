@@ -144,6 +144,11 @@ describe("occurrenceLineNumbers", () => {
 		expect(occurrenceLineNumbers(file, "")).toEqual([]);
 		expect(occurrenceLineNumbers(file, "nope")).toEqual([]);
 	});
+	it("raw mode matches the exact LF-normalized text only", () => {
+		expect(occurrenceLineNumbers("x – y\nx - y\n", "x - y", "raw")).toEqual([2]);
+		expect(occurrenceLineNumbers("a “q” line\na \"q\" line\n", "a \"q\" line", "raw")).toEqual([2]);
+		expect(occurrenceLineNumbers("\uFEFFone\r\ntwo\r\n", "two", "raw")).toEqual([2]);
+	});
 });
 
 describe("ambiguousDiagnosis", () => {
@@ -198,6 +203,34 @@ describe("ambiguousDiagnosis", () => {
 	});
 	it("returns null when the file no longer reproduces the match", () => {
 		expect(ambiguousDiagnosis(handoffError, handoffInput, "nothing like that here\n")).toBeNull();
+	});
+	it("keeps the fuzzy lines when the fuzzy count matches the stock count", () => {
+		// Line 2 differs from the needle only by an en dash, which the fuzzy
+		// normalization folds away. The stock count (3) is the fuzzy count,
+		// so all three lines are listed.
+		const file = "x - y\nx – y\nx - y\n";
+		const text = "Found 3 occurrences of the text in f.ts. The text must be unique. Please provide more context to make it unique.";
+		expect(ambiguousDiagnosis(text, { path: "f.ts", edits: [{ oldText: "x - y", newText: "" }] }, file)).toBe(
+			"Edit assist: the old text matches 3 places in the file:\n  1: x - y\n  2: x – y\n  3: x - y",
+		);
+	});
+	it("re-derives the lines in raw mode when only the raw count matches the stock count", () => {
+		// Exact matches on lines 1 and 3; line 2 differs only by an en dash.
+		// The stock count (2) is the raw count, so the lines must come from
+		// the raw derivation and skip line 2.
+		const file = "x - y\nx – y\nx - y\n";
+		const text = "Found 2 occurrences of the text in f.ts. The text must be unique. Please provide more context to make it unique.";
+		expect(ambiguousDiagnosis(text, { path: "f.ts", edits: [{ oldText: "x - y", newText: "" }] }, file)).toBe(
+			"Edit assist: the old text matches 2 places in the file:\n  1: x - y\n  3: x - y",
+		);
+	});
+	it("returns null when neither derivation reproduces the stock count", () => {
+		// One exact occurrence and one that differs only in trailing
+		// whitespace: the fuzzy count is 2, the raw count is 1, the stock
+		// count is 3. A stock error only rather than a dishonest diagnosis.
+		const file = "const x = 1;\nconst x = 1;   \n";
+		const text = "Found 3 occurrences of the text in f.ts. The text must be unique. Please provide more context to make it unique.";
+		expect(ambiguousDiagnosis(text, { path: "f.ts", edits: [{ oldText: "const x = 1;", newText: "" }] }, file)).toBeNull();
 	});
 });
 

@@ -38,6 +38,16 @@ import {
 const MAX_FILE_BYTES = 300 * 1024;
 const MAX_FILE_LINES = 20_000;
 
+/**
+ * The file's line count the way the ADR guard means it: a trailing newline
+ * ends the last line, it does not start a new one.
+ */
+function countLines(text: string): number {
+	if (text.length === 0) return 0;
+	const newlines = (text.match(/\n/g) ?? []).length;
+	return text.endsWith("\n") ? newlines : newlines + 1;
+}
+
 /** The first text block of a tool result, or null. */
 function firstText(content: { type: string; text?: string }[] | undefined): string | null {
 	for (const block of content ?? []) {
@@ -60,7 +70,7 @@ async function readTargetFile(cwd: string, input: unknown): Promise<string | nul
 		const info = await stat(resolved);
 		if (!info.isFile() || info.size > MAX_FILE_BYTES) return null;
 		const text = await readFile(resolved, "utf8");
-		if (text.split("\n").length > MAX_FILE_LINES) return null;
+		if (countLines(text) > MAX_FILE_LINES) return null;
 		return text;
 	} catch {
 		return null;
