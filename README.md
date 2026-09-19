@@ -15,7 +15,7 @@ VitePress from the [`docs/`](docs/) folder.
 - **sync** - cross-device pi config sync: `/sync` plus the `pi-sync` CLI, three-way merge, v1 backend a secret GitHub Gist.
 - **compress** - replaces finished turns in outgoing requests with one short standing-in message; the session file stays intact.
 - **pruning** - two-level context control: prunes large tool outputs out of the request at pi's compaction threshold, and lets the prune gate cancel the compaction when pruning alone frees enough headroom.
-- **edit-assist** - diagnoses failing built-in edit calls: an ambiguous match gets the occurrence line numbers, a malformed call gets one targeted hint, and the stock error text is always kept.
+- **edit-assist** - corrects and diagnoses built-in edit calls: an oldText that differs from the file only in leading whitespace is corrected before execution, and the success result carries a one-line honesty note naming the line; an ambiguous match gets the occurrence line numbers, a malformed call gets one targeted hint, and the stock error text is always kept.
 - **skills** - a curated skill tree loaded by pi from the package's `skills/` directory, with `npm run skills:update` to three-way-merge upstream changes into the copies. The `mattpocock/` skills come from [mattpocock/skills](https://github.com/mattpocock/skills), MIT licensed (the upstream `LICENSE` ships at `skills/mattpocock/LICENSE`).
 
 See the [pi packages docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md) and the [extensions docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md).
