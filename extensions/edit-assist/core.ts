@@ -69,13 +69,11 @@ function normalizeToLF(text: string): string {
 export type OccurrenceMode = "fuzzy" | "raw";
 
 /**
- * 1-based line numbers where oldText matches fileText in file order.
- * Line-by-line normalization keeps line structure intact, so a match in the
- * joined normalized text maps to an exact line of the file.
- * Non-overlapping, mirroring pi's countOccurrences.
+ * The non-overlapping occurrence lines of oldText in fileText under a
+ * per-line normalization. Line structure stays intact, so a match in the
+ * joined normalized text maps to exact lines of the file.
  */
-export function occurrenceLineNumbers(fileText: string, oldText: string, mode: OccurrenceMode = "fuzzy"): number[] {
-	const normalizeLine = mode === "fuzzy" ? normalizeFuzzyLine : (line: string) => line;
+function occurrenceLineNumbersWith(fileText: string, oldText: string, normalizeLine: (line: string) => string): number[] {
 	const fileLines = stripBom(normalizeToLF(fileText))
 		.split("\n")
 		.map(normalizeLine);
@@ -94,6 +92,96 @@ export function occurrenceLineNumbers(fileText: string, oldText: string, mode: O
 		from = index + needle.length;
 	}
 	return lines;
+}
+
+/**
+ * 1-based line numbers where oldText matches fileText in file order.
+ * Non-overlapping, mirroring pi's countOccurrences.
+ */
+export function occurrenceLineNumbers(fileText: string, oldText: string, mode: OccurrenceMode = "fuzzy"): number[] {
+	const normalizeLine = mode === "fuzzy" ? normalizeFuzzyLine : (line: string) => line;
+	return occurrenceLineNumbersWith(fileText, oldText, normalizeLine);
+}
+
+/**
+ * The Extended match's per-line normalization (ADR 0020): pi's fuzzy
+ * normalization with the leading whitespace stripped. The strip runs after
+ * the fuzzy normalization, so special spaces already folded to ASCII spaces
+ * also drop off the line start.
+ */
+export function normalizeExtendedLine(line: string): string {
+	return normalizeFuzzyLine(line).replace(/^[ \t]*/, "");
+}
+
+/**
+ * 1-based line numbers where oldText Extended-matches fileText in file
+ * order: pi's fuzzy normalization plus a leading-whitespace-insensitive
+ * comparison.
+ */
+export function extendedOccurrenceLineNumbers(fileText: string, oldText: string): number[] {
+	return occurrenceLineNumbersWith(fileText, oldText, normalizeExtendedLine);
+}
+
+/** Leading whitespace in the raw diff test: spaces and tabs. */
+function stripLeadingWhitespace(line: string): string {
+	return line.replace(/^[ \t]*/, "");
+}
+
+/**
+ * The Whitespace-only diff test (ADR 0020): the same line count and every
+ * line pair differing only in leading whitespace. The raw lines compare, so
+ * any character drift fails the test, even when pi's fuzzy normalization
+ * would fold the character away.
+ */
+export function isWhitespaceOnlyDiff(oldText: string, fileText: string): boolean {
+	const a = normalizeToLF(oldText).split("\n");
+	const b = fileText.split("\n");
+	if (a.length !== b.length) return false;
+	for (let i = 0; i < a.length; i += 1) {
+		if (stripLeadingWhitespace(a[i]) !== stripLeadingWhitespace(b[i])) return false;
+	}
+	return true;
+}
+
+/** One corrected edit of a call: which edit, and the line it starts on. */
+export interface Correction {
+	editIndex: number;
+	line: number;
+}
+
+/**
+ * The Input correction for one edit (ADR 0020), or null when the call is
+ * left alone: an oldText that already exact-matches is never touched, zero
+ * or several Extended matches never correct, and a difference with any
+ * character drift degrades to the Diagnosis. The returned oldText is the
+ * file's actual text at the match, so the built-in tool exact-matches it.
+ */
+export function correctionForEdit(fileText: string, oldText: string): { oldText: string; line: number } | null {
+	const file = stripBom(normalizeToLF(fileText));
+	const needle = normalizeToLF(oldText);
+	if (needle.length === 0) return null;
+	if (file.indexOf(needle) !== -1) return null;
+	const occurrences = extendedOccurrenceLineNumbers(file, needle);
+	if (occurrences.length !== 1) return null;
+	const start = occurrences[0] - 1;
+	const lines = file.split("\n");
+	const region = lines.slice(start, start + needle.split("\n").length).join("\n");
+	if (!isWhitespaceOnlyDiff(needle, region)) return null;
+	return { oldText: region, line: occurrences[0] };
+}
+
+/**
+ * The honesty notes for a corrected call (ADR 0020): one line per corrected
+ * edit, naming the line and saying the edit ran with the whitespace-
+ * normalized old text. Naming follows pi's own error style: the single edit
+ * is unnamed, the i-th edit of a multi-edit call is edits[i].
+ */
+export function honestyNotes(corrections: Correction[], totalEdits: number): string[] {
+	return corrections.map(({ editIndex, line }) =>
+		totalEdits === 1
+			? `Edit assist: the edit was applied at line ${line} with whitespace normalization of its old text.`
+			: `Edit assist: edits[${editIndex}] was applied at line ${line} with whitespace normalization of its old text.`,
+	);
 }
 
 /** True when the text is the built-in edit's ambiguous-match error. */

@@ -1,21 +1,29 @@
 /**
- * E2E for the edit assist extension (ticket #84).
+ * E2E for the edit assist extension (tickets #83 and #84).
  *
  * Spawns a real pi process in RPC mode in a throwaway directory with the
  * extension loaded and no live LLM: a probe extension registers a scripted
  * provider that answers each prompt with one real edit tool call taken
  * from the case file, then a "done" text. Cases are seeded from real
- * session failures (ambiguous multi-occurrence calls; read-tool-shaped and
- * edits-as-string validation failures). Asserts:
+ * session failures and a real corrected-retry pair. Asserts:
  *
  *   1. no extension error at load or during the cases
- *   2. an ambiguous failure returns the stock error plus the occurrence
+ *   2. an indentation-wrong edit (whitespace-only difference) succeeds
+ *      through the built-in tool: the success text carries the one-line
+ *      honesty note naming the line, and the replacement lands at the
+ *      file's real text location
+ *   3. an already exact-matching edit succeeds with no honesty note
+ *   4. character drift is never corrected by the extension: a drift the
+ *      fuzzy match folds runs pi's own fuzzy path without a note, and a
+ *      drift it does not fold fails with the stock error unchanged
+ *   5. an oldText with several Extended matches is never corrected
+ *   6. an ambiguous failure returns the stock error plus the occurrence
  *      line numbers, each with one context line
- *   3. a read-tool-shaped call gets the one-line hint naming the read tool
- *   4. an edits-as-string call gets the one-line shape hint
- *   5. any other malformed shape, and the no-match class (ticket #81),
- *      come back unchanged, without an invented hint
- *   6. the result stays an error and the file on disk is never touched
+ *   7. a read-tool-shaped call gets the one-line hint naming the read
+ *      tool, an edits-as-string call gets the one-line shape hint, and
+ *      any other malformed shape comes back without an invented hint
+ *   8. the results keep their stock text first, errors stay errors, and
+ *      the file on disk holds exactly what the built-in tool wrote
  *
  *   node tests/edit-assist/e2e-rpc.mjs
  */
@@ -31,7 +39,9 @@ const extensionPath = join(repoRoot, "extensions", "edit-assist", "index.ts");
 const probePath = join(repoRoot, "tests", "edit-assist", "e2e-probe.ts");
 const TIMEOUT_MS = 60_000;
 
-// The target file: the ambiguous oldText occurs exactly on lines 3 and 7.
+// The target file. Line 4 is the corrected edit's target, line 5 the
+// exact-match case's, line 12 the fuzzy-drift case's, and lines 3 and 7
+// hold the ambiguous oldText.
 const TARGET_FILE = [
 	"export function demo() {",
 	"\tlet n = 0;",
@@ -42,6 +52,30 @@ const TARGET_FILE = [
 	"\tconst dup = 1;",
 	"",
 	"export default demo;",
+	"",
+	"export function note() {",
+	"\t// total - 100",
+	"\treturn 0;",
+	"}",
+].join("\n");
+
+// After cases 1-3 the built-in tool has rewritten lines 4, 5, and 12; the
+// uncorrected cases 4-6 change nothing.
+const FINAL_FILE = [
+	"export function demo() {",
+	"\tlet n = 0;",
+	"\tconst dup = 1;",
+	"  n += dup; // step",
+	"\treturn n; // done",
+	"}",
+	"\tconst dup = 1;",
+	"",
+	"export default demo;",
+	"",
+	"export function note() {",
+	"\t// total - 100, final",
+	"\treturn 0;",
+	"}",
 ].join("\n");
 
 const AMBIGUOUS_STOCK =
@@ -50,14 +84,100 @@ const READ_SHAPE_HINT =
 	"Edit assist: a path with offset and limit and no edits is the read tool call. Use read to view the file, and edit with a path and an edits array to change it.";
 const STRING_EDITS_HINT =
 	"Edit assist: edits was sent as a string and pi could not parse it as the edits array. Send edits as an array of {oldText, newText} objects.";
+const HONESTY_LINE_4 = "Edit assist: the edit was applied at line 4 with whitespace normalization of its old text.";
 
 function fail(message) {
 	console.error(`FAIL: ${message}`);
 	process.exit(1);
 }
 
-/** The cases, in order. `expect` is asserted after the turn settles. */
+/** The cases, in order. `expectError` asserts the result's error flag. */
 const CASES = [
+	{
+		name: "whitespace-only: the corrected call succeeds with the honesty line",
+		toolCall: {
+			id: "e2e-ws",
+			name: "edit",
+			// Recorded shape from the app.test.ts corrected-retry pair: the
+			// model typed the block with the wrong indentation.
+			arguments: { path: "target.ts", edits: [{ oldText: "  n += dup;", newText: "  n += dup; // step" }] },
+		},
+		expectError: false,
+		expect: (result) => {
+			const text = result.content[0].text;
+			if (!text.startsWith("Successfully replaced 1 block(s) in target.ts.")) {
+				throw new Error(`success text missing:\n${text}`);
+			}
+			if (!text.includes(HONESTY_LINE_4)) throw new Error(`honesty line missing:\n${text}`);
+			if (text.split("\n").filter((line) => line.startsWith("Edit assist:")).length !== 1) {
+				throw new Error(`honesty note is not one line:\n${text}`);
+			}
+		},
+	},
+	{
+		name: "exact match: succeeds and is never touched, no honesty note",
+		toolCall: {
+			id: "e2e-exact",
+			name: "edit",
+			arguments: { path: "target.ts", edits: [{ oldText: "\treturn n;", newText: "\treturn n; // done" }] },
+		},
+		expectError: false,
+		expect: (result) => {
+			const text = result.content[0].text;
+			if (!text.startsWith("Successfully replaced 1 block(s) in target.ts.")) {
+				throw new Error(`success text missing:\n${text}`);
+			}
+			if (text.includes("Edit assist:")) throw new Error(`invented honesty note present:\n${text}`);
+		},
+	},
+	{
+		name: "character drift the fuzzy match folds: pi's own path runs, no note",
+		toolCall: {
+			id: "e2e-drift",
+			name: "edit",
+			// The en dash folds to the file's hyphen, so the Extended match
+			// is unique, but the raw difference is not leading whitespace.
+			arguments: { path: "target.ts", edits: [{ oldText: "\t// total — 100", newText: "\t// total - 100, final" }] },
+		},
+		expectError: false,
+		expect: (result) => {
+			const text = result.content[0].text;
+			if (!text.startsWith("Successfully replaced 1 block(s) in target.ts.")) {
+				throw new Error(`success text missing:\n${text}`);
+			}
+			if (text.includes("Edit assist:")) throw new Error(`invented honesty note present:\n${text}`);
+		},
+	},
+	{
+		name: "character drift: never corrected, the stock no-match error stays",
+		toolCall: {
+			id: "e2e-nomatch",
+			name: "edit",
+			arguments: { path: "target.ts", edits: [{ oldText: "\tconst dup = 2;", newText: "\tconst dup = 3;" }] },
+		},
+		expectError: true,
+		expect: (result) => {
+			const text = result.content[0].text;
+			if (!text.startsWith("Could not find the exact text in target.ts.")) throw new Error(`stock error not kept:\n${text}`);
+			if (text.includes("Edit assist:")) throw new Error(`invented diagnosis present:\n${text}`);
+		},
+	},
+	{
+		name: "several Extended matches: never corrected, the stock error stays",
+		toolCall: {
+			id: "e2e-multiext",
+			name: "edit",
+			// Two spaces match neither occurrence exactly; the Extended match
+			// hits lines 3 and 7, so the correction must not run.
+			arguments: { path: "target.ts", edits: [{ oldText: "  const dup = 1;", newText: "  const dup = 2;" }] },
+		},
+		expectError: true,
+		expect: (result) => {
+			const text = result.content[0].text;
+			if (!text.startsWith("Could not find the exact text in target.ts.")) throw new Error(`stock error not kept:\n${text}`);
+			if (text.includes("Edit assist:")) throw new Error(`invented diagnosis present:\n${text}`);
+		},
+	},
 	{
 		name: "ambiguous: stock error plus occurrence lines with context",
 		toolCall: {
@@ -65,6 +185,7 @@ const CASES = [
 			name: "edit",
 			arguments: { path: "target.ts", edits: [{ oldText: "\tconst dup = 1;", newText: "\tconst dup = 2;" }] },
 		},
+		expectError: true,
 		expect: (result) => {
 			const text = result.content[0].text;
 			if (!text.startsWith(AMBIGUOUS_STOCK)) throw new Error(`stock error not kept:\n${text}`);
@@ -78,6 +199,7 @@ const CASES = [
 	{
 		name: "malformed read-tool shape: one-line hint naming the read tool",
 		toolCall: { id: "e2e-read", name: "edit", arguments: { path: "target.ts", offset: 1, limit: 20 } },
+		expectError: true,
 		expect: (result) => {
 			const text = result.content[0].text;
 			if (!text.startsWith('Validation failed for tool "edit":')) throw new Error(`stock error not kept:\n${text}`);
@@ -95,6 +217,7 @@ const CASES = [
 			name: "edit",
 			arguments: { edits: '\n[{"newText": * One row of complete key hints, packed from the control catalogue' },
 		},
+		expectError: true,
 		expect: (result) => {
 			const text = result.content[0].text;
 			if (!text.startsWith('Validation failed for tool "edit":')) throw new Error(`stock error not kept:\n${text}`);
@@ -107,6 +230,7 @@ const CASES = [
 	{
 		name: "any other malformed shape: unchanged, no invented hint",
 		toolCall: { id: "e2e-bare", name: "edit", arguments: { path: "target.ts" } },
+		expectError: true,
 		expect: (result) => {
 			const text = result.content[0].text;
 			if (!text.startsWith('Validation failed for tool "edit":')) throw new Error(`stock error not kept:\n${text}`);
@@ -114,12 +238,13 @@ const CASES = [
 		},
 	},
 	{
-		name: "no-match (ticket #81's class): unchanged in this slice",
+		name: "no-match with no Extended match at all: unchanged",
 		toolCall: {
-			id: "e2e-nomatch",
+			id: "e2e-nomatch2",
 			name: "edit",
 			arguments: { path: "target.ts", edits: [{ oldText: "\tconst nowhere = 0;", newText: "" }] },
 		},
+		expectError: true,
 		expect: (result) => {
 			const text = result.content[0].text;
 			if (!text.startsWith("Could not find the exact text in target.ts.")) throw new Error(`stock error not kept:\n${text}`);
@@ -192,7 +317,7 @@ async function main() {
 			if (found) return found;
 			if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}\nstderr:\n${stderr}`);
 			await new Promise((resolve) => setTimeout(resolve, 250));
-		};
+		}
 	};
 
 	try {
@@ -208,7 +333,9 @@ async function main() {
 				(message) => message.role === "toolResult" && message.toolCallId === test.toolCall.id,
 				`the ${test.toolCall.id} tool result`,
 			);
-			if (result.isError !== true) fail(`case ${index + 1} (${test.name}): result is not marked as an error`);
+			if (result.isError !== test.expectError) {
+				fail(`case ${index + 1} (${test.name}): result error flag is ${result.isError}, expected ${test.expectError}`);
+			}
 			if (!Array.isArray(result.content) || result.content.length === 0 || typeof result.content[0]?.text !== "string") {
 				fail(`case ${index + 1} (${test.name}): no text content in the result`);
 			}
@@ -220,8 +347,10 @@ async function main() {
 			console.log(`ok: case ${index + 1}: ${test.name}`);
 		}
 
-		if (readFileSync(targetFile, "utf8") !== TARGET_FILE) fail("the edit tool or the extension modified the target file");
-		console.log("ok: the target file is untouched");
+		if (readFileSync(targetFile, "utf8") !== FINAL_FILE) {
+			fail(`the file on disk does not hold exactly what the built-in tool wrote:\n${readFileSync(targetFile, "utf8")}`);
+		}
+		console.log("ok: the file on disk holds exactly what the built-in tool wrote");
 	} finally {
 		child.kill();
 		rmSync(cwd, { recursive: true, force: true });
