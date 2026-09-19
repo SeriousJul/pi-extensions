@@ -151,9 +151,20 @@ export function createContextTui(deps: ContextTuiDeps): ContextTuiComponent {
 			}
 		}
 
+		// Clip the label so a note stays whole: long guideline labels
+		// truncate their text, never the flag that follows them.
+		const clipLabel = (text: string, note: string | undefined): string => {
+			if (text.length <= labelWidth) return text;
+			if (note) {
+				const suffix = ` (${note})`;
+				if (suffix.length < labelWidth) return text.slice(0, labelWidth - suffix.length) + suffix;
+			}
+			return text.slice(0, labelWidth);
+		};
+
 		const rowLine = (row: InitialContextRow | "TOTAL", index: number): string => {
 			const isTotal = row === "TOTAL";
-			const label = isTotal ? "TOTAL" : rowLabel(row);
+			const label = isTotal ? "TOTAL" : clipLabel(rowLabel(row), row.note);
 			const source = isTotal ? "" : row.source;
 			const tokens = isTotal ? report.totalTokens : row.tokens;
 			const marker = !isTotal && index === cursor ? (expanded ? "\u25be" : "\u25b8") : " ";
@@ -163,7 +174,7 @@ export function createContextTui(deps: ContextTuiDeps): ContextTuiComponent {
 			const waste = isTotal ? "-" : wasteText(row);
 			const bar = barFor(report.totalTokens > 0 ? (tokens / report.totalTokens) * 100 : 0);
 			const line =
-				`${marker} ${label.slice(0, labelWidth).padEnd(labelWidth)}  ${source.padEnd(sourceWidth)}  ` +
+				`${marker} ${label.padEnd(labelWidth)}  ${source.padEnd(sourceWidth)}  ` +
 				`${INT.format(tokens).padStart(tokenWidth)}  ${ctxPct}  ${winPct}  ${uses.padStart(usesWidth)}  ${waste.padStart(wasteWidth)}` +
 				(bar ? `  ${bar}` : "");
 			return isTotal ? dim(line.trimEnd()) : line.trimEnd();

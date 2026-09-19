@@ -58,7 +58,7 @@ export function emptyCaptured(): CapturedContext {
 }
 
 /** Where one report row comes from. */
-export type RowKind = "base" | "append" | "file" | "skill" | "cwd" | "injection" | "tool";
+export type RowKind = "base" | "tools" | "guideline" | "append" | "file" | "skill" | "cwd" | "injection" | "tool";
 
 /** One line of the breakdown. */
 export interface InitialContextRow {
@@ -185,6 +185,86 @@ export function parseProviderPayload(payload: unknown): ParsedPayload {
 
 const DEFAULT_TOOLS = ["read", "bash", "edit", "write"];
 
+/** The first line of pi's default base prompt. */
+const IDENTITY_LINE =
+	"You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.";
+
+/** The line between the available-tools list and the guidelines. */
+const CUSTOM_TOOLS_LINE = "In addition to the tools above, you may have access to other custom tools depending on the project.";
+
+/** The fixed pi-documentation bullets at the end of the base prompt. */
+const PI_DOCS_BULLETS = [
+	"- When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory",
+	"- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md), environment variables (docs/environment-variables.md)",
+	"- When working on pi topics, read the docs and examples, and follow .md cross-references before implementing",
+	"- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)",
+];
+
+/** The pi documentation block, with this machine's package paths filled in. */
+function piDocsBlock(): string {
+	return [
+		"Pi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):",
+		`- Main documentation: ${getReadmePath()}`,
+		`- Additional docs: ${getDocsPath()}`,
+		`- Examples: ${getExamplesPath()} (extensions, custom tools, SDK)`,
+		...PI_DOCS_BULLETS,
+	].join("\n");
+}
+
+/** One prompt guideline bullet and where it comes from. */
+export interface PromptGuideline {
+	text: string;
+	/** builtin for pi's default bullets, extension for the rest. */
+	source: "builtin" | "extension";
+}
+
+const FIXED_GUIDELINES = ["Be concise in your responses", "Show file paths clearly when working with files"];
+
+/** The tool-based default bullet, when the tool set needs it. */
+function toolGuideline(tools: string[]): string | undefined {
+	const hasBash = tools.includes("bash");
+	const hasPowerShell = tools.includes("powershell");
+	if (!(hasBash || hasPowerShell) || tools.includes("grep") || tools.includes("find") || tools.includes("ls")) return undefined;
+	if (hasBash && hasPowerShell) return "Use bash or PowerShell for file operations like listing, searching, and finding files";
+	if (hasPowerShell) return "Use PowerShell for file operations like listing, searching, and finding files";
+	return "Use bash for file operations like ls, rg, find";
+}
+
+/**
+ * Every guideline bullet of the default base prompt, in prompt order,
+ * deduplicated on the first occurrence. pi's default bullets are builtin,
+ * the bullets a tool or extension registers are extension (a registered
+ * bullet identical to a default keeps the builtin source).
+ */
+export function defaultGuidelines(options: BuildSystemPromptOptions): PromptGuideline[] {
+	const tools = options.selectedTools && options.selectedTools.length > 0 ? options.selectedTools : DEFAULT_TOOLS;
+	const builtinTexts = new Set<string>(FIXED_GUIDELINES);
+	const bullet = toolGuideline(tools);
+	if (bullet) builtinTexts.add(bullet);
+	const out: PromptGuideline[] = [];
+	const seen = new Set<string>();
+	const add = (text: string, source: "builtin" | "extension"): void => {
+		if (seen.has(text)) return;
+		seen.add(text);
+		out.push({ text, source });
+	};
+	if (bullet) add(bullet, "builtin");
+	for (const guideline of options.promptGuidelines ?? []) {
+		const normalized = guideline.trim();
+		if (normalized.length > 0) add(normalized, builtinTexts.has(normalized) ? "builtin" : "extension");
+	}
+	for (const fixed of FIXED_GUIDELINES) add(fixed, "builtin");
+	return out;
+}
+
+/** The available-tools list of the default base prompt. */
+function toolsListFor(options: BuildSystemPromptOptions): string {
+	const tools = options.selectedTools && options.selectedTools.length > 0 ? options.selectedTools : DEFAULT_TOOLS;
+	const snippets = options.toolSnippets ?? {};
+	const visibleTools = tools.filter((name) => snippets[name] !== undefined && snippets[name] !== "");
+	return visibleTools.length > 0 ? visibleTools.map((name) => `- ${name}: ${snippets[name]}`).join("\n") : "(none)";
+}
+
 /**
  * Reconstruct pi's default base prompt from the same structured inputs pi
  * uses. Duplicates the template in pi's system-prompt.ts, because pi does
@@ -192,63 +272,20 @@ const DEFAULT_TOOLS = ["read", "bash", "edit", "write"];
  * asserts that no injection row appears for an unmodified session.
  */
 function defaultBasePrompt(options: BuildSystemPromptOptions): string {
-	const tools = options.selectedTools && options.selectedTools.length > 0 ? options.selectedTools : DEFAULT_TOOLS;
-	const snippets = options.toolSnippets ?? {};
-	const visibleTools = tools.filter((name) => snippets[name] !== undefined && snippets[name] !== "");
-	const toolsList =
-		visibleTools.length > 0
-			? visibleTools.map((name) => `- ${name}: ${snippets[name]}`).join("\n")
-			: "(none)";
-
-	const guidelinesList: string[] = [];
-	const guidelinesSet = new Set<string>();
-	const add = (guideline: string): void => {
-		if (!guidelinesSet.has(guideline)) {
-			guidelinesSet.add(guideline);
-			guidelinesList.push(guideline);
-		}
-	};
-	const hasBash = tools.includes("bash");
-	const hasPowerShell = tools.includes("powershell");
-	const hasGrep = tools.includes("grep");
-	const hasFind = tools.includes("find");
-	const hasLs = tools.includes("ls");
-	if ((hasBash || hasPowerShell) && !hasGrep && !hasFind && !hasLs) {
-		if (hasBash && hasPowerShell) {
-			add("Use bash or PowerShell for file operations like listing, searching, and finding files");
-		} else if (hasPowerShell) {
-			add("Use PowerShell for file operations like listing, searching, and finding files");
-		} else {
-			add("Use bash for file operations like ls, rg, find");
-		}
-	}
-	for (const guideline of options.promptGuidelines ?? []) {
-		const normalized = guideline.trim();
-		if (normalized.length > 0) add(normalized);
-	}
-	add("Be concise in your responses");
-	add("Show file paths clearly when working with files");
-	const guidelines = guidelinesList.map((guideline) => `- ${guideline}`).join("\n");
-
 	return [
-		"You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.",
+		IDENTITY_LINE,
 		"",
 		"Available tools:",
-		toolsList,
+		toolsListFor(options),
 		"",
-		"In addition to the tools above, you may have access to other custom tools depending on the project.",
+		CUSTOM_TOOLS_LINE,
 		"",
 		"Guidelines:",
-		guidelines,
+		defaultGuidelines(options)
+			.map((guideline) => `- ${guideline.text}`)
+			.join("\n"),
 		"",
-		"Pi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):",
-		`- Main documentation: ${getReadmePath()}`,
-		`- Additional docs: ${getDocsPath()}`,
-		`- Examples: ${getExamplesPath()} (extensions, custom tools, SDK)`,
-		"- When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory",
-		"- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md), environment variables (docs/environment-variables.md)",
-		"- When working on pi topics, read the docs and examples, and follow .md cross-references before implementing",
-		"- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)",
+		piDocsBlock(),
 	].join("\n");
 }
 
@@ -256,6 +293,7 @@ interface Section {
 	key: string;
 	label: string;
 	kind: RowKind;
+	source: string;
 	text: string;
 }
 
@@ -263,21 +301,51 @@ interface Section {
  * Split the full base prompt into its sections, in the fixed block order
  * (base, append, project files, skills, cwd). Concatenating the section
  * texts reproduces the base prompt exactly.
+ *
+ * The default base prompt splits into report-sized pieces (issue #85):
+ * the boilerplate (identity line, custom-tools line, pi documentation
+ * block), the available-tools snippet block, and one section per prompt
+ * guideline. The boilerplate lives in the gaps the split pieces fill, so
+ * it appears as three sections under one key and concatenates, with the
+ * split pieces between them, to the exact base prompt.
  */
 export function buildPromptSections(options: BuildSystemPromptOptions): Section[] {
 	const promptCwd = options.cwd.replace(/\\/g, "/");
 	const isCustom = options.customPrompt !== undefined;
 	const sections: Section[] = [];
 
-	sections.push({
-		key: "base",
-		label: isCustom ? "custom prompt" : "base prompt",
-		kind: "base",
-		text: isCustom ? (options.customPrompt as string) : defaultBasePrompt(options),
-	});
+	if (isCustom) {
+		sections.push({ key: "base", label: "custom prompt", kind: "base", source: "builtin", text: options.customPrompt as string });
+	} else {
+		sections.push({
+			key: "base",
+			label: "base prompt",
+			kind: "base",
+			source: "builtin",
+			text: `${IDENTITY_LINE}\n\nAvailable tools:\n`,
+		});
+		sections.push({ key: "available-tools", label: "available tools", kind: "tools", source: "builtin", text: toolsListFor(options) });
+		sections.push({
+			key: "base",
+			label: "base prompt",
+			kind: "base",
+			source: "builtin",
+			text: `\n\n${CUSTOM_TOOLS_LINE}\n\nGuidelines:\n`,
+		});
+		defaultGuidelines(options).forEach((guideline, index) => {
+			sections.push({
+				key: `guideline:${index}`,
+				label: guideline.text,
+				kind: "guideline",
+				source: guideline.source,
+				text: (index === 0 ? "" : "\n") + `- ${guideline.text}`,
+			});
+		});
+		sections.push({ key: "base", label: "base prompt", kind: "base", source: "builtin", text: `\n\n${piDocsBlock()}` });
+	}
 
 	if (options.appendSystemPrompt) {
-		sections.push({ key: "append", label: "append text", kind: "append", text: `\n\n${options.appendSystemPrompt}` });
+		sections.push({ key: "append", label: "append text", kind: "append", source: "settings", text: `\n\n${options.appendSystemPrompt}` });
 	}
 
 	const files = options.contextFiles ?? [];
@@ -287,7 +355,7 @@ export function buildPromptSections(options: BuildSystemPromptOptions): Section[
 		let text = `<project_instructions path="${file.path}">\n${file.content}\n</project_instructions>\n\n`;
 		if (index === 0) text = head + text;
 		if (index === files.length - 1) text += tail;
-		sections.push({ key: `file:${file.path}`, label: file.path, kind: "file", text });
+		sections.push({ key: `file:${file.path}`, label: file.path, kind: "file", source: "file", text });
 	});
 
 	const tools = options.selectedTools && options.selectedTools.length > 0 ? options.selectedTools : DEFAULT_TOOLS;
@@ -306,7 +374,7 @@ export function buildPromptSections(options: BuildSystemPromptOptions): Section[
 			const end = isLast ? rest.length : rest.indexOf(endMarker, start);
 			const stop = end === -1 ? rest.length : end + endMarker.length;
 			const piece = (index === 0 ? header : "") + rest.slice(start, stop);
-			sections.push({ key: `skill:${skill.name}`, label: skill.name, kind: "skill", text: piece });
+			sections.push({ key: `skill:${skill.name}`, label: skill.name, kind: "skill", source: "skill", text: piece });
 			start = stop;
 		});
 	}
@@ -315,6 +383,7 @@ export function buildPromptSections(options: BuildSystemPromptOptions): Section[
 		key: "cwd",
 		label: "cwd",
 		kind: "cwd",
+		source: "builtin",
 		text: isCustom ? `\nCurrent working directory: ${promptCwd}\n` : `\nCurrent working directory: ${promptCwd}`,
 	});
 
@@ -424,23 +493,91 @@ function buildToolRows(options: BuildSystemPromptOptions, captured: CapturedCont
 }
 
 // ---------------------------------------------------------------------------
-// Report
+// Guideline duplication check (issue #86)
 // ---------------------------------------------------------------------------
 
-/** Source of a base-prompt section. */
-const SECTION_SOURCE: Record<RowKind, string> = {
-	base: "builtin",
-	append: "settings",
-	file: "file",
-	skill: "skill",
-	cwd: "builtin",
-	injection: "extension",
-	tool: "builtin",
-};
+/**
+ * The normalized form for the duplicate comparison: lowercase, punctuation
+ * replaced by spaces, runs of whitespace collapsed to one space.
+ */
+export function normalizeForDuplicateCheck(text: string): string {
+	return text
+		.toLowerCase()
+		.replace(/[^\p{L}\p{N}\s]/gu, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+/** The length of the longest substring common to both strings. */
+export function longestCommonSubstringLength(a: string, b: string): number {
+	if (a.length === 0 || b.length === 0) return 0;
+	let best = 0;
+	let prev = new Array<number>(b.length + 1).fill(0);
+	for (let i = 1; i <= a.length; i++) {
+		const curr = new Array<number>(b.length + 1).fill(0);
+		for (let j = 1; j <= b.length; j++) {
+			if (a[i - 1] !== b[j - 1]) continue;
+			const value = prev[j - 1] + 1;
+			curr[j] = value;
+			if (value > best) best = value;
+		}
+		prev = curr;
+	}
+	return best;
+}
+
+/** A common substring shorter than this is never flagged. */
+const DUPLICATE_FLOOR_CHARS = 24;
+/** The share of the guideline the common substring must cover. */
+const DUPLICATE_SHARE = 0.8;
+
+/**
+ * True when the guideline largely restates one of the tool descriptions:
+ * the longest common substring (normalized form) covers at least 80% of the
+ * guideline and is at least 24 characters. Deliberately conservative: it
+ * catches verbatim and prefixed-verbatim shapes, misses paraphrases.
+ */
+export function duplicatesToolDescription(guideline: string, descriptions: string[]): boolean {
+	const normalized = normalizeForDuplicateCheck(guideline);
+	for (const description of descriptions) {
+		const lcs = longestCommonSubstringLength(normalized, normalizeForDuplicateCheck(description));
+		if (lcs >= DUPLICATE_FLOOR_CHARS && lcs >= DUPLICATE_SHARE * normalized.length) return true;
+	}
+	return false;
+}
+
+/**
+ * The tool descriptions from the last captured provider request, the text
+ * actually sent to the model. Entries whose raw is not a JSON object with a
+ * string description (name-only placeholders) carry none.
+ */
+export function capturedToolDescriptions(captured: CapturedContext): string[] {
+	if (!captured.tools) return [];
+	const out: string[] = [];
+	for (const tool of captured.tools) {
+		try {
+			const parsed: unknown = JSON.parse(tool.raw);
+			if (isRecord(parsed) && typeof parsed.description === "string" && parsed.description.length > 0) {
+				out.push(parsed.description);
+			}
+		} catch {
+			// Not JSON: the placeholder name carries no description.
+		}
+	}
+	return out;
+}
+
+// ---------------------------------------------------------------------------
+// Report
+// ---------------------------------------------------------------------------
 
 /**
  * Build the full breakdown from the prompt options and the captured state.
  * Row order: size, largest first (the stable sort keeps prompt order for ties).
+ *
+ * The base-prompt boilerplate sections (one key, split around the
+ * available-tools and guideline sections) merge into the single
+ * `base prompt` row; the split sections stay separate rows.
  */
 export function buildInitialContext(
 	options: BuildSystemPromptOptions,
@@ -448,19 +585,44 @@ export function buildInitialContext(
 	contextWindow?: number,
 ): InitialContextReport {
 	const sections = buildPromptSections(options);
-	const rows: InitialContextRow[] = sections.map((section) => ({
-		key: section.key,
-		label: section.label,
-		kind: section.kind,
-		source: SECTION_SOURCE[section.kind],
-		text: section.text,
-		tokens: estimateTextTokens(section.text),
-	}));
+	const rows: InitialContextRow[] = [];
+	let baseRow: InitialContextRow | undefined;
+	for (const section of sections) {
+		if (section.key === "base" && baseRow) {
+			baseRow.text += section.text;
+			continue;
+		}
+		const row: InitialContextRow = {
+			key: section.key,
+			label: section.label,
+			kind: section.kind,
+			source: section.source,
+			text: section.text,
+			tokens: 0,
+		};
+		if (section.key === "base") baseRow = row;
+		rows.push(row);
+	}
+	for (const row of rows) row.tokens = estimateTextTokens(row.text);
 
 	const injection = injectionRow(sections, captured.sentSystem);
 	if (injection) rows.push(injection);
 
 	rows.push(...buildToolRows(options, captured));
+
+	// A guideline that largely restates a sent tool description pays cost
+	// without adding information: mark it, but only once the session has
+	// seen at least one provider request (the descriptions of the last one).
+	// Prompt snippets are never flagged: the one-line restatement is the
+	// design of the available-tools section.
+	const descriptions = capturedToolDescriptions(captured);
+	if (descriptions.length > 0) {
+		for (const row of rows) {
+			if (row.kind === "guideline" && !row.note && duplicatesToolDescription(row.label, descriptions)) {
+				row.note = "duplicates tool description";
+			}
+		}
+	}
 	rows.sort((a, b) => b.tokens - a.tokens);
 
 	// The total estimates the prompt exactly as it is sent (one unit, the
