@@ -164,14 +164,21 @@ export function fixtureGistTransport() {
 export const CONTEXT_SESSIONS_ROOT = join(FIXTURES_ROOT, "initial-context", "sessions");
 
 /**
- * The BuildSystemPromptOptions the /ctx fixture reconstructs. A custom
- * prompt (so no pi-bundled prompt text is involved), an append, one
- * project file, two skills, and the four built-in tools.
+ * The one pi package directory the /ctx fixture renders with (see
+ * PI_PACKAGE_DIR in views.mjs): the default base prompt embeds this
+ * machine's package paths, so the fixture pins a fixed one to keep the
+ * report - and the screenshot - byte-identical everywhere.
+ */
+export const PINNED_PI_PACKAGE_DIR = "/home/julian/.local/share/mise/installs/pi/0.85.1/pi";
+
+/**
+ * The BuildSystemPromptOptions the /ctx fixture reconstructs. The default
+ * base prompt (so the split rows show: the base-prompt boilerplate, the
+ * available-tools snippet block, and one row per guideline), an append,
+ * one project file, two skills, and the four built-in tools.
  */
 export function initialContextOptions() {
 	return {
-		customPrompt:
-			"You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.\n\nGuidelines:\n- Use bash for file operations like ls, rg, find\n- Use read to examine files instead of cat or sed\n- When making technical decisions, prefer quality, simplicity, robustness, and long term maintainability\n- Be concise in your responses",
 		appendSystemPrompt: "Always run the tests before committing.",
 		cwd: "/home/julian/acme",
 		contextFiles: [
@@ -198,6 +205,13 @@ export function initialContextOptions() {
 			},
 		],
 		selectedTools: ["read", "bash", "edit", "write"],
+		toolSnippets: {
+			read: "Read the contents of a file.",
+			bash: "Execute a bash command.",
+			edit: "Edit a file with exact replacements.",
+			write: "Write content to a file.",
+		},
+		promptGuidelines: ["Only talk using ASD-STE100 Simplified Technical English."],
 	};
 }
 

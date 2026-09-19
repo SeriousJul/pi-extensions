@@ -17,6 +17,7 @@ import {
 	QUOTA_SNAPSHOT,
 	NOW_MS,
 	initialContextOptions,
+	PINNED_PI_PACKAGE_DIR,
 	CONTEXT_SESSIONS_ROOT,
 	RESOURCE_MACHINE,
 	resourceInfos,
@@ -111,7 +112,19 @@ export async function contextTui(tui) {
 	const { createContextTui } = await import("../../extensions/initial-context/tui.ts");
 	const { buildInitialContext, emptyCaptured } = await import("../../extensions/initial-context/context.ts");
 	const { createToolUsageSource } = await import("../../extensions/initial-context/tool-usage.ts");
-	const report = buildInitialContext(initialContextOptions(), emptyCaptured(), 128000);
+	// The default base prompt embeds the pi package paths (the pi docs
+	// block). Pin the package dir for the duration of this report so the
+	// paths - and the token counts they set - are the same on every machine.
+	// The pin is removed immediately after the build: the later pty
+	// captures spawn real pi over process.env, and their theme loading
+	// must find the real package dir.
+	process.env.PI_PACKAGE_DIR = PINNED_PI_PACKAGE_DIR;
+	let report;
+	try {
+		report = buildInitialContext(initialContextOptions(), emptyCaptured(), 128000);
+	} finally {
+		delete process.env.PI_PACKAGE_DIR;
+	}
 	const usage = createToolUsageSource({
 		sessionsRoot: CONTEXT_SESSIONS_ROOT,
 		cacheFile: join(WORK_ROOT, "initial-context", "tool-usage-cache.json"),
