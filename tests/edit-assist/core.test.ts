@@ -6,6 +6,7 @@ import {
 	diagnoseNoMatch,
 	isOversized,
 	isWhitespaceOnlyDiff,
+	lineCount,
 	matchKind,
 	nearestRegion,
 	normalizeToLF,
@@ -210,6 +211,34 @@ describe("isOversized", () => {
 
 	it("stops a file over the line limit", () => {
 		expect(isOversized(100, MAX_FILE_LINES + 1)).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// lineCount: the large-file guard's line side, on the real counting path
+// ---------------------------------------------------------------------------
+
+describe("lineCount", () => {
+	it("counts 0 for empty text", () => {
+		expect(lineCount("")).toBe(0);
+	});
+
+	it("does not count the empty tail of a trailing newline", () => {
+		expect(lineCount("a\nb\n")).toBe(2);
+	});
+
+	it("counts a final line without a trailing newline", () => {
+		expect(lineCount("a\nb")).toBe(2);
+	});
+
+	it("lets a file of exactly MAX_FILE_LINES with a trailing newline through the guard", () => {
+		const file = Array.from({ length: MAX_FILE_LINES }, (_, i) => `line ${i + 1}`).join("\n") + "\n";
+		expect(isOversized(Buffer.byteLength(file), lineCount(file))).toBe(false);
+	});
+
+	it("stops a file of MAX_FILE_LINES + 1 with a trailing newline", () => {
+		const file = Array.from({ length: MAX_FILE_LINES + 1 }, (_, i) => `line ${i + 1}`).join("\n") + "\n";
+		expect(isOversized(Buffer.byteLength(file), lineCount(file))).toBe(true);
 	});
 });
 

@@ -20,6 +20,7 @@ import type { TextContent } from "@earendil-works/pi-ai";
 import {
 	diagnoseNoMatch,
 	isOversized,
+	lineCount,
 	normalizeToLF,
 	splitBom,
 	type EditSpec,
@@ -77,14 +78,22 @@ export async function diagnoseEditResult(
 	} catch {
 		return undefined;
 	}
-	if (isOversized(buffer.byteLength, buffer.toString("utf8").split("\n").length)) return undefined;
-	const { text: raw } = splitBom(buffer.toString("utf8"));
-	const diagnosis = diagnoseNoMatch({ path: displayPath, fileText: normalizeToLF(raw), edits });
+	// Decode once: the size guard and the core share the same text.
+	const raw = buffer.toString("utf8");
+	if (isOversized(buffer.byteLength, lineCount(raw))) return undefined;
+	const fileText = normalizeToLF(splitBom(raw).text);
+	const diagnosis = diagnoseNoMatch({ path: displayPath, fileText, edits });
 	if (!diagnosis) return undefined;
 	return { content: [...event.content, { type: "text", text: diagnosis }] };
 }
 
 export default function editAssistExtension(pi: ExtensionAPI): void {
+	// A malformed settings value fell back to its default; report it once at
+	// session start, the same way every other extension reports settings
+	// errors.
+	pi.on("session_start", (_event, ctx: ExtensionContext) => {
+		for (const error of readEditAssistSettings(ctx.cwd).errors) ctx.ui.notify(`edit-assist: ${error}`, "error");
+	});
 	// After execution: append the Diagnosis to every edit call that still
 	// fails with a no-match error. The built-in error text stays verbatim;
 	// the Diagnosis is a new text block after it.

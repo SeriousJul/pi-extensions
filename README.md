@@ -34,6 +34,7 @@ See the [pi packages docs](https://github.com/earendil-works/pi/blob/main/packag
 | usage | [docs](https://seriousjul.github.io/pi-extensions/extensions/usage.html) |
 | compress | [docs](https://seriousjul.github.io/pi-extensions/extensions/compress.html) |
 | pruning | [docs](https://seriousjul.github.io/pi-extensions/extensions/pruning.html) |
+| edit-assist | [docs](https://seriousjul.github.io/pi-extensions/extensions/edit-assist.html) |
 
 ## Skills
 

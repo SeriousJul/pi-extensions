@@ -51,6 +51,16 @@ export function isOversized(sizeBytes: number, lineCount: number): boolean {
 }
 
 /**
+ * The line count of a decoded file text: empty text is 0 lines, and a
+ * trailing newline does not start a new line, so a 20,000-line file with a
+ * final newline (the normal case) counts 20,000, not 20,001.
+ */
+export function lineCount(raw: string): number {
+	if (raw === "") return 0;
+	return raw.split("\n").length - (raw.endsWith("\n") ? 1 : 0);
+}
+
+/**
  * The same normalization the built-in edit's fuzzy step applies: NFKC,
  * per-line trailing whitespace stripped, smart quotes and dashes mapped to
  * ASCII, special spaces mapped to the space character.

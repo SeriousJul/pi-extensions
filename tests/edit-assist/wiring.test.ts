@@ -83,15 +83,25 @@ describe("diagnoseEditResult", () => {
 		mkdirSync(join(cwd, "src"), { recursive: true });
 		const many = Array.from({ length: MAX_FILE_LINES + 1 }, (_, i) => `line ${i + 1}`).join("\n") + "\n";
 		writeFileSync(join(cwd, "src", "big.ts"), many);
-		const event = editEvent({ edits: [{ oldText: "line 99", newText: "x" }] });
+		const event = editEvent({ path: "src/big.ts", edits: [{ oldText: "line 99X", newText: "x" }] });
 		const patch = await diagnoseEditResult(event, cwd, env);
 		expect(patch).toBeUndefined();
+	});
+
+	it("diagnoses a file exactly at the line limit (20,000 lines with a trailing newline)", async () => {
+		mkdirSync(join(cwd, "src"), { recursive: true });
+		const atLimit = Array.from({ length: MAX_FILE_LINES }, (_, i) => `line ${i + 1}`).join("\n") + "\n";
+		writeFileSync(join(cwd, "src", "limit.ts"), atLimit);
+		const event = editEvent({ path: "src/limit.ts", edits: [{ oldText: "line 4242X", newText: "x" }] });
+		const patch = await diagnoseEditResult(event, cwd, env);
+		expect(patch).toBeDefined();
+		expect((patch!.content as TextContent[])[1]?.text).toContain("Diagnosis for edits[0] in src/limit.ts:");
 	});
 
 	it("returns undefined for a file over the byte limit (stock error unchanged)", async () => {
 		mkdirSync(join(cwd, "src"), { recursive: true });
 		writeFileSync(join(cwd, "src", "big.ts"), "x".repeat(300 * 1024 + 1) + "\n");
-		const event = editEvent({ edits: [{ oldText: "x", newText: "y" }] });
+		const event = editEvent({ path: "src/big.ts", edits: [{ oldText: "x", newText: "y" }] });
 		const patch = await diagnoseEditResult(event, cwd, env);
 		expect(patch).toBeUndefined();
 	});
@@ -140,6 +150,33 @@ describe("diagnoseEditResult", () => {
 		const event = editEvent({ path: "src/app.ts", edits: [{ oldText: "const a = 999;", newText: "x" }] });
 		const patch = await diagnoseEditResult(event, cwd, env);
 		expect(patch).toBeDefined();
+	});
+
+	it("reports settings errors at session start", async () => {
+		// A malformed value falls back to its default and is reported once at
+		// session start, the same way every other extension reports settings
+		// errors.
+		projectSettings({ "edit-assist": { enabled: "yes" } });
+		const notifications: Array<{ message: string; type: string }> = [];
+		const ctxWithUi = {
+			cwd: cwd,
+			ui: {
+				notify: (message: string, type: string) => {
+					notifications.push({ message, type });
+				},
+			},
+		} as unknown as ExtensionContext;
+		const captured: { handler?: (event: unknown, ctx: ExtensionContext) => unknown } = {};
+		editAssistExtension({
+			on: (event: string, handler: unknown) => {
+				if (event === "session_start") captured.handler = handler as typeof captured.handler;
+			},
+		} as never);
+		expect(captured.handler).toBeDefined();
+		await captured.handler!(undefined, ctxWithUi);
+		expect(notifications).toEqual([
+			{ message: "edit-assist: edit-assist.enabled must be a boolean, got: \"yes\"", type: "error" },
+		]);
 	});
 
 	it("ignores tools other than edit", async () => {
