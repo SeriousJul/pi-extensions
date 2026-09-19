@@ -557,6 +557,21 @@ file actually has where it expected its own text.
 _Avoid_: fuzzy match (a matching strategy, not a region), candidate, closest
 match
 
+**Failure class**:
+One of the four buckets a failed edit call lands in: no-match (the oldText is
+not in the file), ambiguous (it appears more than once), validation (the
+arguments are invalid, including edits that overlap), or other (every other
+rejection, like a missing file).
+_Avoid_: error type (too generic), failure mode (implies a cause)
+
+**Health report**:
+What `scripts/edit-health.mjs` derives from the session tree: the edit
+tool's call count, failure count, failure rate, and the failures split by
+Failure class, for all time or a date window. The before/after instrument
+for Edit assist (ADR 0020).
+_Avoid_: usage report (the Usage extension measures tokens), edit stats
+(tool-generic)
+
 ### Docs
 
 **Screenshot**:
