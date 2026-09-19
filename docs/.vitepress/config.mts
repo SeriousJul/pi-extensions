@@ -81,6 +81,7 @@ export default defineConfig({
           { text: "compress", link: "/extensions/compress" },
           { text: "pruning", link: "/extensions/pruning" },
           { text: "resource-toggle", link: "/extensions/resource-toggle" },
+          { text: "edit-assist", link: "/extensions/edit-assist" },
         ],
       },
       {

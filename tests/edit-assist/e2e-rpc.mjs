@@ -1,5 +1,5 @@
 /**
- * E2E for the edit assist extension (tickets #83 and #84).
+ * E2E for the edit assist extension (tickets #81, #83, and #84).
  *
  * Spawns a real pi process in RPC mode in a throwaway directory with the
  * extension loaded and no live LLM: a probe extension registers a scripted
@@ -15,20 +15,28 @@
  *   3. an already exact-matching edit succeeds with no honesty note
  *   4. character drift is never corrected by the extension: a drift the
  *      fuzzy match folds runs pi's own fuzzy path without a note, and a
- *      drift it does not fold fails with the stock error unchanged
- *   5. an oldText with several Extended matches is never corrected
+ *      drift it does not fold fails with the stock error plus the Nearest
+ *      region Diagnosis (line range and unified diff)
+ *   5. an oldText with several Extended matches is never corrected; it
+ *      fails with the stock error plus the Nearest region Diagnosis that
+ *      states the whitespace-only difference explicitly
  *   6. an ambiguous failure returns the stock error plus the occurrence
  *      line numbers, each with one context line
  *   7. a read-tool-shaped call gets the one-line hint naming the read
  *      tool, an edits-as-string call gets the one-line shape hint, and
  *      any other malformed shape comes back without an invented hint
- *   8. the results keep their stock text first, errors stay errors, and
+ *   8. a no-match oldText nothing in the file resembles gets the stock
+ *      error plus the "No candidate region" line
+ *   9. the results keep their stock text first, errors stay errors, and
  *      the file on disk holds exactly what the built-in tool wrote
+ *  10. a disabled run (settings off switch) leaves the built-in behavior
+ *      stock: the whitespace-only edit is not corrected and the no-match
+ *      failure carries the stock error alone
  *
  *   node tests/edit-assist/e2e-rpc.mjs
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -85,6 +93,8 @@ const READ_SHAPE_HINT =
 const STRING_EDITS_HINT =
 	"Edit assist: edits was sent as a string and pi could not parse it as the edits array. Send edits as an array of {oldText, newText} objects.";
 const HONESTY_LINE_4 = "Edit assist: the edit was applied at line 4 with whitespace normalization of its old text.";
+const NOMATCH_STOCK = "Could not find the exact text in target.ts. The old text must match exactly including all whitespace and newlines.";
+const WHITESPACE_ONLY_NOTE = "The difference is a whitespace-only difference: same line count, leading whitespace only.";
 
 function fail(message) {
 	console.error(`FAIL: ${message}`);
@@ -149,7 +159,7 @@ const CASES = [
 		},
 	},
 	{
-		name: "character drift: never corrected, the stock no-match error stays",
+		name: "no-match character drift: never corrected, stock error plus Nearest region Diagnosis",
 		toolCall: {
 			id: "e2e-nomatch",
 			name: "edit",
@@ -158,12 +168,20 @@ const CASES = [
 		expectError: true,
 		expect: (result) => {
 			const text = result.content[0].text;
-			if (!text.startsWith("Could not find the exact text in target.ts.")) throw new Error(`stock error not kept:\n${text}`);
-			if (text.includes("Edit assist:")) throw new Error(`invented diagnosis present:\n${text}`);
+			if (!text.startsWith(NOMATCH_STOCK)) throw new Error(`stock error not kept:\n${text}`);
+			if (!text.includes("Diagnosis for edits[0] in target.ts:")) {
+				throw new Error(`diagnosis header missing:\n${text}`);
+			}
+			if (!text.includes("Nearest region: lines 3-3")) throw new Error(`nearest region missing:\n${text}`);
+			if (!text.includes("-\tconst dup = 2;") || !text.includes("+\tconst dup = 1;")) {
+				throw new Error(`unified diff missing:\n${text}`);
+			}
+			if (text.includes(WHITESPACE_ONLY_NOTE)) throw new Error(`invented whitespace-only note:\n${text}`);
+			if (text.includes("Edit assist:")) throw new Error(`invented prefix line:\n${text}`);
 		},
 	},
 	{
-		name: "several Extended matches: never corrected, the stock error stays",
+		name: "several Extended matches: never corrected, stock error plus the whitespace-only note",
 		toolCall: {
 			id: "e2e-multiext",
 			name: "edit",
@@ -174,8 +192,15 @@ const CASES = [
 		expectError: true,
 		expect: (result) => {
 			const text = result.content[0].text;
-			if (!text.startsWith("Could not find the exact text in target.ts.")) throw new Error(`stock error not kept:\n${text}`);
-			if (text.includes("Edit assist:")) throw new Error(`invented diagnosis present:\n${text}`);
+			if (!text.startsWith(NOMATCH_STOCK)) throw new Error(`stock error not kept:\n${text}`);
+			if (!text.includes("Diagnosis for edits[0] in target.ts:")) {
+				throw new Error(`diagnosis header missing:\n${text}`);
+			}
+			if (!text.includes("Nearest region: lines 3-3")) throw new Error(`nearest region missing:\n${text}`);
+			if (!text.includes(WHITESPACE_ONLY_NOTE)) throw new Error(`whitespace-only note missing:\n${text}`);
+			if (!text.includes("-  const dup = 1;") || !text.includes("+\tconst dup = 1;")) {
+				throw new Error(`unified diff missing:\n${text}`);
+			}
 		},
 	},
 	{
@@ -238,7 +263,7 @@ const CASES = [
 		},
 	},
 	{
-		name: "no-match with no Extended match at all: unchanged",
+		name: "no-match nothing resembles: stock error plus the no-candidate line",
 		toolCall: {
 			id: "e2e-nomatch2",
 			name: "edit",
@@ -247,17 +272,57 @@ const CASES = [
 		expectError: true,
 		expect: (result) => {
 			const text = result.content[0].text;
-			if (!text.startsWith("Could not find the exact text in target.ts.")) throw new Error(`stock error not kept:\n${text}`);
-			if (text.includes("Edit assist:")) throw new Error(`invented diagnosis present:\n${text}`);
+			if (!text.startsWith(NOMATCH_STOCK)) throw new Error(`stock error not kept:\n${text}`);
+			if (!text.includes("No candidate region")) throw new Error(`no-candidate line missing:\n${text}`);
+			if (text.includes("Edit assist:")) throw new Error(`invented prefix line:\n${text}`);
 		},
 	},
 ];
 
-async function main() {
-	const cwd = mkdtempSync(join(tmpdir(), "edit-assist-e2e-"));
+// The disabled run: the same whitespace-only and no-match calls, but with
+// `edit-assist.enabled: false` the extension must stay out of the way - no
+// correction, no note, no Diagnosis.
+const DISABLED_CASES = [
+	{
+		name: "disabled: the whitespace-only edit is not corrected, stock error alone",
+		toolCall: {
+			id: "e2e-d-ws",
+			name: "edit",
+			arguments: { path: "target.ts", edits: [{ oldText: "  n += dup;", newText: "  n += dup; // step" }] },
+		},
+		expectError: true,
+		expect: (result) => {
+			const text = result.content[0].text;
+			if (!text.startsWith(NOMATCH_STOCK)) throw new Error(`stock error not kept:\n${text}`);
+			if (text.includes("Edit assist:") || text.includes("Diagnosis") || text.includes("Nearest region")) {
+				throw new Error(`extension output present despite the off switch:\n${text}`);
+			}
+		},
+	},
+	{
+		name: "disabled: the no-match failure carries the stock error alone",
+		toolCall: {
+			id: "e2e-d-nomatch",
+			name: "edit",
+			arguments: { path: "target.ts", edits: [{ oldText: "\tconst dup = 2;", newText: "\tconst dup = 3;" }] },
+		},
+		expectError: true,
+		expect: (result) => {
+			const text = result.content[0].text;
+			if (text !== NOMATCH_STOCK) throw new Error(`stock error changed:\n${text}`);
+		},
+	},
+];
+
+async function runSession(label, settings, cases, checkFile) {
+	const cwd = mkdtempSync(join(tmpdir(), `edit-assist-e2e-${label}-`));
 	const caseFile = join(cwd, "e2e-case.json");
 	const targetFile = join(cwd, "target.ts");
 	writeFileSync(targetFile, TARGET_FILE);
+	if (settings !== null) {
+		mkdirSync(join(cwd, ".pi"), { recursive: true });
+		writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify(settings, null, 2) + "\n");
+	}
 	writeFileSync(caseFile, JSON.stringify({ runId: 0, toolCall: { id: "none", name: "noop", arguments: {} } }));
 
 	const child = spawn(
@@ -300,7 +365,11 @@ async function main() {
 			const id = `req-${nextId++}`;
 			const timer = setTimeout(() => {
 				pending.delete(id);
-				reject(new Error(`timed out waiting for ${command}\nevents:\n${events.map((e) => JSON.stringify(e).slice(0, 200)).join("\n")}\nstderr:\n${stderr}`));
+				reject(
+					new Error(
+						`timed out waiting for ${command}\nevents:\n${events.map((e) => JSON.stringify(e).slice(0, 200)).join("\n")}\nstderr:\n${stderr}`
+					)
+				);
 			}, TIMEOUT_MS);
 			pending.set(id, (record) => {
 				clearTimeout(timer);
@@ -325,13 +394,14 @@ async function main() {
 		const setModel = await request("set_model", { provider: "e2efa", modelId: "e2e-1" });
 		if (!setModel.success) fail(`set_model: ${JSON.stringify(setModel)}\nstderr:\n${stderr}`);
 
-		for (const [index, test] of CASES.entries()) {
+		for (const [index, test] of cases.entries()) {
 			writeFileSync(caseFile, JSON.stringify({ runId: index + 1, toolCall: test.toolCall }));
 			const prompt = await request("prompt", { message: `run case ${index + 1}` });
-			if (!prompt.success) fail(`case ${index + 1} (${test.name}): prompt: ${JSON.stringify(prompt)}\nstderr:\n${stderr}`);
+			if (!prompt.success)
+				fail(`case ${index + 1} (${test.name}): prompt: ${JSON.stringify(prompt)}\nstderr:\n${stderr}`);
 			const result = await waitFor(
 				(message) => message.role === "toolResult" && message.toolCallId === test.toolCall.id,
-				`the ${test.toolCall.id} tool result`,
+				`the ${test.toolCall.id} tool result`
 			);
 			if (result.isError !== test.expectError) {
 				fail(`case ${index + 1} (${test.name}): result error flag is ${result.isError}, expected ${test.expectError}`);
@@ -347,17 +417,25 @@ async function main() {
 			console.log(`ok: case ${index + 1}: ${test.name}`);
 		}
 
-		if (readFileSync(targetFile, "utf8") !== FINAL_FILE) {
-			fail(`the file on disk does not hold exactly what the built-in tool wrote:\n${readFileSync(targetFile, "utf8")}`);
+		if (checkFile) {
+			const expected = label === "enabled" ? FINAL_FILE : TARGET_FILE;
+			if (readFileSync(targetFile, "utf8") !== expected) {
+				fail(`the file on disk is not what the run leaves:\n${readFileSync(targetFile, "utf8")}`);
+			}
+			console.log("ok: the file on disk holds exactly what the built-in tool wrote");
 		}
-		console.log("ok: the file on disk holds exactly what the built-in tool wrote");
 	} finally {
 		child.kill();
 		rmSync(cwd, { recursive: true, force: true });
 	}
 	if (extensionErrors.length > 0) fail(`extension errors: ${JSON.stringify(extensionErrors)}`);
-	console.log("ok: no extension errors");
-	console.log("edit assist e2e: PASS");
+	console.log(`ok: no extension errors (${label} run)`);
 }
+
+const main = async () => {
+	await runSession("enabled", null, CASES, true);
+	await runSession("disabled", { "edit-assist": { enabled: false } }, DISABLED_CASES, true);
+	console.log("edit assist e2e: PASS");
+};
 
 main().catch((error) => fail(String(error)));

@@ -30,10 +30,19 @@
  *   to use the read tool, and an edits value sent as a string gets a
  *   shape hint. Any other malformed shape is left unchanged.
  *
- * The no-match class (Nearest region diff) is ticket #81's slice and
- * passes through unchanged here. Every Diagnosis is appended to, never
- * replaces, the stock error text, and the result stays marked as an
- * error. Decision logic lives in the tested pure core (core.ts).
+ * After execution (ticket #81): the Diagnosis for the no-match class.
+ * When the built-in finds an oldText neither by its exact nor by its fuzzy
+ * step, the stock error is kept and a size-bounded Diagnosis is appended:
+ * for each unmatched edit, the Nearest region's line range, a
+ * Whitespace-only difference stated explicitly when that is the
+ * difference, and a unified diff between the model's oldText and the
+ * file's real text.
+ *
+ * Every Diagnosis is appended to, never replaces, the stock error text,
+ * and the result stays marked as an error. The extension is on by
+ * default; `edit-assist.enabled: false` in the settings leaves every
+ * built-in edit result untouched. Decision logic lives in the tested
+ * pure core (core.ts).
  */
 import { readFile, stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
@@ -44,25 +53,27 @@ import {
 	ambiguousDiagnosis,
 	appendDiagnosis,
 	correctionForEdit,
+	diagnoseNoMatch,
 	honestyNotes,
 	isAmbiguousEditError,
 	isEditValidationError,
 	malformedEditHint,
+	lineCount,
+	MAX_FILE_BYTES,
+	MAX_FILE_LINES,
+	normalizeToLF,
+	stripBom,
 	type Correction,
+	type EditSpec,
 } from "./core.ts";
-
-/** The ADR 0020 file guards: beyond these the Diagnosis is skipped. */
-const MAX_FILE_BYTES = 300 * 1024;
-const MAX_FILE_LINES = 20_000;
+import { readEditAssistSettings } from "./settings.ts";
 
 /**
  * The file's line count the way the ADR guard means it: a trailing newline
  * ends the last line, it does not start a new one.
  */
 export function countLines(text: string): number {
-	if (text.length === 0) return 0;
-	const newlines = (text.match(/\n/g) ?? []).length;
-	return text.endsWith("\n") ? newlines : newlines + 1;
+	return lineCount(text);
 }
 
 /** The first text block of a tool result, or null. */
@@ -87,18 +98,76 @@ export async function readTargetFile(cwd: string, input: unknown): Promise<strin
 		const info = await stat(resolved);
 		if (!info.isFile() || info.size > MAX_FILE_BYTES) return null;
 		const text = await readFile(resolved, "utf8");
-		if (countLines(text) > MAX_FILE_LINES) return null;
+		if (lineCount(text) > MAX_FILE_LINES) return null;
 		return text;
 	} catch {
 		return null;
 	}
 }
 
-export default function (pi: ExtensionAPI): void {
+/** The stock no-match errors the built-in edit emits: the single-edit form
+ * and the multi-edit form. The fuller prefix keeps other errors that merely
+ * contain "Could not find" out of the hook. */
+const NO_MATCH_ERROR = /Could not find (the exact text in|edits\[\d+\] in) /;
+
+/** The edits of one edit call, or null when the input carries none. */
+function editsFromInput(input: Record<string, unknown>): EditSpec[] | null {
+	let edits = input.edits;
+	if (typeof edits === "string") {
+		try {
+			const parsed: unknown = JSON.parse(edits);
+			edits = Array.isArray(parsed) ? parsed : null;
+		} catch {
+			edits = null;
+		}
+	}
+	if (!Array.isArray(edits)) return null;
+	const specs: EditSpec[] = [];
+	for (const edit of edits) {
+		if (typeof edit !== "object" || edit === null) return null;
+		const { oldText, newText } = edit as Record<string, unknown>;
+		if (typeof oldText !== "string" || typeof newText !== "string") return null;
+		specs.push({ oldText, newText });
+	}
+	return specs.length > 0 ? specs : null;
+}
+
+/** Run the Diagnosis for one failed edit result. Returns the content to
+ * patch into the result, or undefined to leave the stock error alone. */
+export async function diagnoseEditResult(
+	event: { input: Record<string, unknown>; content: unknown[]; isError: boolean },
+	cwd: string,
+	env: NodeJS.ProcessEnv = process.env,
+): Promise<{ content: { type: "text"; text: string }[]; isError: boolean } | undefined> {
+	if (!event.isError) return undefined;
+	const text = firstText(event.content as Array<{ type: string; text?: string }>);
+	if (text === null || !NO_MATCH_ERROR.test(text)) return undefined;
+	// The off switch: disabled means the stock error stands alone.
+	if (!readEditAssistSettings(cwd, env).settings.enabled) return undefined;
+	const input = event.input;
+	const displayPath = typeof input.path === "string" ? input.path : null;
+	const edits = editsFromInput(input);
+	if (!displayPath || !edits) return undefined;
+	const raw = await readTargetFile(cwd, input);
+	if (raw === null) return undefined;
+	const fileText = normalizeToLF(stripBom(raw));
+	const diagnosis = diagnoseNoMatch({ path: displayPath, fileText, edits });
+	if (!diagnosis) return undefined;
+	return { content: [{ type: "text", text: appendDiagnosis(text, diagnosis) }], isError: true };
+}
+
+export default function editAssistExtension(pi: ExtensionAPI): void {
 	// The corrections of the in-flight calls, by tool call id. The tool_call
 	// hook records them, the tool_result hook consumes them once, so a call
 	// that never produces a result leaves no state behind past its id.
 	const correctedCalls = new Map<string, Correction[]>();
+
+	// A malformed settings value fell back to its default; report it once at
+	// session start, the same way every other extension reports settings
+	// errors.
+	pi.on("session_start", (_event, ctx: ExtensionContext) => {
+		for (const error of readEditAssistSettings(ctx.cwd).errors) ctx.ui.notify(`edit-assist: ${error}`, "error");
+	});
 
 	// Input correction: before the built-in edit runs, replace the oldText of
 	// every correctable edit with the file's actual text. The mutation is in
@@ -107,6 +176,7 @@ export default function (pi: ExtensionAPI): void {
 	// alone, so pi's own exact and fuzzy paths still run on it.
 	pi.on("tool_call", async (event, ctx: ExtensionContext) => {
 		if (event.toolName !== "edit") return;
+		if (!readEditAssistSettings(ctx.cwd).settings.enabled) return;
 		const fileText = await readTargetFile(ctx.cwd, event.input);
 		if (fileText === null) return;
 		const edits = (event.input as { edits?: unknown }).edits;
@@ -153,6 +223,7 @@ export default function (pi: ExtensionAPI): void {
 	// the stock error. Append the occurrence line numbers.
 	pi.on("tool_result", async (event, ctx: ExtensionContext) => {
 		if (event.toolName !== "edit" || !event.isError) return;
+		if (!readEditAssistSettings(ctx.cwd).settings.enabled) return;
 		const text = firstText(event.content);
 		if (text === null || !isAmbiguousEditError(text)) return;
 		const fileText = await readTargetFile(ctx.cwd, event.input);
@@ -165,13 +236,22 @@ export default function (pi: ExtensionAPI): void {
 		};
 	});
 
+	// No-match failures: the call executed and the built-in found the oldText
+	// neither by its exact nor by its fuzzy step. Append the Nearest region
+	// Diagnosis. The built-in error text stays verbatim, in front.
+	pi.on("tool_result", async (event, ctx: ExtensionContext) => {
+		if (event.toolName !== "edit") return undefined;
+		return diagnoseEditResult(event, ctx.cwd);
+	});
+
 	// Malformed-argument failures: validation rejects the call before it
 	// prepares, so pi never fires the tool_result hook for it. The
 	// toolResult message event is the one seam that still carries it.
 	// Append the targeted hint where one applies; leave everything else.
-	pi.on("message_end", async (event) => {
+	pi.on("message_end", async (event, ctx: ExtensionContext) => {
 		const message = event.message;
 		if (message.role !== "toolResult" || message.toolName !== "edit" || !message.isError) return;
+		if (!readEditAssistSettings(ctx.cwd).settings.enabled) return;
 		const text = firstText(message.content);
 		if (text === null || !isEditValidationError(text)) return;
 		const hint = malformedEditHint(text);
