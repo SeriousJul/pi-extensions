@@ -651,7 +651,11 @@ export function diagnoseNoMatch(input: NoMatchDiagnosisInput, limits: DiagnosisL
 	return blocks.length > 0 ? blocks.join("\n\n") : null;
 }
 
-function diagnoseOneEdit(path: string, oldText: string, fileText: string, label: string, limits: DiagnosisLimits): string {
+function diagnoseOneEdit(path: string, rawOldText: string, fileText: string, label: string, limits: DiagnosisLimits): string {
+	// The oldText's trailing newline does not start a new line, the same rule
+	// the file side gets from contentLines: otherwise the phantom empty element
+	// suppresses the whitespace-only note and adds a phantom line to the diff.
+	const oldText = contentLines(rawOldText).join("\n");
 	const head = `Diagnosis for ${label} in ${path}:`;
 	const region = nearestRegion(fileText, oldText, limits);
 	if (!region) {

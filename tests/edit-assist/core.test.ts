@@ -349,6 +349,27 @@ it("states a whitespace-only difference explicitly (real leading-whitespace case
 	);
 });
 
+it("keeps the whitespace-only note and a clean diff when the oldText ends with a newline", () => {
+	// Models copy old blocks with the trailing newline. That newline must not
+	// become a phantom empty line on the oldText side: it would lose the note
+	// (the line counts diverge) and add a phantom empty line to the diff.
+	const diagnosis = diagnoseNoMatch({
+		path: "src/example.ts",
+		fileText: "a b\nc d\ne f\n",
+		edits: [{ oldText: "  a b\nc d\ne f\n", newText: "a b\nc d\ne f\n" }],
+	});
+	expect(diagnosis).toContain(
+		"The difference is a whitespace-only difference: same line count, leading whitespace only.",
+	);
+	const lines = (diagnosis as string).split("\n");
+	expect(lines).toContain("Nearest region: lines 1-3");
+	// The hunk names the three real lines of both sides, and the body is the
+	// one drifted line plus the two unchanged lines: no empty line, nothing
+	// past the region.
+	expect(lines).toContain("@@ -1,3 +1,3 @@");
+	expect(lines.slice(lines.indexOf("@@ -1,3 +1,3 @@") + 1)).toEqual(["-  a b", "+a b", " c d", " e f"]);
+});
+
 it("does not state the whitespace-only note for a character drift (real brace case)", () => {
 	const fixture = NO_MATCH_FIXTURES.find((f) => f.name === "brace-drift");
 	expect(fixture).toBeDefined();
