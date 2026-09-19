@@ -135,6 +135,21 @@ describe("initial context TUI", () => {
 		expect(total).toMatch(/ 8  +-  █/);
 	});
 
+	it("shows the duplicate tool description note on the flagged guideline row", () => {
+		const description = "Read file contents and more, in full detail.";
+		const captured = emptyCaptured();
+		captured.tools = [{ name: "read", raw: JSON.stringify({ name: "read", description, parameters: {} }) }];
+		const report = buildInitialContext(
+			{ ...baseOptions, contextFiles: [...baseOptions.contextFiles], promptGuidelines: [description] } as never,
+			captured,
+			200000,
+		);
+		const rig = makeRig(report);
+		const lines = rig.rendered();
+		// The note stays whole even when the label is clipped to fit the column.
+		expect(lines.some((l) => l.includes("(duplicates tool description)"))).toBe(true);
+	});
+
 	it("w cycles the usage window 30d -> 90d -> all", () => {
 		const rig = makeRig(fixtureReport());
 		rig.component.handleInput("w");

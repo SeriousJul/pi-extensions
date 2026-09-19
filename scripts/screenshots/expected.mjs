@@ -31,9 +31,13 @@ export const EXPECTED_LINES = {
 	],
 	"initial-context": [
 		"initial context",
-		"ctx: 1.3K (1.0%) - uses: 30d",
-		"1,272  100.0%  1.0%",
+		"ctx: 1.6K (1.3%) - uses: 30d",
+		"base prompt",
+		"available tools",
+		"Only talk using ASD-STE100 Simplified Te  extension",
+		"Be concise in your responses",
 		"375.0/u",
+		"1,618  100.0%  1.3%",
 	],
 	tools: [
 		"Tool Configuration",

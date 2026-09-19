@@ -25,3 +25,5 @@ chosen option, and the options that were considered.
 | [0018](/adr/0018-pruning-engagement-is-sticky) | Pruning engagement is sticky for the session; it holds until a reset. |
 | [0019](/adr/0019-llama-refresh-self-heals-the-fallback-window) | The fallback window self-heals via a one-shot re-resolution after the model's wake. |
 | [0020](/adr/0020-edit-assist-corrects-by-mutating-tool-call-input) | Edit assist corrects failing edit calls by mutating tool input; it never writes files. |
+| [0021](/adr/0021-ctx-shows-the-base-prompt-as-split-rows) | /ctx shows the default base prompt as split rows: boilerplate, snippets, one row per guideline. |
+| [0022](/adr/0022-ctx-flags-guidelines-that-duplicate-tool-descriptions) | /ctx flags guidelines that largely restate a sent tool description, with a conservative substring rule. |
