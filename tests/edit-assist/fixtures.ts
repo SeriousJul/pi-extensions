@@ -96,6 +96,6 @@ export const NO_MATCH_FIXTURES: NoMatchFixture[] = [
 		oldText: "\t\t}),\n\t\t\"auto-handoff\": config.autoHandoff,\n\t\t\"max-parallel-agents\": config.maxParallelAgents,\n",
 		newText: "replacement",
 		regionStart: 4,
-		regionEnd: 7,
+		regionEnd: 6,
 	},
 ];

@@ -27,8 +27,10 @@ import {
 } from "./core.ts";
 import { readEditAssistSettings } from "./settings.ts";
 
-/** The stock error text the built-in edit emits for a no-match failure. */
-const NO_MATCH_ERROR = /Could not find /;
+/** The stock no-match errors the built-in edit emits: the single-edit form
+ * and the multi-edit form. The fuller prefix keeps other errors that merely
+ * contain "Could not find" out of the hook. */
+const NO_MATCH_ERROR = /Could not find (the exact text in|edits\[\d+\] in) /;
 
 function editsFromInput(input: Record<string, unknown>): EditSpec[] | null {
 	let edits = input.edits;

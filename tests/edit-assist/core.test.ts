@@ -124,6 +124,23 @@ describe("nearestRegion", () => {
 	it("returns null for an empty oldText", () => {
 		expect(nearestRegion(FILE, "")).toBeNull();
 	});
+
+	it("keeps a region at the end of a file with a trailing newline on real lines", () => {
+		// The file's trailing newline and the oldText's trailing newline must
+		// not split into phantom empty elements: the true region is the file's
+		// last three lines, and no window may land on a line past the end.
+		const file = "p q\nr s\nt u\nv w\nx y\n";
+		const region = nearestRegion(file, "t u\nv w\nx y\n");
+		expect(region).toEqual({ startLine: 3, endLine: 5, score: 1 });
+	});
+
+	it("never names a line past the real line count of a file with a trailing newline", () => {
+		const file = "p q\nr s\nt u\nv w\nx y\n";
+		for (const oldText of ["t u\nv w\nX y\n", "x y\n", "x y\n\n"]) {
+			const region = nearestRegion(file, oldText);
+			if (region) expect(region.endLine).toBeLessThanOrEqual(5);
+		}
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -290,7 +307,24 @@ describe("diagnoseNoMatch", () => {
 			fileText,
 			edits: [{ oldText: "const a = 1;\r\nconst b = 999;\r\n", newText: "x" }],
 		});
-		expect(diagnosis).toContain("Nearest region: lines 1-3");
+		// The file has two lines; the trailing newlines of file and oldText
+		// do not start a phantom third line.
+		expect(diagnosis).toContain("Nearest region: lines 1-2");
+	});
+
+	it("keeps the region range and the diff inside a file with a trailing newline", () => {
+		const file = "p q\nr s\nt u\nv w\nx y\n";
+		const diagnosis = diagnoseNoMatch({
+			path: "src/tail.ts",
+			fileText: file,
+			edits: [{ oldText: "t u\nv w\nX y\n", newText: "x" }],
+		});
+		expect(diagnosis).toContain("Nearest region: lines 3-5");
+		// The diff shows the region's three real lines; the phantom line 6
+		// appears neither in the range nor in the region label.
+		expect(diagnosis).toContain("+++ file (lines 3-5)");
+		expect(diagnosis).not.toContain("line 6");
+		expect(diagnosis).not.toMatch(/lines \d+-6/);
 	});
 });
 

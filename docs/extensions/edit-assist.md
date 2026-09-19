@@ -12,14 +12,17 @@ difference is a Whitespace-only diff.
 ## Behavior
 
 - **Trigger.** A `tool_result` hook scoped to the edit tool. Only the stock
-  no-match errors (`Could not find ...`) are touched; ambiguous-match,
+  no-match errors (`Could not find the exact text in ...` and
+  `Could not find edits[i] in ...`) are touched; ambiguous-match,
   empty-oldText, and file-read errors go out unchanged, and a successful edit
   is never touched.
 - **The Diagnosis.** One block per edit the built-in could not find with its
   exact or fuzzy step. This includes an edit that reaches only the
   leading-whitespace-insensitive Extended match, which the built-in does not
   apply, so a leading-whitespace drift still fails and still gets a
-  Diagnosis. Each block names the Nearest region line range, states a
+  Diagnosis. Each block names the Nearest region line range (a trailing
+  newline does not start a new line, so the range never names a line past the
+  end of the file), states a
   Whitespace-only difference explicitly when the only difference is leading
   whitespace on the same line count, and carries the unified diff between the
   oldText and the region's real text. When no part of the file resembles the

@@ -51,13 +51,26 @@ export function isOversized(sizeBytes: number, lineCount: number): boolean {
 }
 
 /**
+ * Split text into lines without counting a trailing newline as a new line:
+ * the final "\n" of a normal file ends the last line, so the split does not
+ * gain a phantom empty element. The same rule lineCount applies for the
+ * large-file guard, so the region search and the guard agree on the line
+ * count.
+ */
+function contentLines(text: string): string[] {
+	const lines = text.split("\n");
+	if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+	return lines;
+}
+
+/**
  * The line count of a decoded file text: empty text is 0 lines, and a
  * trailing newline does not start a new line, so a 20,000-line file with a
  * final newline (the normal case) counts 20,000, not 20,001.
  */
 export function lineCount(raw: string): number {
 	if (raw === "") return 0;
-	return raw.split("\n").length - (raw.endsWith("\n") ? 1 : 0);
+	return contentLines(raw).length;
 }
 
 /**
@@ -79,6 +92,10 @@ export function normalizeForFuzzyMatch(text: string): string {
 	);
 }
 
+// The leading-whitespace strips in this file use [ \t] on purpose, not all
+// Unicode whitespace: the built-in's fuzzy step trims trailing whitespace
+// the same narrow way, and the Whitespace-only note must mean the same
+// thing, so a future edit must not widen the class.
 function stripLeadingWhitespace(text: string): string {
 	return text
 		.split("\n")
@@ -90,16 +107,30 @@ function stripLeadingWhitespace(text: string): string {
  * leading-whitespace-insensitive Extended match, or none at all. */
 export type MatchKind = "exact" | "fuzzy" | "extended" | "none";
 
-export function matchKind(fileText: string, oldText: string): MatchKind {
+/** The two derived views of a file the match ladder needs, computed once
+ * per call so a multi-edit failure normalizes the file a single time. */
+interface NormalizedFile {
+	fuzzy: string;
+	extended: string;
+}
+
+function normalizedFile(fileText: string): NormalizedFile {
+	const fuzzy = normalizeForFuzzyMatch(fileText);
+	return { fuzzy, extended: stripLeadingWhitespace(fuzzy) };
+}
+
+function matchKindNormalized(fileText: string, file: NormalizedFile, oldText: string): MatchKind {
 	if (oldText.length === 0) return "none";
 	if (fileText.includes(oldText)) return "exact";
-	const fuzzyFile = normalizeForFuzzyMatch(fileText);
 	const fuzzyOld = normalizeForFuzzyMatch(oldText);
-	if (fuzzyOld.length > 0 && fuzzyFile.includes(fuzzyOld)) return "fuzzy";
-	const extendedFile = stripLeadingWhitespace(fuzzyFile);
+	if (fuzzyOld.length > 0 && file.fuzzy.includes(fuzzyOld)) return "fuzzy";
 	const extendedOld = stripLeadingWhitespace(fuzzyOld);
-	if (extendedOld.length > 0 && extendedFile.includes(extendedOld)) return "extended";
+	if (extendedOld.length > 0 && file.extended.includes(extendedOld)) return "extended";
 	return "none";
+}
+
+export function matchKind(fileText: string, oldText: string): MatchKind {
+	return matchKindNormalized(fileText, normalizedFile(fileText), oldText);
 }
 
 export interface Region {
@@ -154,8 +185,12 @@ function lineSimilarity(aKey: string, bKey: string): number {
  */
 export function nearestRegion(fileText: string, oldText: string, limits: DiagnosisLimits = LIMITS): Region | null {
 	if (oldText.replace(/[ \t\n]+/g, "") === "") return null;
-	const oldLines = oldText.split("\n");
-	const fileLines = fileText.split("\n");
+	// A trailing newline does not start a new line, for the file and for the
+	// oldText: otherwise the split's phantom empty element takes part in the
+	// window search and a region at the end of a file can land on lines that
+	// do not exist.
+	const oldLines = contentLines(oldText);
+	const fileLines = contentLines(fileText);
 	const n = oldLines.length;
 	const m = fileLines.length;
 	if (n === 0 || n > m) return null;
@@ -333,6 +368,7 @@ export interface NoMatchDiagnosisInput {
  * matches, so the stock error stands alone.
  */
 export function diagnoseNoMatch(input: NoMatchDiagnosisInput, limits: DiagnosisLimits = LIMITS): string | null {
+	const file = normalizedFile(input.fileText);
 	const blocks: string[] = [];
 	for (let i = 0; i < input.edits.length; i++) {
 		const oldText = normalizeToLF(input.edits[i].oldText);
@@ -340,7 +376,7 @@ export function diagnoseNoMatch(input: NoMatchDiagnosisInput, limits: DiagnosisL
 		// Unmatched by the built-in: the built-in finds an edit only by its
 		// exact or fuzzy step. An edit that reaches only the Extended match
 		//(leading-whitespace drift) still fails and gets a Diagnosis.
-		const kind = matchKind(input.fileText, oldText);
+		const kind = matchKindNormalized(input.fileText, file, oldText);
 		if (kind === "exact" || kind === "fuzzy") continue;
 		blocks.push(diagnoseOneEdit(input.path, oldText, input.fileText, `edits[${i}]`, limits));
 	}
@@ -353,8 +389,7 @@ function diagnoseOneEdit(path: string, oldText: string, fileText: string, label:
 	if (!region) {
 		return `${head}\nNo candidate region: no part of the file resembles this oldText.`;
 	}
-	const regionText = fileText
-		.split("\n")
+	const regionText = contentLines(fileText)
 		.slice(region.startLine - 1, region.endLine)
 		.join("\n");
 	const lines: string[] = [head, `Nearest region: lines ${region.startLine}-${region.endLine}`];

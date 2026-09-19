@@ -70,6 +70,23 @@ describe("diagnoseEditResult", () => {
 		expect(content[1]?.text).toMatch(/\n\+/m);
 	});
 
+	it("also appends the Diagnosis for the multi-edit no-match error form", async () => {
+		mkdirSync(join(cwd, "src"), { recursive: true });
+		writeFileSync(join(cwd, "src", "app.ts"), "const a = 1;\nconst b = 2;\n");
+		const event = editEvent({
+			path: "src/app.ts",
+			error:
+				"Could not find edits[1] in src/app.ts. The oldText must match exactly including all whitespace and newlines.",
+			edits: [{ oldText: "const a = 1;", newText: "x" }, { oldText: "const b = 999;", newText: "y" }],
+		});
+		const patch = await diagnoseEditResult(event, cwd, env);
+		expect(patch).toBeDefined();
+		const content = patch!.content as TextContent[];
+		expect(content[0]).toEqual({ type: "text", text: expect.stringContaining("Could not find edits[1] in") });
+		expect(content[1]?.text).toContain("Diagnosis for edits[1] in src/app.ts:");
+		expect(content[1]?.text).toContain("Nearest region: lines 2-2");
+	});
+
 	it("returns undefined when the extension is disabled (off switch)", async () => {
 		mkdirSync(join(cwd, "src"), { recursive: true });
 		writeFileSync(join(cwd, "src", "app.ts"), "function run(): void {\n\tstart();\n}\n");
