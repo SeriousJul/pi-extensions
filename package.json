@@ -50,6 +50,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "smoke:node": "node tests/codegraph/smoke/smoke-node.mjs",
+    "e2e:background-jobs": "node tests/background-jobs/e2e-rpc.mjs",
     "e2e:context-cap": "node tests/context-cap/e2e-rpc.mjs",
     "e2e:edit-assist": "node tests/edit-assist/e2e-rpc.mjs",
     "e2e:initial-context": "node tests/initial-context/e2e-rpc.mjs",
