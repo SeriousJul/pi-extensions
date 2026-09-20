@@ -572,6 +572,46 @@ for Edit assist (ADR 0020).
 _Avoid_: usage report (the Usage extension measures tokens), edit stats
 (tool-generic)
 
+### Background jobs
+
+**Background job**:
+A command started detached from the agent turn by `bash_bg`, with its
+state in one on-disk job directory. It outlives the session that started
+it, so a new session can list it and wait on it.
+_Avoid_: background process (generic OS term), detached process, daemon
+
+**Job root**:
+The machine-local directory that holds one subdirectory per job: a `jobs`
+directory under pi's agent state root (the parent of the session
+directory), overridable with `PI_JOBS_DIR`. Machine-level, not per project
+or per user (ADR 0023).
+_Avoid_: state directory (too generic), job directory (that is one job's
+directory, not the root), cache
+
+**Job manifest**:
+The on-disk record in a job directory: the command, the cwd, the label,
+the wrapper pid, the start time, and the log path. With the log, the child
+pid file, and the exit code file, it makes a job knowable to a process
+that did not start it.
+_Avoid_: job state (also names the whole directory), job record (fine in
+prose, but the manifest is the file)
+
+**Shell wrapper**:
+The POSIX sh script that runs a job: it starts the command script with
+its output to the job log, records the child pid, waits, and writes the
+child's exit code to the job directory. The exit code file is the point:
+Node's exit status is only readable by the spawner, so the file makes the
+code knowable to any process.
+_Avoid_: runner (too generic), launcher, job script (the job script is
+the user command, not the wrapper)
+
+**Concurrent job bound**:
+The machine-level cap of eight concurrently running jobs. A start beyond
+the bound is refused with the list of running jobs, so several agents on
+one machine do not stampede it with detached work.
+_Avoid_: job limit (does not say concurrent or machine-level),
+rate limit (that is a per-time cap, this is a simultaneous one)
+
 ### Docs
 
 **Screenshot**:
