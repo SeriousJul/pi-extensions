@@ -1,7 +1,9 @@
 # Dependabot configuration for pi-extensions.
 #
 # Ecosystems
-#   - npm: this package (single manifest at the repo root).
+#   - npm: this package, two manifests: the repo root and docs/ (the
+#     VitePress site). docs/ overrides vite to the patched 6.4.x line:
+#     vitepress 1.6.x pins vite ^5.4.x, which has no security releases.
 #   - github-actions: inert until a workflow exists under .github/workflows.
 #
 # Update behavior
@@ -34,6 +36,11 @@ updates:
       pi-packages:
         patterns:
           - "@earendil-works/*"
+
+  - package-ecosystem: "npm"
+    directory: "/docs"
+    schedule:
+      interval: "weekly"
 
   - package-ecosystem: "github-actions"
     directory: "/"
