@@ -16,8 +16,9 @@ import { afterAll, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import registerBackgroundJobs, { registerTools } from "../../extensions/background-jobs/index";
+import { paintBashBgCallLine } from "../../extensions/background-jobs/render";
 
 type ToolDef = Parameters<ExtensionAPI["registerTool"]>[0];
 
@@ -264,4 +265,39 @@ it("the default export registers bash_bg, job_wait, and job_status", () => {
 		expect(t.promptSnippet, `${name} promptSnippet`).toBeTruthy();
 		expect(t.parameters, `${name} parameters`).toBeTruthy();
 	}
+});
+
+describe("bash_bg tool row (issue #101)", () => {
+	const paint = {
+		fg: (_color: "toolTitle" | "toolOutput", text: string) => text,
+		bold: (text: string) => text,
+	};
+
+	it("paints the command in the built-in bash line shape", () => {
+		expect(paintBashBgCallLine("npm test", paint)).toBe("$ npm test");
+	});
+
+	it("keeps a multi-line command intact", () => {
+		expect(paintBashBgCallLine("echo a\necho b", paint)).toBe("$ echo a\necho b");
+	});
+
+	it("paints the streaming placeholder for a missing or empty command", () => {
+		expect(paintBashBgCallLine(undefined, paint)).toBe("$ ...");
+		expect(paintBashBgCallLine("", paint)).toBe("$ ...");
+	});
+
+	it("the bash_bg definition paints its tool row through renderCall", () => {
+		const tools = new Map<string, ToolDef>();
+		const pi = { registerTool: (t: ToolDef) => tools.set(t.name, t) } as unknown as ExtensionAPI;
+		registerTools(pi);
+		const def = tools.get("bash_bg");
+		expect(def?.renderCall, "bash_bg renderCall").toBeTypeOf("function");
+		const theme = {
+			fg: (_color: string, text: string) => text,
+			bold: (text: string) => text,
+		} as unknown as Theme;
+		const context = { lastComponent: undefined } as unknown as Parameters<NonNullable<ToolDef["renderCall"]>>[2];
+		const component = def!.renderCall!({ command: "npm test" }, theme, context);
+		expect(component.render(200).map((line) => line.trim())).toEqual(["$ npm test"]);
+	});
 });

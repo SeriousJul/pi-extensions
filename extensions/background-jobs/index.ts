@@ -17,7 +17,9 @@
  * list.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { paintBashBgCallLine } from "./render.ts";
 import {
 	DEFAULT_TAIL_LINES,
 	DEFAULT_WAIT_TIMEOUT_S,
@@ -77,6 +79,14 @@ export function registerTools(pi: ExtensionAPI): void {
 			return textResult(
 				`job ${m.jobId} started${m.label ? ` (${m.label})` : ""}\npid: ${m.pid}\nlog: ${m.logPath}\nwait on it with job_wait; inspect it with job_status.`,
 			);
+		},
+		// The tool row (issue #101, ADR 0024): the command in the built-in
+		// bash line shape, `$ <command>`, no background marker. The tool
+		// name already says the command is backgrounded.
+		renderCall(args, theme, context) {
+			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			text.setText(paintBashBgCallLine(args?.command, theme));
+			return text;
 		},
 	});
 
