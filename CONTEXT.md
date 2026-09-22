@@ -612,6 +612,16 @@ one machine do not stampede it with detached work.
 _Avoid_: job limit (does not say concurrent or machine-level),
 rate limit (that is a per-time cap, this is a simultaneous one)
 
+### TUI
+
+**Tool row**:
+The TUI transcript entry for one tool call in an agent turn: the call line
+from the tool's `renderCall` slot, with the result block from the
+`renderResult` slot below it. Pi's word; its component is
+`ToolExecutionComponent`.
+_Avoid_: agent turn view (a turn view holds the whole turn, not one call),
+tool call (that is the LLM-side record), row (too generic)
+
 ### Docs
 
 **Screenshot**:
