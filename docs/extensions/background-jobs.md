@@ -18,6 +18,24 @@ The tools are active by default. The guideline is: background a command
 only when it is expected to take more than about ten seconds, or when other
 work can proceed while it runs; plain bash stays the default.
 
+## Tool row
+
+The `bash_bg` tool row - the TUI entry for the call in an agent turn - shows
+the command in the built-in bash line shape, `$ <command>`, with no
+background marker: the tool name already says the command is backgrounded,
+and the command line is the true intent
+([ADR 0024](/adr/0024-bash-bg-tool-row-shows-the-plain-command-line.md)). A
+multi-line command renders in full, and while the arguments stream in the
+row shows `$ ...`.
+
+```
+$ npm test
+job jb-abc123 started
+pid: 4242
+log: ~/.pi/agent/sessions/jobs/jb-abc123/job.log
+wait on it with job_wait; inspect it with job_status.
+```
+
 ## Job state
 
 Job state lives on disk, one directory per job under pi's agent state root
