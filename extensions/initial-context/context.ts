@@ -58,7 +58,7 @@ export function emptyCaptured(): CapturedContext {
 }
 
 /** Where one report row comes from. */
-export type RowKind = "base" | "tools" | "guideline" | "append" | "file" | "skill" | "cwd" | "injection" | "tool";
+export type RowKind = "base" | "tools" | "guideline" | "append" | "file" | "skill" | "cwd" | "section" | "injection" | "tool";
 
 /** One line of the breakdown. */
 export interface InitialContextRow {
@@ -191,11 +191,11 @@ function effectiveTools(options: { selectedTools?: string[] } | null | undefined
 	return selected && selected.length > 0 ? selected : DEFAULT_TOOLS;
 }
 
-/** The first line of pi's default base prompt. */
+/** The preamble of pi's default base prompt. */
 const IDENTITY_LINE =
 	"You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.";
 
-/** The line between the available-tools list and the guidelines. */
+/** The fixed closing line of the tools section. */
 const CUSTOM_TOOLS_LINE = "In addition to the tools above, you may have access to other custom tools depending on the project.";
 
 /** The fixed pi-documentation bullets at the end of the base prompt. */
@@ -237,10 +237,14 @@ function toolGuideline(tools: string[]): string | undefined {
 }
 
 /**
- * Every guideline bullet of the default base prompt, in prompt order,
- * deduplicated on the first occurrence. pi's default bullets are builtin,
- * the bullets a tool or extension registers are extension (a registered
- * bullet identical to a default keeps the builtin source).
+ * Every guideline bullet of the default base prompt's rules section, in
+ * prompt order, deduplicated on the first occurrence. pi's default bullets
+ * are builtin, the bullets a tool or extension registers are extension (a
+ * registered bullet identical to a default keeps the builtin source).
+ *
+ * The order is pi's: the tool-based default bullet, then each selected
+ * tool's registered bullets in tool order, then the additional prompt
+ * guidelines, then pi's fixed bullets.
  */
 export function defaultGuidelines(options: BuildSystemPromptOptions): PromptGuideline[] {
 	const tools = effectiveTools(options);
@@ -255,6 +259,13 @@ export function defaultGuidelines(options: BuildSystemPromptOptions): PromptGuid
 		out.push({ text, source });
 	};
 	if (bullet) add(bullet, "builtin");
+	const toolGuidelines = options.toolGuidelines ?? {};
+	for (const name of tools) {
+		for (const guideline of toolGuidelines[name] ?? []) {
+			const normalized = guideline.trim();
+			if (normalized.length > 0) add(normalized, builtinTexts.has(normalized) ? "builtin" : "extension");
+		}
+	}
 	for (const guideline of options.promptGuidelines ?? []) {
 		const normalized = guideline.trim();
 		if (normalized.length > 0) add(normalized, builtinTexts.has(normalized) ? "builtin" : "extension");
@@ -271,30 +282,6 @@ function toolsListFor(options: BuildSystemPromptOptions): string {
 	return visibleTools.length > 0 ? visibleTools.map((name) => `- ${name}: ${snippets[name]}`).join("\n") : "(none)";
 }
 
-/**
- * Reconstruct pi's default base prompt from the same structured inputs pi
- * uses. Duplicates the template in pi's system-prompt.ts, because pi does
- * not export the builder itself. The reconstruction is exact: the E2E test
- * asserts that no injection row appears for an unmodified session.
- */
-function defaultBasePrompt(options: BuildSystemPromptOptions): string {
-	return [
-		IDENTITY_LINE,
-		"",
-		"Available tools:",
-		toolsListFor(options),
-		"",
-		CUSTOM_TOOLS_LINE,
-		"",
-		"Guidelines:",
-		defaultGuidelines(options)
-			.map((guideline) => `- ${guideline.text}`)
-			.join("\n"),
-		"",
-		piDocsBlock(),
-	].join("\n");
-}
-
 interface Section {
 	key: string;
 	label: string;
@@ -305,39 +292,37 @@ interface Section {
 
 /**
  * Split the full base prompt into its sections, in the fixed block order
- * (base, append, project files, skills, cwd). Concatenating the section
- * texts reproduces the base prompt exactly.
+ * (base, append, project files, skills, cwd, custom sections).
+ * Concatenating the section texts reproduces the base prompt exactly.
  *
- * The default base prompt splits into report-sized pieces (issue #85):
- * the boilerplate (identity line, custom-tools line, pi documentation
- * block), the available-tools snippet block, and one section per prompt
- * guideline. The boilerplate lives in the gaps the split pieces fill, so
- * it appears as three sections under one key and concatenates, with the
- * split pieces between them, to the exact base prompt.
+ * pi renders the default base prompt as named XML sections (preamble,
+ * tools, rules, docs, addendum, project_context, skills, cwd), each
+ * wrapped in its own tags and joined by blank lines. The default splits
+ * into report-sized pieces (issue #85): the boilerplate (the preamble and
+ * the section wrappers around the pi documentation block), the
+ * available-tools snippet block, and one section per prompt guideline. The
+ * boilerplate lives in the gaps the split pieces fill, so it appears as
+ * several sections under one key and concatenates, with the split pieces
+ * between them, to the exact base prompt.
  */
 export function buildPromptSections(options: BuildSystemPromptOptions): Section[] {
 	const promptCwd = options.cwd.replace(/\\/g, "/");
-	const isCustom = options.customPrompt !== undefined;
 	const sections: Section[] = [];
 
-	if (isCustom) {
-		sections.push({ key: "base", label: "custom prompt", kind: "base", source: "builtin", text: options.customPrompt as string });
+	if (options.forceSystemPrompt !== undefined) {
+		// An opaque full replacement: content only, no sections at all.
+		sections.push({ key: "base", label: "forced prompt", kind: "base", source: "builtin", text: options.forceSystemPrompt });
+		return sections;
+	}
+
+	if (options.customPrompt) {
+		sections.push({ key: "base", label: "custom prompt", kind: "base", source: "builtin", text: options.customPrompt });
 	} else {
-		sections.push({
-			key: "base",
-			label: "base prompt",
-			kind: "base",
-			source: "builtin",
-			text: `${IDENTITY_LINE}\n\nAvailable tools:\n`,
-		});
+		sections.push({ key: "base", label: "base prompt", kind: "base", source: "builtin", text: IDENTITY_LINE });
+		sections.push({ key: "base", label: "base prompt", kind: "base", source: "builtin", text: "\n\n<tools>\n" });
 		sections.push({ key: "available-tools", label: "available tools", kind: "tools", source: "builtin", text: toolsListFor(options) });
-		sections.push({
-			key: "base",
-			label: "base prompt",
-			kind: "base",
-			source: "builtin",
-			text: `\n\n${CUSTOM_TOOLS_LINE}\n\nGuidelines:\n`,
-		});
+		sections.push({ key: "base", label: "base prompt", kind: "base", source: "builtin", text: `\n\n${CUSTOM_TOOLS_LINE}\n</tools>` });
+		sections.push({ key: "base", label: "base prompt", kind: "base", source: "builtin", text: "\n\n<rules>\n" });
 		defaultGuidelines(options).forEach((guideline, index) => {
 			sections.push({
 				key: `guideline:${index}`,
@@ -347,20 +332,21 @@ export function buildPromptSections(options: BuildSystemPromptOptions): Section[
 				text: (index === 0 ? "" : "\n") + `- ${guideline.text}`,
 			});
 		});
-		sections.push({ key: "base", label: "base prompt", kind: "base", source: "builtin", text: `\n\n${piDocsBlock()}` });
+		sections.push({ key: "base", label: "base prompt", kind: "base", source: "builtin", text: "\n</rules>" });
+		sections.push({ key: "base", label: "base prompt", kind: "base", source: "builtin", text: `\n\n<docs>\n${piDocsBlock()}\n</docs>` });
 	}
 
 	if (options.appendSystemPrompt) {
-		sections.push({ key: "append", label: "append text", kind: "append", source: "settings", text: `\n\n${options.appendSystemPrompt}` });
+		sections.push({ key: "append", label: "append text", kind: "append", source: "settings", text: `\n\n<addendum>\n${options.appendSystemPrompt}\n</addendum>` });
 	}
 
 	const files = options.contextFiles ?? [];
-	const head = "\n\n<project_context>\n\nProject-specific instructions and guidelines:\n\n";
-	const tail = "</project_context>\n";
 	files.forEach((file, index) => {
-		let text = `<project_instructions path="${file.path}">\n${file.content}\n</project_instructions>\n\n`;
-		if (index === 0) text = head + text;
-		if (index === files.length - 1) text += tail;
+		const block = `<project_instructions path="${file.path}">\n${file.content}\n</project_instructions>`;
+		let text = block;
+		if (index === 0) text = `\n\n<project_context>\nProject-specific instructions and guidelines:\n\n${block}`;
+		else text = `\n\n${block}`;
+		if (index === files.length - 1) text += "\n</project_context>";
 		sections.push({ key: `file:${file.path}`, label: file.path, kind: "file", source: "file", text });
 	});
 
@@ -368,21 +354,25 @@ export function buildPromptSections(options: BuildSystemPromptOptions): Section[
 	const skillFileReadTool = (["read", "bash"] as const).find((tool) => tools.includes(tool));
 	const skills = (options.skills ?? []).filter((skill) => !skill.disableModelInvocation);
 	if (skillFileReadTool && skills.length > 0) {
-		const block = formatSkillsForPrompt(skills, skillFileReadTool);
-		const first = block.indexOf("  <skill>");
-		const header = first === -1 ? block : block.slice(0, first);
-		const rest = first === -1 ? "" : block.slice(first);
-		const endMarker = "  </skill>";
-		let start = 0;
-		skills.forEach((skill, index) => {
-			// The last skill row keeps the trailing `</available_skills>`.
-			const isLast = index === skills.length - 1;
-			const end = isLast ? rest.length : rest.indexOf(endMarker, start);
-			const stop = end === -1 ? rest.length : end + endMarker.length;
-			const piece = (index === 0 ? header : "") + rest.slice(start, stop);
-			sections.push({ key: `skill:${skill.name}`, label: skill.name, kind: "skill", source: "skill", text: piece });
-			start = stop;
-		});
+		const block = formatSkillsForPrompt(skills, skillFileReadTool).trim();
+		if (block.length > 0) {
+			const first = block.indexOf("  <skill>");
+			const header = first === -1 ? block : block.slice(0, first);
+			const rest = first === -1 ? "" : block.slice(first);
+			const endMarker = "  </skill>";
+			let start = 0;
+			skills.forEach((skill, index) => {
+				// The last skill row keeps the trailing `</available_skills>`.
+				const isLast = index === skills.length - 1;
+				const end = isLast ? rest.length : rest.indexOf(endMarker, start);
+				const stop = end === -1 ? rest.length : end + endMarker.length;
+				let piece = (index === 0 ? header : "") + rest.slice(start, stop);
+				if (index === 0) piece = `\n\n<skills>\n${piece}`;
+				if (isLast) piece += "\n</skills>";
+				sections.push({ key: `skill:${skill.name}`, label: skill.name, kind: "skill", source: "skill", text: piece });
+				start = stop;
+			});
+		}
 	}
 
 	sections.push({
@@ -390,8 +380,13 @@ export function buildPromptSections(options: BuildSystemPromptOptions): Section[
 		label: "cwd",
 		kind: "cwd",
 		source: "builtin",
-		text: isCustom ? `\nCurrent working directory: ${promptCwd}\n` : `\nCurrent working directory: ${promptCwd}`,
+		text: `\n\n<cwd>\n${promptCwd}\n</cwd>`,
 	});
+
+	for (const [name, content] of Object.entries(options.sections ?? {})) {
+		if (!content) continue;
+		sections.push({ key: `section:${name}`, label: name, kind: "section", source: "extension", text: `\n\n<${name}>\n${content}\n</${name}>` });
+	}
 
 	return sections;
 }

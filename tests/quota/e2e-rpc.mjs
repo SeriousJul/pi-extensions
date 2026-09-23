@@ -41,7 +41,10 @@ const authBefore = readFileSync(authPath, "utf8");
 
 function startRpc() {
 	const cwd = mkdtempSync(join(tmpdir(), "quota-e2e-"));
-	const child = spawn(process.execPath, [piCli, "--mode", "rpc", "--extension", extensionPath], {
+	// --no-extensions: on a machine where this repo is installed as a pi
+	// package, discovery loads a second copy and the installed footer
+	// pieces (ctx: ...) overwrite the quota footer in the shared slot.
+	const child = spawn(process.execPath, [piCli, "--mode", "rpc", "--no-extensions", "--extension", extensionPath], {
 		cwd,
 		env: { ...process.env },
 		stdio: ["pipe", "pipe", "pipe"],

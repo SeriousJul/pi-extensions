@@ -36,7 +36,10 @@ function fail(message) {
 
 function startRpc(extraArgs) {
 	const cwd = mkdtempSync(join(tmpdir(), "context-cap-e2e-"));
-	const child = spawn(process.execPath, [piCli, "--mode", "rpc", "--extension", extensionPath, ...extraArgs], {
+	// --no-extensions: on a machine where this repo is installed as a pi
+	// package, discovery loads a second copy and the duplicate flag
+	// (--context-window) stops the session starting.
+	const child = spawn(process.execPath, [piCli, "--mode", "rpc", "--no-extensions", "--extension", extensionPath, ...extraArgs], {
 		cwd,
 		env: { ...process.env },
 		stdio: ["pipe", "pipe", "pipe"],
@@ -116,8 +119,10 @@ try {
 
 	const prompt = await capped.request("prompt", { message: "Reply with exactly: OK" });
 	if (!prompt.success) fail(`capped run: ${JSON.stringify(prompt)}`);
+	// Only the arrival of a non-empty reply is asserted: this step proves the
+	// live round trip (auth, headers, streaming), not the model's wording.
 	const text = await awaitAssistantText(capped, 120_000);
-	if (!/OK/.test(text)) fail(`capped run: unexpected assistant reply ${JSON.stringify(text)}`);
+	if (!text.trim()) fail("capped run: assistant reply was empty");
 	console.log("ok: live prompt completed on the capped initial model");
 
 	const models = await capped.request("get_available_models");

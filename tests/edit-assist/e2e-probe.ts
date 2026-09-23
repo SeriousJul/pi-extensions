@@ -16,6 +16,8 @@ import {
 	type AssistantMessage,
 	type AssistantMessageEventStream,
 	type FauxContentBlock,
+	type JsonObject,
+	type ToolCall,
 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -24,7 +26,7 @@ const MODEL_ID = "e2e-1";
 
 interface ScriptedCase {
 	runId: number;
-	toolCall: { id: string; name: string; arguments: Record<string, unknown> };
+	toolCall: { id: string; name: string; arguments: JsonObject };
 }
 
 let lastRunId: number | null = null;
@@ -106,7 +108,7 @@ export default function (pi: ExtensionAPI): void {
 			const callNumber = callsInRun;
 			callsInRun += 1;
 			if (callNumber === 0) {
-				const toolCall: { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> } = {
+				const toolCall: ToolCall = {
 					type: "toolCall",
 					id: nextCase.toolCall.id,
 					name: nextCase.toolCall.name,

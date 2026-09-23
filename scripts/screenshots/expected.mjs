@@ -37,7 +37,7 @@ export const EXPECTED_LINES = {
 		"Only talk using ASD-STE100 Simplified Te  extension",
 		"Be concise in your responses",
 		"375.0/u",
-		"1,618  100.0%  1.3%",
+		"1,630  100.0%  1.3%",
 	],
 	tools: [
 		"Tool Configuration",

@@ -17,6 +17,7 @@ import {
 	type Skill,
 } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
+import { buildSystemPrompt as piBuildSystemPrompt } from "../../node_modules/@earendil-works/pi-coding-agent/dist/core/system-prompt.js";
 import {
 	barFor,
 	basePromptFor,
@@ -75,11 +76,14 @@ describe("buildPromptSections", () => {
 		// guideline, then the remaining sections - in prompt text order.
 		expect(kinds).toEqual([
 			"base",
+			"base",
 			"tools",
+			"base",
 			"base",
 			"guideline",
 			"guideline",
 			"guideline",
+			"base",
 			"base",
 			"file",
 			"skill",
@@ -87,20 +91,23 @@ describe("buildPromptSections", () => {
 		]);
 		const full = sections.map((s) => s.text).join("");
 		expect(full.startsWith("You are an expert coding assistant operating inside pi")).toBe(true);
+		expect(full).toContain("\n\n<tools>\n");
 		expect(full).toContain("Use bash for file operations like ls, rg, find");
+		expect(full).toContain("\n\n<rules>\n");
+		expect(full).toContain("\n\n<docs>\n");
 		expect(full).toContain("<project_instructions path=\"/tmp/project/AGENTS.md\">");
 		expect(full).toContain("Project instructions here.");
 		expect(full).toContain("<available_skills>");
 		expect(full).toContain("  <skill>");
 		expect(full).toContain("  </skill>");
 		expect(full).toContain("</available_skills>");
-		expect(full.endsWith("\nCurrent working directory: /tmp/project")).toBe(true);
+		expect(full.endsWith("\n\n<cwd>\n/tmp/project\n</cwd>")).toBe(true);
 	});
 
-	it("matches pi's own skill block byte for byte", () => {
+	it("matches pi's own skill block byte for byte, wrapped in the skills section", () => {
 		const sections = buildPromptSections(baseOptions);
 		const skillText = sections.find((s) => s.kind === "skill")?.text;
-		expect(skillText).toBe(formatSkillsForPrompt(baseOptions.skills as Skill[], "read"));
+		expect(skillText).toBe(`\n\n<skills>\n${formatSkillsForPrompt(baseOptions.skills as Skill[], "read").trim()}\n</skills>`);
 	});
 
 	it("splits multiple skills into one row each, in order", () => {
@@ -114,7 +121,7 @@ describe("buildPromptSections", () => {
 		const sections = buildPromptSections(options);
 		const skills = sections.filter((s) => s.kind === "skill");
 		expect(skills.map((s) => s.label)).toEqual(["one", "two"]);
-		expect(skills.map((s) => s.text).join("")).toBe(formatSkillsForPrompt(options.skills as Skill[], "read"));
+		expect(skills.map((s) => s.text).join("")).toBe(`\n\n<skills>\n${formatSkillsForPrompt(options.skills as Skill[], "read").trim()}\n</skills>`);
 	});
 
 	it("skips skills that do not invoke the model", () => {
@@ -139,24 +146,27 @@ describe("buildPromptSections", () => {
 		const sections = buildPromptSections(options);
 		expect(sections.map((s) => s.kind)).toEqual([
 			"base",
+			"base",
 			"tools",
+			"base",
 			"base",
 			"guideline",
 			"guideline",
 			"guideline",
+			"base",
 			"base",
 			"append",
 			"file",
 			"file",
 			"cwd",
 		]);
-		expect(sections.filter((s) => s.kind === "append").map((s) => s.text)).toEqual(["\n\nAlways test."]);
+		expect(sections.filter((s) => s.kind === "append").map((s) => s.text)).toEqual(["\n\n<addendum>\nAlways test.\n</addendum>"]);
 		const files = sections.filter((s) => s.kind === "file");
 		expect(files).toHaveLength(2);
-		expect(files[0].text.startsWith("\n\n<project_context>\n\nProject-specific instructions and guidelines:\n\n")).toBe(true);
+		expect(files[0].text.startsWith("\n\n<project_context>\nProject-specific instructions and guidelines:\n\n")).toBe(true);
 		expect(files[0].text).toContain("Root file.");
 		expect(files[1].text).toContain("Sub file.");
-		expect(files[1].text.endsWith("</project_context>\n")).toBe(true);
+		expect(files[1].text.endsWith("\n</project_context>")).toBe(true);
 		// Concatenation reproduces pi's exact file-block layout.
 		expect(sections.map((s) => s.text).join("")).toContain("Root file.\n</project_instructions>\n\n<project_instructions path=\"/tmp/project/sub/AGENTS.md\">");
 	});
@@ -164,7 +174,47 @@ describe("buildPromptSections", () => {
 	it("supports a custom prompt", () => {
 		const sections = buildPromptSections({ cwd: "/tmp/project", customPrompt: "Be brief." });
 		expect(sections[0]).toMatchObject({ label: "custom prompt", kind: "base", text: "Be brief." });
-		expect(sections[sections.length - 1].text).toBe("\nCurrent working directory: /tmp/project\n");
+		expect(sections[sections.length - 1].text).toBe("\n\n<cwd>\n/tmp/project\n</cwd>");
+	});
+
+	it("keeps a forced prompt as a single opaque row with no other sections", () => {
+		const sections = buildPromptSections({ cwd: "/tmp/project", forceSystemPrompt: "Opaque prompt." });
+		expect(sections).toHaveLength(1);
+		expect(sections[0]).toMatchObject({ label: "forced prompt", kind: "base", text: "Opaque prompt." });
+	});
+
+	// Byte-for-byte cross-check against pi's own builder: the
+	// reconstruction must stay exact across pi bumps.
+	it("matches pi's own builder byte for byte, across option shapes", () => {
+		const shapes: BuildSystemPromptOptions[] = [
+			baseOptions,
+			{
+				...baseOptions,
+				toolSnippets: { read: "Read files.", bash: "Run commands." },
+				promptGuidelines: ["Prefer small, boring commits."],
+				appendSystemPrompt: "Always test.",
+				toolGuidelines: { bash: ["Use bash for E2E work."] },
+				sections: { voice: "Talk plainly." },
+			},
+			{ cwd: "/tmp/project", customPrompt: "Be brief." },
+			{ cwd: "/tmp/project", customPrompt: "Be brief.", appendSystemPrompt: "Always test." },
+			{ cwd: "/tmp/project", forceSystemPrompt: "Opaque prompt." },
+			{ cwd: "/tmp/project", contextFiles: [{ path: "/a.md", content: "A." }, { path: "/b.md", content: "B." }] },
+		];
+		for (const options of shapes) {
+			expect(basePromptFor(options)).toBe(piBuildSystemPrompt(options));
+		}
+	});
+
+	it("splits custom sections into one extension row each, after cwd", () => {
+		const sections = buildPromptSections({
+			cwd: "/tmp/project",
+			sections: { voice: "Talk plainly.", empty: "" },
+		});
+		const last = sections[sections.length - 1];
+		expect(last).toMatchObject({ key: "section:voice", label: "voice", kind: "section", source: "extension" });
+		expect(last.text).toBe("\n\n<voice>\nTalk plainly.\n</voice>");
+		expect(sections.map((s) => s.key)).not.toContain("section:empty");
 	});
 });
 
@@ -302,18 +352,21 @@ describe("base prompt split rows", () => {
 		const expected = [
 			"You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.",
 			"",
-			"Available tools:",
+			"<tools>",
 			"- read: Read files.",
 			"- bash: Run commands.",
 			"",
 			"In addition to the tools above, you may have access to other custom tools depending on the project.",
+			"</tools>",
 			"",
-			"Guidelines:",
+			"<rules>",
 			"- Use bash for file operations like ls, rg, find",
 			"- Prefer small, boring commits.",
 			"- Be concise in your responses",
 			"- Show file paths clearly when working with files",
+			"</rules>",
 			"",
+			"<docs>",
 			"Pi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):",
 			`- Main documentation: ${getReadmePath()}`,
 			`- Additional docs: ${getDocsPath()}`,
@@ -322,7 +375,11 @@ describe("base prompt split rows", () => {
 			"- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md), environment variables (docs/environment-variables.md)",
 			"- When working on pi topics, read the docs and examples, and follow .md cross-references before implementing",
 			"- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)",
-			"Current working directory: /tmp/project",
+			"</docs>",
+			"",
+			"<cwd>",
+			"/tmp/project",
+			"</cwd>",
 		].join("\n");
 		expect(sections.map((s) => s.text).join("")).toBe(expected);
 	});
@@ -352,6 +409,21 @@ describe("defaultGuidelines", () => {
 		expect(guidelines).toEqual([
 			{ text: "Use bash for file operations like ls, rg, find", source: "builtin" },
 			{ text: "Prefer small, boring commits.", source: "extension" },
+			{ text: "Be concise in your responses", source: "builtin" },
+			{ text: "Show file paths clearly when working with files", source: "builtin" },
+		]);
+	});
+
+	it("orders the per-tool registered bullets after the default bullet, in tool order", () => {
+		const guidelines = defaultGuidelines({
+			cwd: "/tmp/project",
+			selectedTools: ["read", "bash", "my_tool"],
+			toolGuidelines: { my_tool: ["Use my_tool for X."], read: ["Use read for Y."] },
+		} as BuildSystemPromptOptions);
+		expect(guidelines).toEqual([
+			{ text: "Use bash for file operations like ls, rg, find", source: "builtin" },
+			{ text: "Use read for Y.", source: "extension" },
+			{ text: "Use my_tool for X.", source: "extension" },
 			{ text: "Be concise in your responses", source: "builtin" },
 			{ text: "Show file paths clearly when working with files", source: "builtin" },
 		]);
