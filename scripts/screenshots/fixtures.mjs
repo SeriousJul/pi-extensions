@@ -169,7 +169,7 @@ export const CONTEXT_SESSIONS_ROOT = join(FIXTURES_ROOT, "initial-context", "ses
  * machine's package paths, so the fixture pins a fixed one to keep the
  * report - and the screenshot - byte-identical everywhere.
  */
-export const PINNED_PI_PACKAGE_DIR = "/home/julian/.local/share/mise/installs/pi/0.85.1/pi";
+export const PINNED_PI_PACKAGE_DIR = "/home/julian/.local/share/mise/installs/pi/0.86.1/pi";
 
 /**
  * The BuildSystemPromptOptions the /ctx fixture reconstructs. The default

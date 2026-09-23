@@ -42,14 +42,19 @@ async function main() {
 	const cwd = mkdtempSync(join(tmpdir(), "pruning-e2e-"));
 	// A probe extension records the active tool names from inside the
 	// session, and a project settings file keeps the /pruning settings
-	// write inside the throwaway directory.
+	// write inside the throwaway directory. The project file pins every key
+	// the test asserts on, so the machine's global settings (which may set
+	// pruning.enabled) cannot change the merged view.
 	const probePath = join(cwd, "e2e-probe.ts");
 	writeFileSync(probePath, probeSource);
 	mkdirSync(join(cwd, ".pi"), { recursive: true });
 	const projectSettingsPath = join(cwd, ".pi", "settings.json");
-	writeFileSync(projectSettingsPath, JSON.stringify({ pruning: { minResultTokens: 1500 } }, null, 2) + "\n");
+	writeFileSync(projectSettingsPath, JSON.stringify({ pruning: { enabled: true, minResultTokens: 1500 } }, null, 2) + "\n");
 
-	const child = spawn(process.execPath, [piCli, "--mode", "rpc", "--extension", extensionPath, "--extension", probePath], {
+	// --no-extensions: on a machine where this repo is installed as a pi
+	// package, discovery loads a second copy and the duplicate tool name
+	// (recall) stops the session starting.
+	const child = spawn(process.execPath, [piCli, "--mode", "rpc", "--no-extensions", "--extension", extensionPath, "--extension", probePath], {
 		cwd,
 		env: { ...process.env },
 		stdio: ["pipe", "pipe", "pipe"],
