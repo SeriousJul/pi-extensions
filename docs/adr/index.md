@@ -28,3 +28,5 @@ chosen option, and the options that were considered.
 | [0021](/adr/0021-ctx-shows-the-base-prompt-as-split-rows) | /ctx shows the default base prompt as split rows: boilerplate, snippets, one row per guideline. |
 | [0022](/adr/0022-ctx-flags-guidelines-that-duplicate-tool-descriptions) | /ctx flags guidelines that largely restate a sent tool description, with a conservative substring rule. |
 | [0023](/adr/0023-background-jobs-keep-state-on-disk-per-job) | Background jobs keep state on disk, per job: the exit code is written by a shell wrapper, and the tools are active by default. |
+| [0024](/adr/0024-bash-bg-tool-row-shows-the-plain-command-line) | The bash_bg tool row shows the plain command line, with no background marker. |
+| [0025](/adr/0025-safe-branch-summary-replaces-the-built-in) | The Safe branch summary replaces the built-in branch summarizer and budgets against the Effective window divided by the Inflation factor. |

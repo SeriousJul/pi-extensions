@@ -572,6 +572,24 @@ for Edit assist (ADR 0020).
 _Avoid_: usage report (the Usage extension measures tokens), edit stats
 (tool-generic)
 
+### Safe branch summary
+
+**Safe branch summary**:
+The extension that writes the branch summary on `/tree` navigation in place of pi's built-in summarizer. It budgets the summary request against the Effective window divided by the Inflation factor, and degrades to a Soft-skip when the summary cannot be written.
+_Avoid_: branch guard (the guard-only design that was rejected), summary hook, safe summary
+
+**Effective window**:
+The context window a session's model reports at the moment of use: the catalog value after the llama refresh heal and the context cap clamp. Branch summary budgeting reads only this, never a raw catalog value.
+_Avoid_: declared window (that is the pre-heal catalog value), theoretical window, model window, session context size (that is the current usage, a different quantity)
+
+**Inflation factor**:
+The multiplier the Safe branch summary applies to pi's chars/4 estimate when budgeting a branch summary request. It models the worst-case tokenization density of code-heavy content. The default is 2.0.
+_Avoid_: safety factor (too generic), padding, overhead, divisor
+
+**Soft-skip**:
+The Safe branch summary failure mode in which the navigation completes without a branch summary entry, with a notice. The abandoned branch stays reachable through `/tree`.
+_Avoid_: fallback (implies a summary was produced by another path), cancel (that is the abort outcome), skip (hides the navigation outcome)
+
 ### Background jobs
 
 **Background job**:
