@@ -80,6 +80,7 @@ export default defineConfig({
           { text: "usage", link: "/extensions/usage" },
           { text: "compress", link: "/extensions/compress" },
           { text: "pruning", link: "/extensions/pruning" },
+          { text: "output-limits", link: "/extensions/output-limits" },
           { text: "resource-toggle", link: "/extensions/resource-toggle" },
           { text: "edit-assist", link: "/extensions/edit-assist" },
         ],

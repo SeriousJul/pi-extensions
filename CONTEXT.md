@@ -519,7 +519,9 @@ for its streaming buffer), running total
 
 **Admitted text**:
 What the model receives after the Bound cuts a result, notice included. The
-complement of the Spill.
+complement of the Spill. Because the notice is part of what is admitted, its
+bytes are reserved out of the Bound before the cut runs rather than added after
+it.
 _Avoid_: kept output, retained output (pi's head and tail choice says which
 end survives, not that a cut happened)
 

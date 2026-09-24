@@ -74,3 +74,8 @@ assistant message rather than once per call, and invalidates that baseline on
 compaction, model switch, and tree navigation, because each changes the
 projection. No system prompt line advertises the Bound: pi's per-result notice
 stays true and the extension's own notice names the real number for that call.
+The Admitted text carries the extension's notice and its pointer lines, so
+those bytes are reserved out of the Bound before the cut runs rather than added
+after it: the Bound is what the model receives, notices included, and a budget
+that covered only the result text would over-admit by the size of its own
+announcement.
