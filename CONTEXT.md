@@ -447,10 +447,13 @@ read), metrics (implies stored aggregates)
 The first level of the two-level context control: replacing large tool
 outputs in the request context with short references. Applied per request on
 the message list, re-derived every turn, and never written to the session
-file. The session file always keeps the full outputs.
+file. Pruning therefore keeps whatever pi recorded for the call; it never
+promises that pi recorded everything, because the Bound decides what pi
+recorded.
 _Avoid_: compaction (that is the second level, pi's native summarization),
 offloading (implies the content moves to another store), truncation
-(implies the content is lost)
+(implies the content is lost), spill (that is Output limits writing a cut
+result to a file at execution time, not a projection over stored messages)
 
 **Engagement**:
 Whether the pruning first level is active for the session right now. It is a
@@ -482,6 +485,43 @@ estimate falls to at most the context window minus twice the reserve. Any
 other outcome lets pi's native compaction run.
 _Avoid_: threshold check (that is pi's own single-level check), two-stage
 compact (the levels are pruning and compaction, not two compactions)
+
+### Output limits
+
+**Bound**:
+The most one tool result may cost, in tokens, at the moment pi finishes
+producing it. A share of the Headroom, split across the calls one assistant
+message asked for, and never above pi's own per-call figure.
+_Avoid_: cap, ceiling, limit (these name the Context window cap or the read
+tool's `limit` parameter), quota (that is a subscription plan's rolling
+usage), budget (that is the Ledger's running total, not one call's share)
+
+**Headroom**:
+Tokens a session can still take before pi's compaction threshold: the
+Effective window minus pi's reserve minus the usage pi reports. The quantity
+a Bound is a share of.
+_Avoid_: free space, remaining context, slack (implies a reserve pi does not
+use this way)
+
+**Spill**:
+The lossless file copy of a result this extension cut, held under the agent
+directory beside the sessions. The cut text goes to the model; the whole
+result stays in the Spill file, which is the only place it exists.
+_Avoid_: offload (Pruning rejects that word for its own projection), temp
+file (pi's own throwaway carries no naming contract), overflow file, dump
+
+**Ledger**:
+What one assistant message has admitted so far against its Bound. Kept by
+the extension itself, because the usage pi reports does not yet include a
+sibling call that is still running.
+_Avoid_: counter (does not say per-message), accumulator (codegraph's word
+for its streaming buffer), running total
+
+**Admitted text**:
+What the model receives after the Bound cuts a result, notice included. The
+complement of the Spill.
+_Avoid_: kept output, retained output (pi's head and tail choice says which
+end survives, not that a cut happened)
 
 ### Compression
 
