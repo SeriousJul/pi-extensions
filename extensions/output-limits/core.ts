@@ -24,6 +24,16 @@
  * of that allowance by the calls still to come, and the clamp lands on the
  * per-call Bound. That holds both invariants at once: the Bound is a share of
  * the Headroom, and no call is ever bounded above pi's own per-call figure.
+ *
+ * The one-directional rule, stated once here and covering BOTH units: no Bound
+ * rises above what pi itself published for that result, in bytes or in lines.
+ * pi cuts its content to `PI_MAX_OUTPUT_BYTES` and `PI_MAX_OUTPUT_LINES` and
+ * then appends its own notice, so what pi published sits past both figures by
+ * that notice, and the extension's outer max is pi's figure plus the slack in
+ * whichever unit it names (`PI_NOTICE_SLACK_BYTES`, `PI_NOTICE_SLACK_LINES`).
+ * The line half of the rule is per tool as well, because pi's line figure is:
+ * it cuts bash and read by line and cuts grep, find, and ls by bytes alone
+ * (`lineCeilingOf`).
  */
 
 /** pi's own per-call byte figure, `core/tools/truncate.ts` DEFAULT_MAX_BYTES. */
@@ -33,15 +43,73 @@ export const PI_MAX_OUTPUT_BYTES = 50 * 1024;
 export const PI_MAX_OUTPUT_LINES = 2000;
 
 /**
- * The slack pi may add past its own content cut: the notice pi appends after
- * truncating, for example "[Showing lines 11-2010 of 5000 (50.0KB limit).
- * Full output: /tmp/pi-bash-1f2e.log]". pi truncates its content to
- * `PI_MAX_OUTPUT_BYTES` and then adds that line, so a result pi itself calls
- * in bounds sits a little above the figure. The outer max has to cover it, or
- * this extension would re-cut output pi had already blessed and stop being
- * invisible while the Headroom is ample.
+ * pi's own sentinel for "no line limit", the figure `grep`, `find`, and `ls`
+ * hand `truncateHead` because their match, result, and entry limits already
+ * cap the rows and only the byte limit is left to bind. It is pi's number, not
+ * this extension's invention, so a patched `details.truncation.maxLines` says
+ * exactly what pi would have said for the same result.
+ */
+export const PI_NO_LINE_LIMIT = Number.MAX_SAFE_INTEGER;
+
+/**
+ * What pi adds past its own content cut, in each of the two units: the notice
+ * it appends after truncating, for example "[Showing lines 11-2010 of 5000
+ * (50.0KB limit). Full output: /tmp/pi-bash-1f2e.log]", which is one blank line
+ * and one notice line on top of a content figure it has already filled. The
+ * outer max in each unit is pi's content figure plus this slack, for the reason
+ * the header states: without the allowance this extension re-cuts output pi had
+ * already blessed.
  */
 export const PI_NOTICE_SLACK_BYTES = 1024;
+export const PI_NOTICE_SLACK_LINES = 2;
+
+/**
+ * pi's own cut policy for the tools in scope: the end its cutter keeps, and
+ * the line figure it cuts at. Only bash and read cut by line; grep, find, and
+ * ls hand their cutter `PI_NO_LINE_LIMIT` (ADR 0026, the one-directional
+ * rule), so a line ceiling on those three would bind below pi for a
+ * reason that has nothing to do with the context window. The ceiling is charged
+ * per tool for exactly that reason, and `DIRECTIONS` in the wiring is read off
+ * this table so the two cannot drift.
+ */
+export const PI_CUT_POLICIES: Record<string, { direction: CutDirection; maxLines: number }> = {
+	bash: { direction: "tail", maxLines: PI_MAX_OUTPUT_LINES },
+	read: { direction: "head", maxLines: PI_MAX_OUTPUT_LINES },
+	grep: { direction: "head", maxLines: PI_NO_LINE_LIMIT },
+	find: { direction: "head", maxLines: PI_NO_LINE_LIMIT },
+	ls: { direction: "head", maxLines: PI_NO_LINE_LIMIT },
+};
+
+/**
+ * The line ceiling one call enforces.
+ *
+ * `configured` is the `maxLines` setting, or `null` when the user named none,
+ * which is the default and means: pi's own figure for this tool, lifted by the
+ * notice allowance so a result pi blessed is admitted untouched. A figure the
+ * user does name applies to every bounded tool, because then the ceiling is a
+ * choice rather than a mirror of pi.
+ */
+export function lineCeilingOf(toolName: string, configured: number | null): number {
+	if (configured !== null && Number.isFinite(configured)) return configured;
+	const policy = PI_CUT_POLICIES[toolName];
+	if (!policy) return PI_MAX_OUTPUT_LINES + PI_NOTICE_SLACK_LINES;
+	return piLineCeiling(policy.maxLines);
+}
+
+/** pi's own line figure as the model received it: content plus its notice. */
+function piLineCeiling(contentLines: number): number {
+	return contentLines >= PI_NO_LINE_LIMIT ? contentLines : contentLines + PI_NOTICE_SLACK_LINES;
+}
+
+/**
+ * Whether one line ceiling cuts nothing at all, so a caller can say "none"
+ * instead of printing pi's internal sentinel as if it were a figure the user
+ * could set. `Number.MAX_SAFE_INTEGER` is a real ceiling; it is just not one
+ * any tool result reaches.
+ */
+export function noLineCeiling(maxLines: number): boolean {
+	return maxLines >= PI_NO_LINE_LIMIT;
+}
 
 /**
  * The charge for one image block. pi counts an image as 4800 characters in
@@ -154,13 +222,15 @@ export interface BoundSettings {
 	minOutputBytes: number;
 	/** The per-call outer max, in tokens. Defaults to pi's own figure. */
 	maxOutputTokens: number;
-	/** The per-call line max. Defaults to pi's own 2000. */
-	maxLines: number;
+	/** The per-call line max, or `null` for this tool's own figure from pi. */
+	maxLines: number | null;
 	/** The byte-to-token estimate knobs. */
 	math: TokenMath;
 }
 
 export interface BoundInput {
+	/** The tool this Bound is for: it decides the line ceiling. */
+	toolName: string;
 	headroom: Headroom;
 	settings: BoundSettings;
 	/** What the Ledger says is left of the message allowance, in tokens. */
@@ -185,13 +255,15 @@ export interface Bound {
 
 /**
  * The `BoundSettings` for the knobs a settings section names, so the wiring
- * does not restate the shape and the two cannot drift.
+ * does not restate the shape and the two cannot drift. `maxLines` stays `null`
+ * when the user named none: the line ceiling is a per-tool figure, so it is
+ * resolved per call by `computeBound`, not here.
  */
 export function boundSettingsOf(input: {
 	shareOfHeadroom: number;
 	minOutputBytes: number;
 	maxOutputTokens: number;
-	maxLines: number;
+	maxLines: number | null;
 	bytesPerChar: number;
 	inflation: number;
 }): BoundSettings {
@@ -234,17 +306,21 @@ export function floorTokensOf(settings: Pick<BoundSettings, "minOutputBytes" | "
  * unbounded, because with no Headroom there is nothing to bound downward
  * against. A blind call therefore passes whatever pi produced, exactly like
  * pi today.
+ *
+ * The line ceiling comes from the tool, not from the Headroom: see
+ * `lineCeilingOf`. It is resolved here so there is one source for it.
  */
 export function computeBound(input: BoundInput): Bound {
 	const settings = input.settings;
 	const floorTokens = floorTokensOf(settings);
+	const maxLines = lineCeilingOf(input.toolName, settings.maxLines);
 	if (!input.headroom.known) {
 		return {
 			blind: true,
 			tokens: settings.maxOutputTokens,
 			bytes: Number.POSITIVE_INFINITY,
 			floorTokens,
-			maxLines: settings.maxLines,
+			maxLines,
 		};
 	}
 	const remainingCalls = Math.max(1, Math.trunc(input.remainingCalls));
@@ -255,7 +331,7 @@ export function computeBound(input: BoundInput): Bound {
 		tokens,
 		bytes: bytesFromTokens(tokens, settings.math),
 		floorTokens,
-		maxLines: settings.maxLines,
+		maxLines,
 	};
 }
 
@@ -388,14 +464,6 @@ export interface CutPlan {
 	keptBytes: number;
 	/** The line a rewritten read continuation starts from, 1-indexed. */
 	readStartLine: number | undefined;
-	/**
-	 * True when the result only came inside its budget because read's stale
-	 * continuation notice was taken off the end. `fits` is still true, because
-	 * no byte of real content was dropped, but the published text is not what
-	 * pi produced: it is pi's text with the stale line removed. A caller that
-	 * reads `fits` as "return nothing" would put that stale line back.
-	 */
-	rewritten: boolean;
 }
 
 /**
@@ -419,11 +487,13 @@ export function cutToBudget(input: CutInput): CutPlan {
 		const overBytes = published.bytes - input.budgetBytes;
 		const overLines = published.lines - input.maxLines;
 		if (overBytes <= 0 && overLines <= 0) return plan;
-		// Tighten by the overflow, and always make progress: a budget that
-		// cannot shrink would otherwise spin. The extra line is the slack
-		// between what the cutter counted and what the rendered notice costs.
-		const nextBytes = Math.max(0, budgetBytes - Math.max(0, Math.ceil(overBytes)) - 1);
-		const nextLines = Math.max(0, budgetLines - Math.max(0, overLines) - 1);
+		// Tighten the axis that overflowed, and always make progress on it: a
+		// budget that cannot shrink would otherwise spin. The extra byte and line
+		// is the slack between what the cutter counted and what the rendered
+		// notice costs. An axis that did not overflow is left alone, because
+		// shaving a ceiling nothing crossed only cuts content for nothing.
+		const nextBytes = overBytes > 0 ? Math.max(0, budgetBytes - Math.ceil(overBytes) - 1) : budgetBytes;
+		const nextLines = overLines > 0 ? Math.max(0, budgetLines - Math.ceil(overLines) - 1) : budgetLines;
 		if (nextBytes >= budgetBytes && nextLines >= budgetLines) return plan;
 		budgetBytes = nextBytes;
 		budgetLines = nextLines;
@@ -520,7 +590,7 @@ export function cutBlocks(input: CutInput): CutPlan {
 	// that fits inside the Bound is published exactly as pi produced it, with
 	// nothing appended and nothing spilled.
 	if (fitsWithinBudget(input.blocks, input.budgetBytes, input.maxLines)) {
-		return { ...planFrom(input, undefined, false), fits: true };
+		return { ...planFrom(input, undefined), fits: true };
 	}
 
 	// Prepare the blocks. read's continuation notice comes off the end first,
@@ -544,11 +614,15 @@ export function cutBlocks(input: CutInput): CutPlan {
 	const prepared: CutInput = { ...input, blocks: sources };
 	if (fitsWithinBudget(sources, prepared.budgetBytes, prepared.maxLines)) {
 		// Stripping pi's notice closed the gap on its own, so no byte of real
-		// content is dropped and the Bound's own line is not needed. What IS
-		// published differs from what pi produced: the stale offset line is
-		// gone. `rewritten` carries that out-of-band fact to the caller, so it
-		// cannot mistake "no cut" for "nothing to change".
-		return { ...planFrom(prepared, readStartLine, true), fits: true };
+		// content was dropped and pi's own continuation line is still exactly
+		// true. The plan therefore keeps pi's blocks, that line included, and
+		// `fits` is the whole promise. A caller that published the stripped body
+		// instead would hand the model a read result with no pointer at all, and
+		// read is bounded without a Spill, so pi's line is the only recovery
+		// there is: publishing it would be the one way this extension can lose
+		// text outright. The admitted cost is at most pi's own notice past the
+		// Bound, which is the same allowance the outer max already carries.
+		return { ...planFrom(input, readStartLine), fits: true };
 	}
 
 	// Reserve the notice, with the blank line the wiring appends ahead of it,
@@ -626,7 +700,7 @@ export function cutBlocks(input: CutInput): CutPlan {
 		const block = sources[i];
 		blocks.push(block.type === "image" ? { kind: "image", block } : { kind: "keep", text: block.text });
 	}
-	return { fits: false, rewritten: false, blocks, droppedBytes, droppedLines, cut, keptLines, keptBytes, readStartLine };
+	return { fits: false, blocks, droppedBytes, droppedLines, cut, keptLines, keptBytes, readStartLine };
 }
 
 /**
@@ -640,10 +714,9 @@ export function fitsWithinBudget(blocks: readonly ContentBlock[], budgetBytes: n
 }
 
 /** A plan for blocks that need no content cut: every block kept as arrived. */
-function planFrom(input: CutInput, readStartLine: number | undefined, rewritten: boolean): CutPlan {
+function planFrom(input: CutInput, readStartLine: number | undefined): CutPlan {
 	return {
 		fits: true,
-		rewritten,
 		blocks: input.blocks.map((block) => (block.type === "image" ? { kind: "image", block } : { kind: "keep", text: block.text })),
 		droppedBytes: 0,
 		droppedLines: 0,

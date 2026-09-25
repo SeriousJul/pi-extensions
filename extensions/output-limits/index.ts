@@ -63,9 +63,12 @@ import {
 	floorTokensOf,
 	formatBytes,
 	formatTokens,
+	lineCeilingOf,
 	measureBlocks,
 	messageAllowanceTokens,
 	type NoticeFacts,
+	noLineCeiling,
+	PI_CUT_POLICIES,
 	PI_MAX_OUTPUT_BYTES,
 	PI_NOTICE_SLACK_BYTES,
 	renderPlan,
@@ -82,31 +85,23 @@ import {
 	type SettingsPatch,
 	tokenMathOf,
 } from "./settings.ts";
-import { agentDir as agentDirOf } from "../shared/settings.ts";
+import { agentDir as agentDirOf, modelKey as piModelKey } from "../shared/settings.ts";
 import { mkdirPrivate, spillDir, spillFootprint, spillName, spillRoot, sweepSpills, type SpillWrite, writeSpill } from "./spill.ts";
-
-/** The five tools in scope, each with pi's own cut direction (ADR 0026). */
-const DIRECTIONS: Record<string, CutDirection> = {
-	bash: "tail",
-	read: "head",
-	grep: "head",
-	find: "head",
-	ls: "head",
-};
 
 /**
  * The direction one result is cut at.
  *
- * pi's own direction per tool, except that an error result keeps its tail
- * whoever produced it (decision 18): the line that says why something failed
- * sits at the end, as bash's "Command exited with code 1" and pi's own thrown
- * messages both show, and a failed test's stack trace is often the largest
- * thing in a turn. ADR 0026 states the per-tool rule and names no exception;
- * the decision table it records does, so the exception is taken from the
- * decision and is visible here rather than buried in a caller.
+ * pi's own direction per tool, read off `PI_CUT_POLICIES` (ADR 0026), except
+ * that an error result keeps its tail whoever produced it (decision 18): the
+ * line that says why something failed sits at the end, as bash's "Command
+ * exited with code 1" and pi's own thrown messages both show, and a failed
+ * test's stack trace is often the largest thing in a turn. ADR 0026 states the
+ * per-tool rule and names no exception; the decision table it records does, so
+ * the exception is taken from the decision and is visible here rather than
+ * buried in a caller.
  */
 function directionOf(toolName: string, isError: boolean): CutDirection {
-	return isError ? "tail" : DIRECTIONS[toolName];
+	return isError ? "tail" : PI_CUT_POLICIES[toolName]!.direction;
 }
 
 /** The tools that keep a Spill. read is bounded without one (decision 11). */
@@ -130,8 +125,28 @@ interface OutputLimitsState {
 	lastBound: { toolName: string; tokens: number; bytes: number; blind: boolean } | null;
 	/** What this session has bounded, for `status`. */
 	cuts: { calls: number; droppedBytes: number };
+	/**
+	 * Cuts the Headroom did not cause: calls where the Bound had already reached
+	 * the outer max, so whatever was dropped was dropped by a ceiling and not by
+     * pressure near the window. `status` names it because a nonzero figure here
+     * means the extension is no longer invisible in an open session, which is
+     * the one state it must never be in.
+	 */
+	ceilingCuts: number;
 }
 
+/**
+ * The module-level state, and why one is enough.
+ *
+ * pi runs one session per process and the extension is loaded once per
+ * process, so `session_start` builds this object and `session_shutdown` drops
+ * it. Two loaded instances of this extension in one process would contend for
+ * the Ledger, the Spill sequence number, and the once-per-session failure
+ * notice, because each would hold its own state object while writing to the one
+ * session. That is not a supported shape: this repo's extensions all take the
+ * same posture, and a second instance would be a duplicate policy, not a
+ * second view of it.
+ */
 let state: OutputLimitsState | null = null;
 
 // ---------------------------------------------------------------------------
@@ -157,6 +172,12 @@ let state: OutputLimitsState | null = null;
  * remainder the merge reports is smaller, never larger.
  */
 function readBatch(entries: SessionEntry[], toolCallId: string): { messageId: string; calls: number } {
+	// The walk is over the whole branch, newest first, and it stops at the
+	// message that asked for this call, which for a live session is the last
+	// assistant entry: one or two messages of work in practice. It degrades to
+	// the full list only when no entry carries the call id at all, which is
+	// probe 2's shape. If sessions ever grow to where that is common, the fix is
+	// to remember the last assistant entry across calls rather than to search.
 	let newestAssistantWithCalls: string | undefined;
 	let newestAssistant: string | undefined;
 	for (let i = entries.length - 1; i >= 0; i -= 1) {
@@ -205,7 +226,7 @@ function readBatch(entries: SessionEntry[], toolCallId: string): { messageId: st
 function boundResult(event: ToolResultEvent, ctx: ExtensionContext): ToolResultEventResult | undefined {
 	const s = state;
 	if (!s || !s.settings.enabled || envDisabled()) return undefined;
-	if (DIRECTIONS[event.toolName] === undefined || !s.settings.tools.includes(event.toolName)) return undefined;
+	if (PI_CUT_POLICIES[event.toolName] === undefined || !s.settings.tools.includes(event.toolName)) return undefined;
 	const settings = boundSettingsOf(s.settings);
 	const math = settings.math;
 
@@ -232,6 +253,7 @@ function boundResult(event: ToolResultEvent, ctx: ExtensionContext): ToolResultE
 	if (!view) return undefined;
 
 	const bound = computeBound({
+		toolName: event.toolName,
 		headroom,
 		settings,
 		remainingAllowanceTokens: view.remainingAllowanceTokens,
@@ -313,22 +335,18 @@ function boundResult(event: ToolResultEvent, ctx: ExtensionContext): ToolResultE
 		}
 	}
 
-	if (plan.fits && !plan.rewritten) {
-		// The reservation closed the gap on its own: no byte was dropped, so
-		// nothing is announced and no Spill is written.
-		s.ledger.record(batch.messageId, tokensFromBytes(measureBlocks(blocks), math));
-		return undefined;
-	}
 	if (plan.fits) {
-		// read's stale continuation line was the only thing over budget. It is
-		// published without that line and with nothing appended: the offset pi
-		// named pointed past the Bound, so leaving it would send the model to
-		// re-read content it already has.
-		const stripped = toPiBlocks(renderPlan(plan, pointer, ""));
-		const strippedBytes = measureBlocks(stripped as ContentBlock[]);
-		s.ledger.record(batch.messageId, tokensFromBytes(strippedBytes, math));
-		if (strippedBytes === measureBlocks(blocks)) return undefined;
-		return { content: stripped };
+		// Nothing was cut. Either the received result fit inside its Bound, or it
+		// came inside it only because pi's own continuation notice was not charged
+		// against the budget -- and that line is read's only recovery pointer, still
+		// exactly true because no content was dropped. So pi's own text stands in
+		// both shapes: publishing the stripped body instead would hand the model a
+		// read result with no `offset`, no notice, and no Spill, which is the one
+		// way this extension can lose text outright (decisions 11 and 22). The cost
+		// is at most pi's own notice past the Bound, and the Ledger is charged the
+		// size that really went into the session.
+		s.ledger.record(batch.messageId, tokensFromBytes(receivedBytes, math));
+		return undefined;
 	}
 
 	const content = toPiBlocks(renderPlan(plan, pointer, buildNotice(facts)));
@@ -359,6 +377,10 @@ function boundResult(event: ToolResultEvent, ctx: ExtensionContext): ToolResultE
 	s.ledger.record(batch.messageId, tokensFromBytes(admittedBytes, math));
 	s.cuts.calls += 1;
 	s.cuts.droppedBytes += plan.droppedBytes;
+	// The Headroom was not what bound this call: the Bound had already reached
+	// the outer max, so a ceiling did. That is worth counting, because the
+	// extension promises to be invisible while the window is open.
+	if (bound.tokens >= settings.maxOutputTokens) s.ceilingCuts += 1;
 
 	const details = patchDetails(event, plan, bound.bytes, bound.maxLines, spill?.path);
 	return { content, details };
@@ -540,7 +562,7 @@ function openState(ctx: ExtensionContext): OutputLimitsState {
 	}
 	return {
 		settings,
-		reserveTokens: readReserveTokens(ctx.cwd),
+		reserveTokens: readReserveTokens(ctx.cwd, process.env, piModelKey(ctx.model)),
 		agentDir,
 		spillDir: dir,
 		seq,
@@ -548,12 +570,14 @@ function openState(ctx: ExtensionContext): OutputLimitsState {
 		ledger: new Ledger(),
 		spillFailureNotified: false,
 		spillFailure: undefined,
-		lastBound: null,
+						lastBound: null,
 		cuts: { calls: 0, droppedBytes: 0 },
+		ceilingCuts: 0,
 	};
 }
 
-/** The next Spill sequence number: one past the highest file already there. */
+/**
+ * The next Spill sequence number: one past the highest file already there. */
 function nextSeq(dir: string): number {
 	if (!fs.existsSync(dir)) return 1;
 	let max = 0;
@@ -589,7 +613,7 @@ function statusText(s: OutputLimitsState, ctx: ExtensionContext): string {
 		`output-limits: ${s.settings.enabled && !envDisabled() ? "on" : "off"}`,
 		`tools: ${s.settings.tools.join(", ")}`,
 		`Bound: shareOfHeadroom=${s.settings.shareOfHeadroom}, minOutputBytes=${s.settings.minOutputBytes} (${formatBytes(s.settings.minOutputBytes)} ~${formatTokens(floorTokens)}), maxOutputTokens=${s.settings.maxOutputTokens} (${formatBytes(outerBytes)} ~${formatTokens(s.settings.maxOutputTokens)}; pi's own cut is ${formatBytes(PI_MAX_OUTPUT_BYTES)} of content plus its notice, ${formatBytes(piBytes)} here)`,
-		`token math: bytesPerChar ${s.settings.bytesPerChar}, inflation ${s.settings.inflation}, maxLines ${s.settings.maxLines}`,
+		`token math: bytesPerChar ${s.settings.bytesPerChar}, inflation ${s.settings.inflation}, maxLines ${maxLinesText(s.settings.maxLines)}`,
 		headroom.known
 			? `Headroom: ${formatTokens(headroom.tokens)} = window ${formatTokens(headroom.effectiveWindow)} - reserve ${formatTokens(headroom.reserveTokens)} - used ${formatTokens(headroom.usedTokens)}`
 			: "Headroom: blind, no usage to read, so results keep pi's own figures",
@@ -598,8 +622,27 @@ function statusText(s: OutputLimitsState, ctx: ExtensionContext): string {
 			: "last Bound: none yet",
 		`batch: ${describeBatch(s)}`,
 		`Spill: ${s.cuts.calls} cut${s.cuts.calls === 1 ? "" : "s"}, ${formatBytes(s.cuts.droppedBytes)} dropped, ${footprint.files} file(s) ${formatBytes(footprint.bytes)} in ${displayPath(s.agentDir, s.spillDir)}`,
+		// The tripwire the review asked for. A cut whose Bound had already reached
+		// the outer max was not caused by the window: a ceiling did it, which is
+		// the one state this extension must never be in. Every cut of an open
+		// session used to land here silently.
+		`sessions with the Headroom ample: ${s.ceilingCuts} cut(s) bound by a ceiling, not by pressure${s.ceilingCuts === 0 ? " (as intended)" : " -- a ceiling is cutting what pi blessed"}`,
 		`sweep at start: removed ${s.sweep.removed} file(s), freed ${formatBytes(s.sweep.bytesFreed)}; limits ${formatBytes(s.settings.spill.maxTotalBytes)} and ${s.settings.spill.maxAgeDays} day(s)`,
 	].join("\n");
+}
+
+/**
+ * The `maxLines` setting as `status` states it. `null` is the default and means
+ * each tool's own figure from pi, which is two different answers across the
+ * five tools, so the line names both rather than inventing one.
+ */
+function maxLinesText(maxLines: number | null): string {
+	if (maxLines !== null) return String(maxLines);
+	const tools = Object.keys(PI_CUT_POLICIES);
+	const capped = tools.filter((tool) => !noLineCeiling(lineCeilingOf(tool, null)));
+	const uncapped = tools.filter((tool) => noLineCeiling(lineCeilingOf(tool, null)));
+	const figures = capped.map((tool) => `${tool} ${lineCeilingOf(tool, null)}`).join("/");
+	return `pi's own per tool: ${figures}${uncapped.length > 0 ? `, ${uncapped.join("/")} none` : ""}`;
 }
 
 function describeBatch(s: OutputLimitsState): string {
@@ -629,9 +672,15 @@ export default function outputLimitsExtension(pi: ExtensionAPI): void {
 
 	// A compaction, a model switch, or a tree navigation changes the
 	// projection the Headroom was read from, so no stored batch baseline may
-	// carry across it (ADR 0026, accepted cost).
+	// carry across it (ADR 0026, accepted cost). A model switch also changes
+	// which `compaction.modelOverrides` entry, if any, answers for the reserve.
 	pi.on("session_compact", async () => state?.ledger.invalidate());
-	pi.on("model_select", async () => state?.ledger.invalidate());
+	pi.on("model_select", async (event, ctx) => {
+		// `event.model` is the model pi just switched to; `ctx.model` is not
+		// promised to have moved yet in the same tick.
+		if (state) state.reserveTokens = readReserveTokens(ctx.cwd, process.env, piModelKey(event.model));
+		state?.ledger.invalidate();
+	});
 	pi.on("session_tree", async () => state?.ledger.invalidate());
 
 	pi.on("tool_result", async (event, ctx) => boundResult(event, ctx));
@@ -704,7 +753,7 @@ function formatSettings(settings: OutputLimitsSettings): string {
 	return [
 		`outputLimits.enabled=${settings.enabled}`,
 		`outputLimits.maxOutputTokens=${settings.maxOutputTokens}`,
-		`outputLimits.maxLines=${settings.maxLines}`,
+		`outputLimits.maxLines=${settings.maxLines ?? "auto"}`,
 		`outputLimits.inflation=${settings.inflation}`,
 		`outputLimits.bytesPerChar=${settings.bytesPerChar}`,
 		`outputLimits.shareOfHeadroom=${settings.shareOfHeadroom}`,
@@ -732,16 +781,20 @@ function parsePair(kv: string, patch: SettingsPatch): string | undefined {
 		patch.tools = names;
 		return;
 	}
+	if (key === "maxLines") {
+		// `auto` is the default and the only way back to it from a number: it
+		// writes null, which the reader reads as "each tool's own figure from pi".
+		if (raw === "auto" || raw === "null") patch.maxLines = null;
+		else if (!Number.isInteger(Number(raw)) || Number(raw) <= 0) return `outputLimits.maxLines must be a positive integer or auto, got: ${raw}`;
+		else patch.maxLines = Number(raw);
+		return;
+	}
 	const value = Number(raw);
 	if (!Number.isFinite(value) || value <= 0) return `outputLimits.${key} must be a positive number, got: ${raw}`;
 	switch (key) {
 		case "maxOutputTokens":
 			if (!Number.isInteger(value)) return "outputLimits.maxOutputTokens must be an integer";
 			patch.maxOutputTokens = value;
-			return;
-		case "maxLines":
-			if (!Number.isInteger(value)) return "outputLimits.maxLines must be an integer";
-			patch.maxLines = value;
 			return;
 		case "minOutputBytes":
 			if (!Number.isInteger(value)) return "outputLimits.minOutputBytes must be an integer";

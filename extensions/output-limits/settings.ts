@@ -14,13 +14,19 @@
  * extension off without touching a file. It wins over both settings files,
  * because an escape hatch that a stale project setting can undo is not one.
  *
- * Also reads pi's own `compaction.reserveTokens` the same way pi reads it,
- * read-only here: Headroom is the Effective window minus that reserve minus
+ * Also reads pi's own `compaction.reserveTokens` the way pi resolves it, for
+ * the model the session is on: a current-model `modelOverrides` entry first,
+ * then the plain setting, then pi's built-in default, and a reserve of 0 is the
+ * value pi accepts. Headroom is the Effective window minus that reserve minus
  * the usage pi reports. The extension never sets it (out of scope).
  *
  * `maxOutputTokens` defaults to pi's own per-call figure plus the slack pi's
  * own notice adds past it, expressed in tokens, so the extension is always on
- * and still invisible until Headroom gets tight.
+ * and still invisible until Headroom gets tight. `maxLines` defaults to naming
+ * no figure at all, which means each tool's own line ceiling from pi plus the
+ * same notice allowance: pi cuts bash and read by line and cuts grep, find, and
+ * ls by bytes alone, so one global 2000-line ceiling was stricter than pi on
+ * three of the five tools for a reason unrelated to the window.
  */
 import {
 	DEFAULT_RESERVE_TOKENS,
@@ -28,6 +34,7 @@ import {
 	parseBool,
 	parseCount,
 	parseNames,
+	parseNullableCount,
 	parseRatio,
 	projectSettingsPath,
 	readReserveTokens,
@@ -37,7 +44,6 @@ import {
 } from "../shared/settings.ts";
 import {
 	DEFAULT_MAX_OUTPUT_TOKENS,
-	PI_MAX_OUTPUT_LINES,
 	type TokenMath,
 } from "./core.ts";
 
@@ -46,8 +52,8 @@ export interface OutputLimitsSettings {
 	enabled: boolean;
 	/** The per-call outer max, in tokens. */
 	maxOutputTokens: number;
-	/** The per-call line max. */
-	maxLines: number;
+	/** The per-call line max, or `null` for each tool's own figure from pi. */
+	maxLines: number | null;
 	/** The Inflation factor on pi's chars/4 estimate. */
 	inflation: number;
 	/** The characters per token pi's own estimate assumes. */
@@ -63,7 +69,21 @@ export interface OutputLimitsSettings {
 }
 
 export const DEFAULT_ENABLED = true;
-export const DEFAULT_MAX_LINES = PI_MAX_OUTPUT_LINES;
+
+/**
+ * The default line max: `null`, meaning each tool's own figure from pi.
+ *
+ * pi does not cut every tool by line. `bash` and `read` get
+ * `core/tools/truncate.ts` DEFAULT_MAX_LINES; `grep`, `find`, and `ls` hand
+ * their own cutter `maxLines: Number.MAX_SAFE_INTEGER` because their match,
+ * result, and entry limits already cap the rows (ADR 0026, the one-directional
+ * rule). A
+ * single 2000-line ceiling here was therefore stricter than pi on three of the
+ * five tools for a reason that had nothing to do with the context window, which
+ * inverts the one-directional rule. Naming a number in settings is a deliberate
+ * ceiling and applies to every bounded tool.
+ */
+export const DEFAULT_MAX_LINES: number | null = null;
 export const DEFAULT_INFLATION = 2.0;
 export const DEFAULT_BYTES_PER_CHAR = 4;
 export const DEFAULT_SHARE_OF_HEADROOM = 0.25;
@@ -115,11 +135,13 @@ export function readOutputLimitsSettings(
 	if (projectError) errors.push(projectError);
 	const globalSection = sectionOf(globalObj, SECTION);
 	const projectSection = sectionOf(projectObj, SECTION);
-	// The project section wins, key by key: a key absent in the project file
-	// falls back to the global value, then to the default.
-	const pick = <T>(key: string, fallback: T): T | undefined => {
-		const value = projectSection?.[key] ?? globalSection?.[key];
-		return value === undefined ? fallback : (value as T);
+	// The section that WINS for a key wins for its value too, even when that
+	// value is an explicit null: `null` is a real answer for a nullable key like
+	// `maxLines`, meaning "auto", and it must not quietly fall through to the
+	// other file.
+	const pick = <T>(key: string, fallback: T): T | null | undefined => {
+		const source = projectSection && key in projectSection ? projectSection : globalSection && key in globalSection ? globalSection : undefined;
+		return source === undefined ? fallback : (source[key] as T);
 	};
 	const spillGlobal = sectionOf(globalSection, "spill");
 	const spillProject = sectionOf(projectSection, "spill");
@@ -131,7 +153,7 @@ export function readOutputLimitsSettings(
 	const settings: OutputLimitsSettings = {
 		enabled: envDisabled(env) ? false : parseBool(SECTION, "enabled", pick<boolean>("enabled", DEFAULT_ENABLED), DEFAULT_ENABLED, errors),
 		maxOutputTokens: parseCount(SECTION, "maxOutputTokens", pick<number>("maxOutputTokens", DEFAULT_MAX_OUTPUT_TOKENS), DEFAULT_MAX_OUTPUT_TOKENS, errors),
-		maxLines: parseCount(SECTION, "maxLines", pick<number>("maxLines", DEFAULT_MAX_LINES), DEFAULT_MAX_LINES, errors),
+		maxLines: parseNullableCount(SECTION, "maxLines", pick<number | null>("maxLines", DEFAULT_MAX_LINES), DEFAULT_MAX_LINES, errors),
 		inflation: parseRatio(SECTION, "inflation", pick<number>("inflation", DEFAULT_INFLATION), DEFAULT_INFLATION, Number.POSITIVE_INFINITY, errors),
 		bytesPerChar: parseRatio(SECTION, "bytesPerChar", pick<number>("bytesPerChar", DEFAULT_BYTES_PER_CHAR), DEFAULT_BYTES_PER_CHAR, Number.POSITIVE_INFINITY, errors),
 		shareOfHeadroom: parseRatio(SECTION, "shareOfHeadroom", pick<number>("shareOfHeadroom", DEFAULT_SHARE_OF_HEADROOM), DEFAULT_SHARE_OF_HEADROOM, 1, errors),
@@ -156,7 +178,8 @@ export type OutputLimitsSettingsWrite =
 export type SettingsPatch = Partial<{
 	enabled: boolean;
 	maxOutputTokens: number;
-	maxLines: number;
+	/** `null` writes pi's own per-tool default back over a number. */
+	maxLines: number | null;
 	inflation: number;
 	bytesPerChar: number;
 	shareOfHeadroom: number;

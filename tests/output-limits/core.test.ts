@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead, truncateTail } from "@earendil-works/pi-coding-agent";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
 	buildNotice,
 	buildPointer,
@@ -16,14 +19,19 @@ import {
 	formatBytes,
 	formatTokens,
 	IMAGE_CHARGE_BYTES,
+	lineCeilingOf,
 	measureBlocks,
 	measurePublished,
 	messageAllowanceTokens,
+	noLineCeiling,
 	renderPlan,
 	rewriteSpillPath,
 	type ContentBlock,
 	PI_MAX_OUTPUT_BYTES,
 	PI_MAX_OUTPUT_LINES,
+	PI_NO_LINE_LIMIT,
+	PI_NOTICE_SLACK_BYTES,
+	PI_NOTICE_SLACK_LINES,
 	type BoundSettings,
 	splitReadNotice,
 	tokensFromBytes,
@@ -40,7 +48,10 @@ function settings(over: Partial<BoundSettings> = {}): BoundSettings {
 		shareOfHeadroom: 0.25,
 		minOutputBytes: 4096,
 		maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
-		maxLines: PI_MAX_OUTPUT_LINES,
+		// A named figure here, not `null`: the per-tool default is what the
+		// `lineCeilingOf` cases below test, and the cut cases want a fixed
+		// ceiling that does not depend on which tool is named.
+		maxLines: PI_MAX_OUTPUT_LINES + PI_NOTICE_SLACK_LINES,
 		math: MATH,
 		...over,
 	};
@@ -106,6 +117,103 @@ describe("pi's own figures", () => {
 		expect(bytesFromTokens(DEFAULT_MAX_OUTPUT_TOKENS, MATH)).toBeGreaterThanOrEqual(DEFAULT_MAX_BYTES);
 		expect(tokensFromBytes(DEFAULT_MAX_BYTES, MATH)).toBeLessThanOrEqual(DEFAULT_MAX_OUTPUT_TOKENS);
 	});
+
+	it("restates pi's own line figure per tool, from pi's shipped tool source", () => {
+		// The line half of the one-directional rule depends on which tools hand
+		// their cutter a line figure at all. pi does not export that table, so
+		// the restatement is pinned against the source it comes from: a pi
+		// change to who is line-cut fails here instead of making this extension
+		// quietly stricter than pi on a search tool.
+		// The package exports only its entry, so the tool modules are found by
+		// walking back from what the resolver did return rather than by naming a
+		// subpath it does not publish.
+		const toolsDir = join(dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))), "core", "tools");
+		const toolSource = (name: string) => readFileSync(join(toolsDir, `${name}.js`), "utf8");
+		// bash cuts its accumulated output with pi's line default...
+		expect(toolSource("output-accumulator")).toContain("options.maxBytes ?? DEFAULT_MAX_BYTES");
+		expect(toolSource("output-accumulator")).toContain("options.maxLines ?? DEFAULT_MAX_LINES");
+		// ...read applies truncateHead with its defaults, which are the same two
+		// figures...
+		expect(toolSource("read")).toMatch(/truncateHead\(selectedContent\)/);
+		// ...and grep, find, and ls pass pi's own "no line limit" sentinel, so
+		// only the byte figure binds them.
+		for (const tool of ["grep", "find", "ls"]) {
+			expect(toolSource(tool), tool).toContain(`maxLines: Number.MAX_SAFE_INTEGER`);
+		}
+		expect(PI_NO_LINE_LIMIT).toBe(Number.MAX_SAFE_INTEGER);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// The line ceiling, per tool
+// ---------------------------------------------------------------------------
+
+describe("lineCeilingOf", () => {
+	it("lifts pi's line figure by its own notice allowance, so a blessed result is admitted untouched", () => {
+		// pi truncates content to 2000 lines and THEN appends `\n\n[notice]`, so
+		// a result pi calls in bounds is 2002 lines. A ceiling of exactly 2000
+		// re-cut it, which is the byte-axis bug on the other unit.
+		expect(PI_NOTICE_SLACK_LINES).toBe(2);
+		expect(lineCeilingOf("bash", null)).toBe(PI_MAX_OUTPUT_LINES + PI_NOTICE_SLACK_LINES);
+		expect(lineCeilingOf("read", null)).toBe(PI_MAX_OUTPUT_LINES + PI_NOTICE_SLACK_LINES);
+	});
+
+	it("applies no line ceiling to the tools pi applies none to", () => {
+		// grep, find, and ls cap their rows with their own match, result, and
+		// entry limits and hand their cutter pi's no-line-limit sentinel, so a
+		// 2000-line ceiling here was stricter than pi at ANY Headroom.
+		for (const tool of ["grep", "find", "ls"]) {
+			expect(lineCeilingOf(tool, null)).toBe(PI_NO_LINE_LIMIT);
+			expect(noLineCeiling(lineCeilingOf(tool, null))).toBe(true);
+		}
+		expect(noLineCeiling(lineCeilingOf("bash", null))).toBe(false);
+	});
+
+	it("honours a line max the user names, for every bounded tool", () => {
+		// A named figure is a choice rather than a mirror of pi, so it binds the
+		// search tools too, and the default is the only thing that stays pi's.
+		expect(lineCeilingOf("grep", 500)).toBe(500);
+		expect(lineCeilingOf("bash", 500)).toBe(500);
+		expect(lineCeilingOf("bash", Number.POSITIVE_INFINITY)).not.toBe(500);
+	});
+
+	it("is the figure the Bound carries, so the cut and the ceiling cannot disagree", () => {
+		const bound = computeBound({ toolName: "grep", headroom: known(64_000), settings: settings({ maxLines: null }), remainingAllowanceTokens: 16_000, remainingCalls: 1 });
+		expect(bound.maxLines).toBe(PI_NO_LINE_LIMIT);
+		expect(computeBound({ toolName: "bash", headroom: known(64_000), settings: settings({ maxLines: null }), remainingAllowanceTokens: 16_000, remainingCalls: 1 }).maxLines).toBe(2002);
+	});
+
+	it("admits a result at pi's own line ceiling whole, however many lines it is", () => {
+		// The ample-Headroom promise, on the line axis: 2000 content lines of
+		// pi's own tail cut plus pi's notice is a result pi produced, so nothing
+		// here may cut it or spill it.
+		const bound = computeBound({ toolName: "bash", headroom: known(129_616), settings: settings({ maxLines: null }), remainingAllowanceTokens: 129_616, remainingCalls: 1 });
+		const rows = Array.from({ length: 2000 }, (_, i) => `row ${3001 + i}`).join("\n");
+		const blessed = `${rows}\n\n[Showing lines 3001-5000 of 5000. Full output: /tmp/pi-bash-1f2e.log]`;
+		expect(countResultLines([text(blessed)])).toBe(2002);
+		expect(fitsWithinBudget([text(blessed)], bound.bytes, bound.maxLines)).toBe(true);
+		const result = cutToBudget({
+			blocks: [text(blessed)],
+			budgetBytes: bound.bytes,
+			maxLines: bound.maxLines,
+			direction: "tail",
+			cutters: CUTTERS,
+			pointer: "[p]",
+			notice: "",
+		});
+		expect(result.fits).toBe(true);
+		expect(result.droppedLines).toBe(0);
+	});
+
+	it("admits a many-line grep result whole, where pi applies no line ceiling at all", () => {
+		// 2500 short rows is under pi's byte figure and over pi's line figure for
+		// the tools that HAVE one. pi publishes it as it stands, so this
+		// extension must too, at any Headroom the byte budget leaves alone.
+		const rows = Array.from({ length: 2500 }, (_, i) => `f${i}.ts:${i + 1}: match`).join("\n");
+		const bound = computeBound({ toolName: "grep", headroom: known(129_616), settings: settings({ maxLines: null }), remainingAllowanceTokens: 129_616, remainingCalls: 1 });
+		expect(Buffer.byteLength(rows, "utf8")).toBeLessThan(bound.bytes);
+		expect(fitsWithinBudget([text(rows)], bound.bytes, bound.maxLines)).toBe(true);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -170,7 +278,7 @@ describe("computeHeadroom", () => {
 
 describe("computeBound", () => {
 	it("is the share of the Headroom for a single call", () => {
-		const bound = computeBound({ headroom: known(64_000), settings: settings(), remainingAllowanceTokens: 16_000, remainingCalls: 1 });
+		const bound = computeBound({ toolName: "bash", headroom: known(64_000), settings: settings(), remainingAllowanceTokens: 16_000, remainingCalls: 1 });
 		expect(bound.tokens).toBe(16_000);
 		expect(bound.bytes).toBe(bytesFromTokens(16_000, MATH));
 	});
@@ -186,31 +294,31 @@ describe("computeBound", () => {
 	});
 
 	it("divides the allowance across the calls one assistant message asked for", () => {
-		expect(computeBound({ headroom: known(64_000), settings: settings(), remainingAllowanceTokens: 16_000, remainingCalls: 4 }).tokens).toBe(4_000);
+		expect(computeBound({ toolName: "bash", headroom: known(64_000), settings: settings(), remainingAllowanceTokens: 16_000, remainingCalls: 4 }).tokens).toBe(4_000);
 	});
 
 	it("rolls forward what the finished siblings left unused", () => {
 		// Three calls against a 12k allowance, the first two spent only 1k, so
 		// the last call reaches the 11k that is left.
-		expect(computeBound({ headroom: known(64_000), settings: settings(), remainingAllowanceTokens: 11_000, remainingCalls: 1 }).tokens).toBe(11_000);
+		expect(computeBound({ toolName: "bash", headroom: known(64_000), settings: settings(), remainingAllowanceTokens: 11_000, remainingCalls: 1 }).tokens).toBe(11_000);
 	});
 
 	it("never raises above pi's own figure, however much Headroom is left", () => {
 		// The one-directional invariant: the hook runs after pi's cut, so a
 		// raise is neither available nor wanted.
-		const bound = computeBound({ headroom: known(1_000_000), settings: settings(), remainingAllowanceTokens: 1_000_000, remainingCalls: 1 });
+		const bound = computeBound({ toolName: "bash", headroom: known(1_000_000), settings: settings(), remainingAllowanceTokens: 1_000_000, remainingCalls: 1 });
 		expect(bound.tokens).toBe(DEFAULT_MAX_OUTPUT_TOKENS);
 		expect(bound.blind).toBe(false);
 	});
 
 	it("never drops below the floor, however tight the Headroom", () => {
-		const bound = computeBound({ headroom: known(100), settings: settings(), remainingAllowanceTokens: 1, remainingCalls: 8 });
+		const bound = computeBound({ toolName: "bash", headroom: known(100), settings: settings(), remainingAllowanceTokens: 1, remainingCalls: 8 });
 		expect(bound.tokens).toBe(bound.floorTokens);
 		expect(bound.bytes).toBeGreaterThanOrEqual(4096);
 	});
 
 	it("is blind to pi's own figure and enforces no byte budget at all", () => {
-		const bound = computeBound({ headroom: { known: false }, settings: settings(), remainingAllowanceTokens: 0, remainingCalls: 3 });
+		const bound = computeBound({ toolName: "bash", headroom: { known: false }, settings: settings(), remainingAllowanceTokens: 0, remainingCalls: 3 });
 		expect(bound.blind).toBe(true);
 		expect(bound.tokens).toBe(DEFAULT_MAX_OUTPUT_TOKENS);
 		expect(bound.bytes).toBe(Number.POSITIVE_INFINITY);
@@ -218,7 +326,7 @@ describe("computeBound", () => {
 
 	it("lets the floor win over a contradictory outer max", () => {
 		const tight = settings({ maxOutputTokens: 2_000, minOutputBytes: 8_192 });
-		const bound = computeBound({ headroom: known(64_000), settings: tight, remainingAllowanceTokens: 16_000, remainingCalls: 1 });
+		const bound = computeBound({ toolName: "bash", headroom: known(64_000), settings: tight, remainingAllowanceTokens: 16_000, remainingCalls: 1 });
 		// A floor the clamp could undercut would starve a call outright, and
 		// the floor is what keeps an error result diagnosable.
 		expect(bound.floorTokens).toBe(floorTokensOf(tight));
@@ -482,10 +590,54 @@ describe("splitReadNotice", () => {
 		expect(result.droppedBytes).toBeGreaterThan(0);
 	});
 
-	it("publishes pi's notice alone when stripping it already closes the gap", () => {
+	it("keeps pi's continuation when stripping it is all the budget needed", () => {
+		// The unsafe shape this pins: a read body that fits and pi's notice line
+		// that does not. Stripping the line closes the gap in bytes but takes
+		// away the only recovery read has, because read keeps no Spill. So the
+		// plan publishes pi's text as it arrived, stale line unstripped and all:
+		// no content was cut, so the offset pi named is still exactly right.
 		const body = "a\nb\n\n[Showing lines 1-2 of 400. Use offset=3 to continue.]";
 		const result = plan([text(body)], { budgetBytes: 20, rewriteReadNotice: true });
-		expect(result.blocks[0]).toMatchObject({ kind: "keep", text: "a\nb" });
+		expect(result.fits).toBe(true);
+		expect(result.blocks).toEqual([{ kind: "keep", text: body }]);
+		expect(result.droppedBytes).toBe(0);
+		// And the first line pi showed is still reported, so a caller that does
+		// need a continuation can build one.
+		expect(result.readStartLine).toBe(1);
+	});
+
+	it("cuts and rewrites when the body itself is what crosses", () => {
+		// The other shape: the body does not fit either, so a real cut runs and
+		// pi's stale offset is replaced by the extension's own line, computed
+		// from what the cut kept.
+		const rows = Array.from({ length: 6 }, (_, i) => `line ${i + 1}`).join("\n");
+		const body = `${rows}\n\n[Showing lines 1-6 of 400. Use offset=7 to continue.]`;
+		const result = plan([text(body)], { budgetBytes: 14, rewriteReadNotice: true });
+		expect(result.fits).toBe(false);
+		expect(result.blocks[0]).toMatchObject({ kind: "cut", text: "line 1\nline 2" });
+		expect(result.readStartLine).toBe(1);
+		expect(result.keptLines).toBe(2);
+	});
+
+	it("never publishes a read plan whose body survived without a pointer", () => {
+		// The invariant, stated as a check over both shapes: for every plan that
+		// keeps read's text, either pi's own continuation is still in it, or a
+		// cut ran and the caller has the numbers to write one.
+		const rows = Array.from({ length: 4 }, (_, i) => `l${i}`).join("\n");
+		const body = `${rows}\n\n[Showing lines 1-4 of 9. Use offset=5 to continue.]`;
+		for (const budgetBytes of [Buffer.byteLength(body, "utf8"), Buffer.byteLength(rows, "utf8"), 12, 1]) {
+			const result = plan([text(body)], { budgetBytes, rewriteReadNotice: true });
+			if (result.fits) {
+				// Nothing was cut, so pi's line is untouched and still true.
+				expect(result.blocks.map((block) => (block.kind === "keep" ? block.text : "")).join("|")).toContain("Use offset=5 to continue");
+			} else {
+				// A cut ran, so the caller owns the continuation and has the two
+				// numbers it needs to state one: where the text started, and how
+				// many lines survived.
+				expect(result.readStartLine).toBeDefined();
+				expect(result.keptLines).toBeGreaterThanOrEqual(0);
+			}
+		}
 	});
 });
 

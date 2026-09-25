@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { SessionManager, type ExtensionContext, type ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage, ImageContent, TextContent, Usage, UserMessage } from "@earendil-works/pi-ai";
 import outputLimitsExtension from "../../extensions/output-limits/index";
-import { bytesFromTokens, tokensFromBytes } from "../../extensions/output-limits/core";
+import { bytesFromTokens, tokensFromBytes, PI_MAX_OUTPUT_BYTES, PI_MAX_OUTPUT_LINES, PI_NOTICE_SLACK_LINES } from "../../extensions/output-limits/core";
 
 // The primary seam, on the shape `tests/pruning/wiring.test.ts` establishes:
 // the real extension loaded against a fake `ExtensionAPI`, a real
@@ -20,6 +20,9 @@ import { bytesFromTokens, tokensFromBytes } from "../../extensions/output-limits
 const WINDOW = 150_000;
 const RESERVE = 16_384;
 const MATH = { bytesPerChar: 4, inflation: 2 };
+// The model the fake context reports, in the shape pi's own reserve reader keys
+// `compaction.modelOverrides` by.
+const MODEL = { provider: "e2e", id: "m1" };
 
 /**
  * A session with exactly `headroom` tokens left, the way pi would report it.
@@ -119,7 +122,7 @@ function fakeContext(cwd: string, sm: SessionManager, captured: Captured, usage:
 		hasUI: true,
 		cwd,
 		sessionManager: sm,
-		model: { contextWindow: WINDOW },
+		model: { contextWindow: WINDOW, provider: MODEL.provider, id: MODEL.id },
 		modelRegistry: {},
 		isIdle: () => true,
 		isProjectTrusted: () => true,
@@ -177,6 +180,11 @@ function bigOutput(lines: number, width = 44): string {
 	return rows.join("\n");
 }
 
+/** Complete lines in a text, the way this extension counts them. */
+function countLinesOf(text: string): number {
+	return text.endsWith("\n") ? text.slice(0, -1).split("\n").length : text.split("\n").length;
+}
+
 function seed(calls: Array<{ id: string; name: string }>): void {
 	const builder = SessionManager.create(cwd, sessionDir);
 	builder.appendMessage(user("q"));
@@ -185,7 +193,13 @@ function seed(calls: Array<{ id: string; name: string }>): void {
 }
 
 function writeSettings(section: Record<string, unknown>): void {
-	writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ compaction: { reserveTokens: RESERVE }, outputLimits: section }));
+	writeRawSettings({ compaction: { reserveTokens: RESERVE }, outputLimits: section });
+}
+
+/** Settings written whole, for a case that needs pi's own section shape. */
+function writeRawSettings(value: Record<string, unknown>): void {
+	mkdirSync(join(cwd, ".pi"), { recursive: true });
+	writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify(value));
 }
 
 beforeEach(() => {
@@ -241,6 +255,57 @@ describe("pass-through", () => {
 		expect(await captured.toolResult!(event({ toolName: "bash", toolCallId: "c1", content: [textBlock(source)] }), ctx)).toBeUndefined();
 	});
 
+	it("is invisible at a result pi blessed on the line axis, at ample Headroom", async () => {
+		// The case the byte-only fixtures never reached: 2000 short content lines
+		// is well under pi's 50KB, so pi's own cut lands on the LINE limit and it
+		// then appends its notice, making 2002 lines. A ceiling of exactly 2000
+		// re-cut a result pi had already blessed, spilled it, and announced a
+		// "capped to 51KB" figure about a 10KB result -- all with the window
+		// nearly empty. Nothing here may happen.
+		seed([{ id: "c1", name: "bash" }]);
+		const captured = loadExtension(cwd, sm);
+		const ctx = withUsage(captured, sm, usedFor(129_616));
+		const rows = Array.from({ length: 2000 }, (_, i) => `row ${3001 + i}`).join("\n");
+		const source = `${rows}\n\n[Showing lines 3001-5000 of 5000. Full output: /tmp/pi-bash-1f2e.log]`;
+		expect(countLinesOf(source)).toBe(2002);
+		// Well inside pi's byte figure: the ONLY thing that can cut this result is
+		// a line ceiling, which is exactly what was wrong.
+		expect(Buffer.byteLength(source, "utf8")).toBeLessThan(PI_MAX_OUTPUT_BYTES);
+		expect(await captured.toolResult!(event({ toolName: "bash", toolCallId: "c1", content: [textBlock(source)] }), ctx)).toBeUndefined();
+		expect(spillFiles()).toEqual([]);
+	});
+
+	it("is invisible at a many-line grep result, where pi applies no line ceiling at all", async () => {
+		// pi hands grep, find, and ls a `maxLines` of Number.MAX_SAFE_INTEGER:
+		// their match, result, and entry limits already cap the rows. So a 2500
+		// line grep result under pi's byte figure is what pi publishes, and a
+		// single 2000-line ceiling here made the extension stricter than pi at
+		// any Headroom, which is the one-directional rule turned inside out.
+		seed([{ id: "g1", name: "grep" }]);
+		const captured = loadExtension(cwd, sm);
+		const ctx = withUsage(captured, sm, usedFor(129_616));
+		const source = Array.from({ length: 2500 }, (_, i) => `f${i}.ts:${i + 1}: match`).join("\n");
+		expect(countLinesOf(source)).toBe(2500);
+		expect(Buffer.byteLength(source, "utf8")).toBeLessThan(PI_MAX_OUTPUT_BYTES);
+		expect(await captured.toolResult!(event({ toolName: "grep", toolCallId: "g1", content: [textBlock(source)] }), ctx)).toBeUndefined();
+		expect(spillFiles()).toEqual([]);
+	});
+
+	it("is invisible at a read result at pi's line ceiling, at ample Headroom", async () => {
+		// The flagship loss the review found, on the tool that has no Spill to
+		// fall back to: pi read 2000 of 4001 short lines and named the offset.
+		// With the extension on and the window nearly empty the model must still
+		// be told where to continue, byte-for-byte as pi wrote it.
+		seed([{ id: "r1", name: "read" }]);
+		const captured = loadExtension(cwd, sm);
+		const ctx = withUsage(captured, sm, usedFor(129_616));
+		const rows = Array.from({ length: 2000 }, (_, i) => `export const r${i + 1} = 1;`).join("\n");
+		const source = `${rows}\n\n[Showing lines 1-2000 of 4001. Use offset=2001 to continue.]`;
+		expect(countLinesOf(source)).toBe(2002);
+		expect(await captured.toolResult!(event({ toolName: "read", toolCallId: "r1", content: [textBlock(source)], input: { path: "big.ts", offset: 1 } }), ctx)).toBeUndefined();
+		expect(spillFiles()).toEqual([]);
+	});
+
 	it("bounds nothing when the tool is not in the settings list", async () => {
 		writeSettings({ tools: ["bash"] });
 		seed([{ id: "c1", name: "grep" }]);
@@ -281,6 +346,23 @@ describe("pass-through", () => {
 		// after a compaction.
 		expect(await captured.toolResult!(event({ toolName: "bash", toolCallId: "c1", content: [textBlock(source)] }), withUsage(captured, sm, { tokens: null }))).toBeUndefined();
 		expect(spillFiles()).toEqual([]);
+	});
+
+	it("reads pi's compaction reserve for the model it is bounding for", async () => {
+		// Headroom is the window minus pi's reserve, and pi resolves that reserve
+		// per model through `compaction.modelOverrides`. A reader that saw only
+		// the plain setting would state a Headroom pi is not working to, and
+		// every Bound would be off by the difference.
+		writeRawSettings({ compaction: { reserveTokens: RESERVE, modelOverrides: { [`${MODEL.provider}/${MODEL.id}`]: { reserveTokens: 66_384 } } }, outputLimits: {} });
+		seed([{ id: "c1", name: "bash" }]);
+		const captured = loadExtension(cwd, sm);
+		// The same usage `ctxTight` reports. With the plain 16384 reserve that
+		// leaves 16.4k of Headroom and an 8KB Bound; for this model pi reserves
+		// 66384, so the window is already spent and the floor is the only figure
+		// left: 4KB, and a Headroom that reads 0.
+		const ctx = withUsage(captured, sm, usedFor(TIGHT_HEADROOM));
+		const text = published(await captured.toolResult!(event({ toolName: "bash", toolCallId: "c1", content: [textBlock(bigOutput(900, 44))] }), ctx), "");
+		expect(text).toContain("capped to 4KB (2k tokens) of the 0 token headroom");
 	});
 
 	it("leaves a tool outside the five alone however tight the Headroom", async () => {
@@ -375,7 +457,9 @@ describe("bound and spill", () => {
 		const truncation = (patch!.details as Record<string, any>).truncation;
 		// The two patched figures are the extension's Bound, not pi's default.
 		expect(truncation.maxBytes).toBe(BOUND_BYTES);
-		expect(truncation.maxLines).toBe(2_000);
+		// bash is line-cut by pi at 2000 content lines, and the extension states
+		// its own ceiling: pi's figure plus the two lines pi's notice costs.
+		expect(truncation.maxLines).toBe(PI_MAX_OUTPUT_LINES + PI_NOTICE_SLACK_LINES);
 		// The counts come from the cut that actually ran, so the rendered
 		// numbers stay coherent with the text beside them.
 		expect(truncation.outputBytes).toBeLessThanOrEqual(BOUND_BYTES);
@@ -494,11 +578,12 @@ describe("bound and spill", () => {
 		expect(text).toContain(`use offset=${41 + keptLines} to continue`);
 	});
 
-	it("publishes read without its stale notice when the notice alone was over budget", async () => {
-		// A read result whose text is exactly at the Bound: only pi's own
-		// continuation line pushes it over. The right answer is to drop the
-		// stale line, not to announce a cut that did not happen and not to
-		// hand back the text that missed its Bound.
+	it("leaves a read result whose only overflow was pi's notice line alone", async () => {
+		// A read body exactly at the Bound, with pi's continuation line pushing
+		// it over. Stripping that line would fit the bytes and take away the only
+		// recovery read has, because read keeps no Spill: a body with no offset,
+		// no notice, and no pointer is the one way this extension can lose text.
+		// So pi's own result stands, and the admitted cost is pi's notice.
 		writeSettings({ minOutputBytes: 512 });
 		const builder = SessionManager.create(cwd, sessionDir);
 		builder.appendMessage(user("q"));
@@ -510,12 +595,34 @@ describe("bound and spill", () => {
 		const body = "x".repeat(1_024);
 		const source = `${body}\n\n[Showing lines 1-1 of 500. Use offset=2 to continue.]`;
 		const patch = await captured.toolResult!(event({ toolName: "read", toolCallId: "r1", content: [textBlock(source)], input: { path: "big.ts", offset: 1 } }), ctx);
-		expect(patch).toBeDefined();
+		// Nothing was published, so the session keeps pi's text and pi's pointer.
+		expect(patch).toBeUndefined();
+		expect(published(patch, source)).toContain("Use offset=2 to continue");
+		expect(published(patch, source)).not.toContain("output-limits:");
+		expect(spillFiles()).toEqual([]);
+	});
+
+	it("always leaves a cut read result with a working continuation", async () => {
+		// The other half of the rule: when read IS cut, pi's stale line goes and
+		// the extension's own line carries the offset of the first line the model
+		// does not have. A read result that survived a cut with no pointer at all
+		// is a silent loss of the rest of the file.
+		const builder = SessionManager.create(cwd, sessionDir);
+		builder.appendMessage(user("q"));
+		builder.appendMessage(assistant([{ id: "r1", name: "read" }]));
+		sm = SessionManager.open(builder.getSessionFile()!, sessionDir, cwd);
+		const captured = loadExtension(cwd, sm);
+		const ctx = ctxTight(captured);
+		const body = bigOutput(400, 44);
+		const source = `${body}\n\n[Showing lines 1-400 of 4000. Use offset=401 to continue.]`;
+		const patch = await captured.toolResult!(event({ toolName: "read", toolCallId: "r1", content: [textBlock(source)], input: { path: "big.ts", offset: 1 } }), ctx);
 		const text = published(patch, source);
-		expect(text).toBe(body);
-		expect(text).not.toContain("output-limits:");
-		expect(text).not.toContain("Use offset=2 to continue");
-		expect(Buffer.byteLength(text, "utf8")).toBeLessThanOrEqual(1_024);
+		expect(text).toContain("[output-limits: capped to");
+		const keptLines = text.split("\n\n[output-limits:")[0]!.split("\n").length;
+		expect(text).toContain(`use offset=${1 + keptLines} to continue`);
+		// One pointer, not two: pi's stale offset is gone.
+		expect(text).not.toContain("Use offset=401 to continue");
+		expect((text.match(/offset=/g) ?? []).length).toBe(1);
 	});
 
 	it("never invents a continuation for a result that had none to rewrite", async () => {

@@ -64,7 +64,9 @@ describe("defaults", () => {
 		expect(DEFAULTS).toEqual({
 			enabled: true,
 			maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
-			maxLines: 2000,
+			// `null` is the default and it means "each tool's own figure from
+			// pi", because pi does not cut every bounded tool by line at all.
+			maxLines: null,
 			inflation: 2.0,
 			bytesPerChar: 4,
 			shareOfHeadroom: DEFAULT_SHARE_OF_HEADROOM,
@@ -119,7 +121,7 @@ describe("readOutputLimitsSettings", () => {
 		writeProject({ maxOutputTokens: 0 });
 		expect(readOutputLimitsSettings(cwd).errors[0]).toContain("maxOutputTokens must be a positive integer");
 		writeProject({ maxLines: 1.5 });
-		expect(readOutputLimitsSettings(cwd).errors[0]).toContain("maxLines must be a positive integer");
+		expect(readOutputLimitsSettings(cwd).errors[0]).toContain("maxLines must be a positive integer or null");
 	});
 
 	it("rejects an empty or non-string tools list", () => {
@@ -230,6 +232,33 @@ describe("writeOutputLimitsSettings", () => {
 		expect(result.error).toContain("invalid JSON");
 		expect(readFileSync(join(cwd, ".pi", "settings.json"), "utf8")).toBe("{ broken");
 	});
+
+	it("round-trips a named maxLines, and an explicit null back to pi's own per-tool figure", () => {
+		// The line ceiling is a per-tool figure by default, so the write path has
+		// to carry both directions: a number that binds every bounded tool, and
+		// the unset answer that hands the decision back to pi.
+		const numbered = writeOutputLimitsSettings(cwd, { maxLines: 500 });
+		expect(numbered.ok).toBe(true);
+		if (!numbered.ok) return;
+		expect(numbered.settings.maxLines).toBe(500);
+		const auto = writeOutputLimitsSettings(cwd, { maxLines: null });
+		expect(auto.ok).toBe(true);
+		if (!auto.ok) return;
+		expect(auto.settings.maxLines).toBeNull();
+		// The file the writer named, which is the project one once it exists: the
+		// persisted answer is a real null, not a dropped key.
+		expect(JSON.parse(readFileSync(auto.path, "utf8")).outputLimits.maxLines).toBeNull();
+	});
+
+	it("lets a global maxLines stand until the project file names one or clears it", () => {
+		writeGlobal({ maxLines: 900 });
+		expect(readOutputLimitsSettings(cwd).settings.maxLines).toBe(900);
+		// The project file wins key by key, and `null` there IS the key named:
+		// clearing a figure is a choice, not an absent value falling through.
+		writeProject({ maxLines: null });
+		expect(readOutputLimitsSettings(cwd).settings.maxLines).toBeNull();
+		expect(readOutputLimitsSettings(cwd).errors).toEqual([]);
+	});
 });
 
 describe("readReserveTokens", () => {
@@ -247,8 +276,32 @@ describe("readReserveTokens", () => {
 	});
 
 	it("ignores a malformed value", () => {
-		mkdirSync(join(agentDir), { recursive: true });
+		mkdirSync(agentDir, { recursive: true });
 		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ compaction: { reserveTokens: "1000" } }));
 		expect(readReserveTokens(cwd)).toBe(DEFAULT_RESERVE_TOKENS);
+	});
+
+	it("keeps a reserve of 0, so the Headroom is the whole window minus the usage", () => {
+		// pi accepts 0 here, so a reader that turned it into 16384 would shrink
+		// every Bound by 16384 tokens for a user who asked for no reserve.
+		mkdirSync(join(cwd, ".pi"), { recursive: true });
+		writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ compaction: { reserveTokens: 0 } }));
+		expect(readReserveTokens(cwd)).toBe(0);
+	});
+
+	it("resolves a per-model reserve for the model it is asked about", () => {
+		// pi reads `modelOverrides[provider/id]` ahead of the plain setting, and
+		// Headroom is computed for one live model, so the reader has to be told
+		// which model it is reading for.
+		mkdirSync(join(cwd, ".pi"), { recursive: true });
+		writeFileSync(
+			join(cwd, ".pi", "settings.json"),
+			JSON.stringify({ compaction: { reserveTokens: 2000, modelOverrides: { "p/big": { reserveTokens: 64_000 }, "p/small": { reserveTokens: 1024 } } } }),
+		);
+		expect(readReserveTokens(cwd, process.env, "p/big")).toBe(64_000);
+		expect(readReserveTokens(cwd, process.env, "p/small")).toBe(1024);
+		// No model named, or a model the settings do not mention: the plain value.
+		expect(readReserveTokens(cwd)).toBe(2000);
+		expect(readReserveTokens(cwd, process.env, "p/other")).toBe(2000);
 	});
 });

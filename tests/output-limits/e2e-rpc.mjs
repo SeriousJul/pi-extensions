@@ -30,6 +30,10 @@
  *      bash to, a bash result is still bounded: the adopt moves pi's log by
  *      copy when a rename cannot cross the device, and the session text names
  *      one live path
+ *  12. a many-LINE result is left alone while the Headroom is ample, on the
+ *      two tools pi cuts by line (bash and read) and on the one it does not
+ *      (grep): the session text is byte-identical to what the same command
+ *      produced with the extension off, and no Spill exists
  *
  * Each run is its own `pi` process. The `on` and `off` runs keep the agent dir
  * beside pi's temp dir, which is fast and tidy; the `cross-device` run puts it
@@ -63,6 +67,19 @@ const BOUND_BYTES = 8_192;
 
 /** A line-emitting command whose output is well past the Bound. */
 const BIG_COMMAND = `seq 1 4000 | awk '{printf "row %s %s\\n", $1, "'\''xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'\''"}'`;
+
+// The line axis, deliberately: 5000 rows of a few bytes each is about 25KB, so
+// pi's own cut lands on its 2000-LINE figure and not on 50KB. The result pi
+// blesses is therefore 2002 lines (2000 kept plus pi's blank line and notice)
+// and roughly 10KB. A ceiling of exactly 2000 lines re-cut it and spilled a
+// 10KB result in a nearly empty session, which is the same failure the byte
+// notice allowance was added for, on the other unit.
+const MANY_LINE_COMMAND = "seq 1 5000";
+/** pi's own content and notice figures, restated for the case guards above. */
+const PI_MAX_OUTPUT_BYTES = 50 * 1024;
+const PI_NOTICE_SLACK_BYTES = 1024;
+/** Enough short lines that pi's own line cut, not its byte cut, is what binds. */
+const MANY_LINES = 4000;
 
 function fail(message) {
 	console.error(`FAIL: ${message}`);
@@ -145,6 +162,11 @@ async function runSession(label, settings, cases, { agentDir: pickAgentDir = () 
 	// A real file on disk, big enough for the read case to be cut.
 	const target = join(cwd, "big.ts");
 	writeFileSync(target, Array.from({ length: 4000 }, (_, i) => `export const row${i + 1} = "${"y".repeat(40)}";`).join("\n") + "\n");
+	// And a short-line one, so a read of it crosses pi's LINE figure while
+	// staying far inside pi's byte figure. That is the only shape where the line
+	// ceiling is what binds, and it is the shape this file used to miss.
+	const many = join(cwd, "many.txt");
+	writeFileSync(many, Array.from({ length: MANY_LINES }, (_, i) => `x${i + 1}`).join("\n") + "\n");
 	mkdirSync(join(cwd, ".pi"), { recursive: true });
 	writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify(settings, null, 2) + "\n");
 	writeFileSync(caseFile, JSON.stringify({ runId: 0, calls: [], inputTokens: 0 }));
@@ -433,6 +455,142 @@ function assertOneLivePath(entry, text, label) {
 	if (/pi-bash-[0-9a-f]+\.log/.test(text)) throw new Error(`${label}: pi's own throwaway path is still in the session text`);
 }
 
+/** Complete lines in a session result, the way the extension counts them. */
+function countResultLines(text) {
+	return text.length === 0 ? 0 : text.split("\n").length;
+}
+
+/**
+ * pi's own result for a command, with the parts that differ between two
+ * processes removed: the random name of pi's bash throwaway, and the temp dir
+ * around it. Everything left is what the model was sent, so an enabled session
+ * that re-cut the result cannot match it.
+ */
+function normalizePiResult(text) {
+	return text.replace(/\/[^\s]*?[\\/]?pi-bash-[0-9a-f]+\.log/g, "<PI-BASH-LOG>");
+}
+
+/** pi's blessed line count for a result it cut to its own line figure. */
+const PI_BLESSED_LINES = 2002;
+
+/** call id -> a `pair` name the disabled run records pi's text under. */
+const piOwnTexts = new Map();
+
+/**
+ * The many-line cases, written once and run twice: enabled, where the promise
+ * is that the session text is byte-identical to pi's own result, and disabled,
+ * which records what pi's own result was.
+ *
+ * Every one of these is a result that crosses pi's 2000-LINE figure and stays
+ * far inside its 50KB byte figure, so the line axis is the only thing that
+ * could cut it -- and with the Headroom ample, nothing may.
+ */
+const MANY_LINE_CASES = [
+	{
+		pair: "bash-many-lines",
+		name: "bash at 2000+ short lines",
+		calls: [{ id: "e2-many-bash", name: "bash", arguments: { command: MANY_LINE_COMMAND } }],
+		inputTokens: OPEN_INPUT,
+		// pi's own notice is a byte-limit notice only when pi cut by bytes; on
+		// this fixture pi cuts by lines, so its notice names no size figure.
+		expectPiMarker: "[Showing lines 3001-5000 of 5000. Full output: ",
+	},
+	{
+		pair: "read-many-lines",
+		name: "read of a file past 2000 short lines",
+		calls: [{ id: "e2-many-read", name: "read", arguments: { path: "many.txt" } }],
+		inputTokens: OPEN_INPUT,
+		// pi's continuation is the whole recovery mechanism here: read keeps no
+		// Spill, so a result that loses `Use offset=` loses the rest of the file.
+		expectPiMarker: "[Showing lines 1-2000 of 4001. Use offset=2001 to continue.]",
+	},
+	{
+		pair: "grep-many-lines",
+		name: "grep past 2000 matches, where pi applies no line ceiling at all",
+		// A grep result has to stay inside pi's byte figure for this to be a
+		// LINE-axis case: pi caps its rows at `limit`, then truncates by bytes
+		// alone, with no line figure at all. So 2400 short match rows is about
+		// 40KB and 2400 lines -- the only ceiling that could bind it is one this
+		// extension invented, and at ample Headroom it must not.
+		calls: [{ id: "e2-many-grep", name: "grep", arguments: { pattern: "^x", path: ".", limit: 2400 } }],
+		inputTokens: OPEN_INPUT,
+		expectPiMarker: "[2400 matches limit reached. Use limit=4800 for more, or refine pattern]",
+		maxBytes: 50 * 1024,
+	},
+];
+
+/** The enabled form: assert the session text is exactly what pi produced. */
+function ampleCase(test) {
+	return {
+		name: `ample Headroom leaves ${test.name} exactly as pi produced it`,
+		calls: test.calls.map((call) => ({ ...call, id: `on-${call.id}` })),
+		inputTokens: test.inputTokens,
+		assert: ({ file, agentDir }) => {
+			for (const call of test.calls) {
+				const entries = entriesFor(file, `on-${call.id}`);
+				if (entries.length !== 1) throw new Error(`expected one session entry for ${call.id}, got ${entries.length}`);
+				const text = resultText(entries[0]);
+				// 1. The extension never announced itself, and never patched the
+				//    record: what is in the session is pi's result and pi's numbers.
+				if (text.includes("output-limits:")) throw new Error(`${call.id}: the extension spoke in an open session`);
+				const details = entries[0].message.details ?? {};
+				if (details.truncation && details.truncation.maxBytes !== 50 * 1024) {
+					throw new Error(`${call.id}: details.truncation.maxBytes was patched to ${details.truncation.maxBytes}`);
+				}
+				if (test.expectPiMarker !== null && !text.includes(test.expectPiMarker)) {
+					throw new Error(`${call.id}: pi's own notice is missing:\n${text.slice(-260)}`);
+				}
+				// 2. The fixture really is a many-line result that pi did not
+				//    byte-truncate, so the line axis is what this case is about.
+				const lines = countResultLines(text);
+				if (lines < PI_BLESSED_LINES) throw new Error(`${call.id}: ${lines} lines, so pi's own line figure never bound this result`);
+				const byteCeiling = test.maxBytes ?? PI_MAX_OUTPUT_BYTES + PI_NOTICE_SLACK_BYTES;
+				if (Buffer.byteLength(text, "utf8") > byteCeiling) {
+					throw new Error(`${call.id}: ${Buffer.byteLength(text, "utf8")} bytes, above ${byteCeiling}, so a byte figure is what bound it`);
+				}
+				// 3. No Spill for this call: a result that fits its Bound is never
+				//    copied anywhere, so nothing is stored for it. Spill files carry
+				//    the first eight characters of the call id, which is what makes
+				//    this check per call rather than per session.
+				const own = spillNames(agentDir, file).filter((name) => name.includes(call.id.slice(0, 8)));
+				if (own.length > 0) throw new Error(`${call.id}: a Spill was written for a result that fits: ${own.join(", ")}`);
+				// 4. The strong one: byte-identical to the same command run with
+				//    the extension off, once pi's random temp names are set aside.
+				const control = piOwnTexts.get(test.pair);
+				if (control === undefined) throw new Error(`${call.id}: no control text was recorded, so this case proves nothing`);
+				const mine = normalizePiResult(text);
+				if (mine !== control) {
+					throw new Error(`${call.id}: the session text is not pi's own result\n--- enabled ---\n${mine.slice(-320)}\n--- pi alone ---\n${control.slice(-320)}`);
+				}
+			}
+		},
+	};
+}
+
+/** The disabled form: record pi's own result as the control text. */
+function controlCase(test) {
+	return {
+		name: `control: pi's own result for ${test.name}`,
+		calls: test.calls,
+		inputTokens: test.inputTokens,
+		assert: ({ file }) => {
+			for (const call of test.calls) {
+				const entries = entriesFor(file, call.id);
+				const text = resultText(entries[0]);
+				if (text.includes("output-limits:")) throw new Error(`the control for ${call.id} is not pi's own result`);
+				if (countResultLines(text) < PI_BLESSED_LINES) {
+					throw new Error(`control ${call.id} has ${countResultLines(text)} lines, so it never crossed pi's line figure`);
+				}
+				const byteCeiling = test.maxBytes ?? PI_MAX_OUTPUT_BYTES + PI_NOTICE_SLACK_BYTES;
+				if (Buffer.byteLength(text, "utf8") > byteCeiling) {
+					throw new Error(`control ${call.id} is ${Buffer.byteLength(text, "utf8")} bytes, above ${byteCeiling}`);
+				}
+				piOwnTexts.set(test.pair, normalizePiResult(text));
+			}
+		},
+	};
+}
+
 const DISABLED_CASES = [
 	{
 		name: "off: the same big bash call is left at pi's own result with no Spill",
@@ -446,6 +604,8 @@ const DISABLED_CASES = [
 			if (spillNames(agentDir, file).length > 0) throw new Error(`a Spill was written while disabled: ${spillNames(agentDir, file).join(", ")}`);
 		},
 	},
+	// The control texts, captured first so the enabled run can be held to them.
+	...MANY_LINE_CASES.map(controlCase),
 ];
 
 // The flagship case, run where the Spill root actually lives: a different
@@ -484,15 +644,17 @@ const CROSS_DEVICE_CASES = [
 // ---------------------------------------------------------------------------
 
 const runs = [
-	{
-		label: "on",
-		settings: { compaction: { reserveTokens: RESERVE }, outputLimits: { enabled: true } },
-		cases: CASES,
-	},
+	// `off` runs first: it records pi's own result for the many-line commands,
+	// which the enabled run is then held to byte for byte.
 	{
 		label: "off",
 		settings: { compaction: { reserveTokens: RESERVE }, outputLimits: { enabled: false } },
 		cases: DISABLED_CASES,
+	},
+	{
+		label: "on",
+		settings: { compaction: { reserveTokens: RESERVE }, outputLimits: { enabled: true } },
+		cases: [...CASES, ...MANY_LINE_CASES.map(ampleCase)],
 	},
 	{
 		label: "cross-device",
