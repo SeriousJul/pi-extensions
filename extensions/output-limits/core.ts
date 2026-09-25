@@ -181,8 +181,44 @@ export interface Bound {
 	floorTokens: number;
 	/** The per-call line max the cut enforces. */
 	maxLines: number;
-	/** The whole message allowance, in tokens: Headroom times the share. */
-	allowanceTokens: number;
+}
+
+/**
+ * The `BoundSettings` for the knobs a settings section names, so the wiring
+ * does not restate the shape and the two cannot drift.
+ */
+export function boundSettingsOf(input: {
+	shareOfHeadroom: number;
+	minOutputBytes: number;
+	maxOutputTokens: number;
+	maxLines: number;
+	bytesPerChar: number;
+	inflation: number;
+}): BoundSettings {
+	return {
+		shareOfHeadroom: input.shareOfHeadroom,
+		minOutputBytes: input.minOutputBytes,
+		maxOutputTokens: input.maxOutputTokens,
+		maxLines: input.maxLines,
+		math: { bytesPerChar: input.bytesPerChar, inflation: input.inflation },
+	};
+}
+
+/**
+ * The whole message allowance: the share of the Headroom one assistant message
+ * may spend, lifted to the floor so a call is never starved by a clamp that
+ * contradicts the floor.
+ *
+ * This is the per-message figure the Ledger opens a batch on and then divides,
+ * so the wiring and the Bound cannot state it differently: `computeBound` takes
+ * the remainder of it from the Ledger rather than recomputing it. A blind
+ * Headroom has no allowance to divide yet: it reads 0, which tells the Ledger to
+ * open the batch unbaselined rather than to freeze it at the outer max (see
+ * `ledger.ts`).
+ */
+export function messageAllowanceTokens(headroom: Headroom, settings: BoundSettings): number {
+	if (!headroom.known) return 0;
+	return Math.max(floorTokensOf(settings), Math.floor(headroom.tokens * settings.shareOfHeadroom));
 }
 
 /** The per-call floor, in tokens, from the byte figure settings name. */
@@ -209,10 +245,8 @@ export function computeBound(input: BoundInput): Bound {
 			bytes: Number.POSITIVE_INFINITY,
 			floorTokens,
 			maxLines: settings.maxLines,
-			allowanceTokens: settings.maxOutputTokens,
 		};
 	}
-	const allowanceTokens = Math.max(floorTokens, Math.floor(input.headroom.tokens * settings.shareOfHeadroom));
 	const remainingCalls = Math.max(1, Math.trunc(input.remainingCalls));
 	const share = Math.max(0, input.remainingAllowanceTokens) / remainingCalls;
 	const tokens = Math.max(floorTokens, Math.min(Math.floor(share), settings.maxOutputTokens));
@@ -222,7 +256,6 @@ export function computeBound(input: BoundInput): Bound {
 		bytes: bytesFromTokens(tokens, settings.math),
 		floorTokens,
 		maxLines: settings.maxLines,
-		allowanceTokens,
 	};
 }
 
@@ -371,41 +404,100 @@ export interface CutPlan {
  * `cutBlocks` reserves the notice and the pointer lines before it cuts, but
  * the reservation is only as exact as the line count the cutter kept: a cut
  * that lands on a line boundary can leave the published text a little over or
- * under the figure. So the published size is measured after the plan and the
- * budget is tightened by the overflow, until the result really is inside its
- * Bound or no further tightening can help. This is what makes the Bound a
- * promise rather than an estimate.
+ * under a figure. So the published result is rendered, measured in BOTH of its
+ * units, bytes and lines, and the budget is tightened by whatever overflowed,
+ * until the result really is inside its Bound in both or no further tightening
+ * can help. This is what makes the Bound a promise rather than an estimate.
  */
 export function cutToBudget(input: CutInput): CutPlan {
 	let budgetBytes = input.budgetBytes;
-	let plan = cutBlocks({ ...input, budgetBytes });
+	let budgetLines = input.maxLines;
+	let plan = cutBlocks({ ...input, budgetBytes, maxLines: budgetLines });
 	for (let pass = 0; pass < 8; pass += 1) {
 		if (plan.fits) return plan;
-		const published = publishedBytes(plan, input.pointer, input.notice);
-		const overflow = published - input.budgetBytes;
-		if (overflow <= 0) return plan;
+		const published = measurePublished(plan, input.pointer, input.notice);
+		const overBytes = published.bytes - input.budgetBytes;
+		const overLines = published.lines - input.maxLines;
+		if (overBytes <= 0 && overLines <= 0) return plan;
 		// Tighten by the overflow, and always make progress: a budget that
-		// cannot shrink would otherwise spin.
-		const next = Math.max(0, budgetBytes - overflow - 1);
-		if (next >= budgetBytes) return plan;
-		budgetBytes = next;
-		plan = cutBlocks({ ...input, budgetBytes });
+		// cannot shrink would otherwise spin. The extra line is the slack
+		// between what the cutter counted and what the rendered notice costs.
+		const nextBytes = Math.max(0, budgetBytes - Math.max(0, Math.ceil(overBytes)) - 1);
+		const nextLines = Math.max(0, budgetLines - Math.max(0, overLines) - 1);
+		if (nextBytes >= budgetBytes && nextLines >= budgetLines) return plan;
+		budgetBytes = nextBytes;
+		budgetLines = nextLines;
+		plan = cutBlocks({ ...input, budgetBytes, maxLines: budgetLines });
 	}
 	return plan;
 }
 
 /**
- * The bytes the model receives for a plan: every published block, the blank
- * line, and the notice the wiring appends to the crossing block.
+ * The blocks a plan publishes: every kept block in order, the pointers that
+ * replace dropped text, and the notice appended to the crossing block.
+ *
+ * This is the Admitted text, so it is what the budget is measured against and
+ * what the wiring hands pi. Keeping the render in one place is what lets
+ * `cutToBudget` verify the size of the thing it is promising.
  */
-export function publishedBytes(plan: CutPlan, pointer: string, notice: string): number {
-	let bytes = plan.keptBytes;
-	const hasCut = plan.blocks.some((block) => block.kind === "cut");
+export function renderPlan(plan: CutPlan, pointer: string, notice: string): ContentBlock[] {
+	const out: ContentBlock[] = [];
+	let noticePlaced = false;
 	for (const block of plan.blocks) {
-		if (block.kind === "pointer") bytes += Buffer.byteLength(pointer, "utf8");
+		switch (block.kind) {
+			case "image":
+				out.push({ type: "image", data: block.block.data, mimeType: block.block.mimeType });
+				break;
+			case "pointer":
+				out.push({ type: "text", text: pointer });
+				break;
+			case "cut":
+				out.push({ type: "text", text: notice.length > 0 ? `${block.text}\n\n${notice}` : block.text });
+				noticePlaced = true;
+				break;
+			case "keep":
+				out.push({ type: "text", text: block.text });
+				break;
+		}
 	}
-	if (notice.length > 0) bytes += Buffer.byteLength(notice, "utf8") + (hasCut ? 2 : 0);
-	return bytes;
+	// A result whose kept blocks are all images, or all pointers, has nowhere
+	// to carry the notice, so the line travels as its own block.
+	if (!noticePlaced && notice.length > 0) out.push({ type: "text", text: notice });
+	return out;
+}
+
+/**
+ * Replace one path with another through a result's text.
+ *
+ * The one live-path rule the notices have to obey: when the extension moves
+ * pi's own throwaway log into the Spill directory, the path pi named inside its
+ * notice stops existing, and a model that follows it gets "No such file". So
+ * the path in the text is rewritten to the Spill it now points at, and the
+ * rewrite happens before any measuring so the Bound is charged for the bytes
+ * the longer path costs.
+ */
+export function rewriteSpillPath(blocks: readonly ContentBlock[], from: string, to: string): { blocks: ContentBlock[]; changed: boolean } {
+	if (from.length === 0 || from === to) return { blocks: [...blocks], changed: false };
+	let changed = false;
+	const out: ContentBlock[] = [];
+	for (const block of blocks) {
+		if (block.type === "image" || !block.text.includes(from)) {
+			out.push(block);
+			continue;
+		}
+		out.push({ type: "text", text: block.text.split(from).join(to) });
+		changed = true;
+	}
+	return { blocks: out, changed };
+}
+
+/**
+ * The exact size of what a plan publishes: the rendered Admitted text, notice
+ * and pointers included, in bytes and in lines.
+ */
+export function measurePublished(plan: CutPlan, pointer: string, notice: string): { bytes: number; lines: number } {
+	const rendered = renderPlan(plan, pointer, notice);
+	return { bytes: measureBlocks(rendered), lines: countResultLines(rendered) };
 }
 
 /**

@@ -9,40 +9,63 @@ const ALLOWANCE = 12_000;
 
 function opened(calls: number): Ledger {
 	const ledger = new Ledger();
-	ledger.begin("m1", calls, 48_000, ALLOWANCE);
+	ledger.begin("m1", calls, { headroomTokens: 48_000, allowanceTokens: ALLOWANCE });
 	return ledger;
 }
 
 describe("begin", () => {
 	it("writes the baseline on the first call of a batch and reuses it after", () => {
 		const ledger = new Ledger();
-		ledger.begin("m1", 3, 48_000, 12_000);
+		ledger.begin("m1", 3, { headroomTokens: 48_000, allowanceTokens: 12_000 });
 		// A sibling arriving later with a different Headroom figure must not
 		// move the batch: the baseline is the one the batch opened on.
-		ledger.begin("m1", 3, 99_999, 99_999);
+		ledger.begin("m1", 3, { headroomTokens: 99_999, allowanceTokens: 99_999 });
 		expect(ledger.latest()).toMatchObject({ allowanceTokens: 12_000, headroomTokens: 48_000 });
 	});
 
 	it("keeps the larger call count when a sibling reads the message late", () => {
 		// Probe 2: the first call may not see the assistant message yet.
 		const ledger = new Ledger();
-		ledger.begin("m1", 0, 48_000, 12_000);
+		ledger.begin("m1", 0, { headroomTokens: 48_000, allowanceTokens: 12_000 });
 		expect(ledger.view("m1")!.remainingCalls).toBe(1);
-		ledger.begin("m1", 4, 48_000, 12_000);
+		ledger.begin("m1", 4, { headroomTokens: 48_000, allowanceTokens: 12_000 });
 		expect(ledger.view("m1")!.remainingCalls).toBe(4);
+	});
+
+	it("takes its baseline from the first call that can read a Headroom", () => {
+		// A blind first call must not freeze the message: the outer max is not
+		// an allowance, and a batch opened on it lets every later sibling reach
+		// the whole window.
+		const ledger = new Ledger();
+		ledger.begin("m1", 2, null);
+		expect(ledger.latest()).toMatchObject({ allowanceTokens: 0, headroomTokens: 0 });
+		ledger.begin("m1", 2, { headroomTokens: 48_000, allowanceTokens: 12_000 });
+		expect(ledger.latest()).toMatchObject({ allowanceTokens: 12_000, headroomTokens: 48_000 });
+		expect(ledger.view("m1")!.remainingCalls).toBe(2);
+	});
+
+	it("keeps what a blind call admitted when the batch finally baselines", () => {
+		// The blind call passed pi's whole result through, and that grew the
+		// session. A sibling that reads a Headroom divides what is left of the
+		// message, not a fresh allowance with the pass-through forgotten.
+		const ledger = new Ledger();
+		ledger.begin("m1", 2, null);
+		ledger.record("m1", 11_000);
+		ledger.begin("m1", 2, { headroomTokens: 48_000, allowanceTokens: 12_000 });
+		expect(ledger.view("m1")!.remainingAllowanceTokens).toBe(1_000);
 	});
 
 	it("starts a new batch on a new message", () => {
 		const ledger = opened(2);
 		ledger.record("m1", 6_000);
-		ledger.begin("m2", 2, 48_000, ALLOWANCE);
+		ledger.begin("m2", 2, { headroomTokens: 48_000, allowanceTokens: ALLOWANCE });
 		expect(ledger.view("m2")).toMatchObject({ entry: { admittedTokens: 0, admittedCalls: 0 } });
 		expect(ledger.view("m2")!.remainingAllowanceTokens).toBe(ALLOWANCE);
 	});
 
 	it("keeps only the last few batches, so a long session cannot grow it", () => {
 		const ledger = new Ledger();
-		for (let i = 0; i < 12; i += 1) ledger.begin(`m${i}`, 1, 48_000, ALLOWANCE);
+		for (let i = 0; i < 12; i += 1) ledger.begin(`m${i}`, 1, { headroomTokens: 48_000, allowanceTokens: ALLOWANCE });
 		expect(ledger.view("m0")).toBeUndefined();
 		expect(ledger.view("m11")).toBeDefined();
 	});
@@ -88,7 +111,7 @@ describe("view", () => {
 
 	it("falls back to the accumulation alone when the call count did not read", () => {
 		const ledger = new Ledger();
-		ledger.begin("m1", 0, 48_000, ALLOWANCE);
+		ledger.begin("m1", 0, { headroomTokens: 48_000, allowanceTokens: ALLOWANCE });
 		expect(ledger.view("m1")!.remainingCalls).toBe(1);
 		ledger.record("m1", 5_000);
 		// With no count the batch cannot divide; each call reaches what is
@@ -126,7 +149,7 @@ describe("record and invalidate", () => {
 		const ledger = opened(2);
 		ledger.record("m1", 6_000);
 		ledger.invalidate();
-		ledger.begin("m1", 2, 20_000, 5_000);
+		ledger.begin("m1", 2, { headroomTokens: 20_000, allowanceTokens: 5_000 });
 		expect(ledger.view("m1")).toMatchObject({ remainingAllowanceTokens: 5_000, remainingCalls: 2 });
 	});
 });

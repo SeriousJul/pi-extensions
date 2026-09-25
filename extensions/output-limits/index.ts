@@ -49,21 +49,27 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import {
+	boundSettingsOf,
 	buildNotice,
 	buildPointer,
+	bytesFromTokens,
 	computeBound,
 	computeHeadroom,
+	type ContentBlock,
 	type CutDirection,
+	type CutResult,
 	cutToBudget,
 	fitsWithinBudget,
-	type CutResult,
+	floorTokensOf,
 	formatBytes,
 	formatTokens,
 	measureBlocks,
+	messageAllowanceTokens,
 	type NoticeFacts,
 	PI_MAX_OUTPUT_BYTES,
-	type PlannedBlock,
-	type ContentBlock,
+	PI_NOTICE_SLACK_BYTES,
+	renderPlan,
+	rewriteSpillPath,
 	tokensFromBytes,
 } from "./core.ts";
 import { Ledger } from "./ledger.ts";
@@ -74,8 +80,10 @@ import {
 	type OutputLimitsSettings,
 	writeOutputLimitsSettings,
 	type SettingsPatch,
+	tokenMathOf,
 } from "./settings.ts";
-import { mkdirPrivate, spillDir, spillFootprint, spillName, spillRoot, sweepSpills, writeSpill } from "./spill.ts";
+import { agentDir as agentDirOf } from "../shared/settings.ts";
+import { mkdirPrivate, spillDir, spillFootprint, spillName, spillRoot, sweepSpills, type SpillWrite, writeSpill } from "./spill.ts";
 
 /** The five tools in scope, each with pi's own cut direction (ADR 0026). */
 const DIRECTIONS: Record<string, CutDirection> = {
@@ -108,7 +116,6 @@ interface OutputLimitsState {
 	settings: OutputLimitsSettings;
 	reserveTokens: number;
 	agentDir: string;
-	sessionId: string;
 	spillDir: string;
 	/** The next Spill sequence number for this session. */
 	seq: number;
@@ -137,23 +144,42 @@ let state: OutputLimitsState | null = null;
  *
  * pi documents `ctx.sessionManager` as current through the assistant message
  * for `tool_call` and does not promise the same for `tool_result`
- * (implementation probe 2), so this reads the branch defensively and falls
- * back: the walk looks for the message carrying this `toolCallId`, and when
- * it finds none the batch is reported with `calls: 0` and the Ledger divides
- * on its own accumulation instead. The Ledger is authoritative either way.
+ * (implementation probe 2), so this reads the branch defensively. When no
+ * entry carries this `toolCallId`, the batch is reported with `calls: 0` and
+ * the count is unknown, but the key is still one the siblings of the same
+ * message share: the newest assistant entry in the branch. That matters, because
+ * with no count the Ledger lets each call reach the whole remaining allowance,
+ * and the accumulation is what bounds the batch. A per-call key would give
+ * every sibling a batch of one and leave the message unbounded.
+ *
+ * The error this can make is a merge with an older message, which only ever
+ * tightens a Bound: an older batch has already spent its allowance, so the
+ * remainder the merge reports is smaller, never larger.
  */
 function readBatch(entries: SessionEntry[], toolCallId: string): { messageId: string; calls: number } {
+	let newestAssistantWithCalls: string | undefined;
+	let newestAssistant: string | undefined;
 	for (let i = entries.length - 1; i >= 0; i -= 1) {
 		const entry = entries[i];
 		if (entry.type !== "message") continue;
 		const message = entry.message;
 		if (message.role !== "assistant") continue;
+		if (newestAssistant === undefined) newestAssistant = entry.id;
 		const calls = message.content.filter((block) => block.type === "toolCall");
 		if (calls.length === 0) continue;
-		if (!calls.some((block) => block.id === toolCallId)) continue;
-		return { messageId: entry.id, calls: calls.length };
+		if (calls.some((block) => block.id === toolCallId)) return { messageId: entry.id, calls: calls.length };
+		if (newestAssistantWithCalls === undefined) newestAssistantWithCalls = entry.id;
 	}
-	return { messageId: `unbatched:${toolCallId}`, calls: 0 };
+	// Nothing in the branch carries this call, so the batch is keyed on the
+	// newest thing its siblings can still agree about: the message that asked
+	// for calls, then any assistant message, then the leaf entry, then one
+	// session-wide bucket. A per-call key would give every sibling a batch of
+	// one, and with no call count each sibling reaches the whole remaining
+	// allowance: the message would be unbounded, which is what the Ledger
+	// exists to prevent. Merging two batches by mistake can only tighten a
+	// Bound, never loosen one.
+	const shared = entries.length > 0 ? entries[entries.length - 1].id : "no-entries";
+	return { messageId: `unbatched:${newestAssistantWithCalls ?? newestAssistant ?? shared}`, calls: 0 };
 }
 
 // ---------------------------------------------------------------------------
@@ -164,77 +190,89 @@ function readBatch(entries: SessionEntry[], toolCallId: string): { messageId: st
  * Bound one tool result. Returns a patch, or undefined to let pi's result
  * through unchanged.
  *
- * The order is the design: read the Headroom, open the batch and take this
- * call's share of its allowance, measure the result against it, write the
- * Spill before publishing the cut (lossless or no cut), then let the Ledger
- * record what the session actually grew by.
+ * The order is the design, and it exists to keep both promises at once. Read
+ * the Headroom, open the batch and take this call's share of its allowance,
+ * name the Spill this call would own without writing it, measure the result
+ * against the Bound with that path and these notices in it, and only then
+ * write. So every way out that leaves pi's result alone leaves it alone with
+ * nothing moved: a cut that cannot be made to fit, a Spill that cannot be
+ * written, and a blind call all publish pi's own text with pi's own paths
+ * still pointing at files that exist. Lossless or no cut, and one live path.
+ *
+ * The Ledger records what the session really grew by on every way out, cut or
+ * not, because the usage pi reports cannot include a sibling still running.
  */
 function boundResult(event: ToolResultEvent, ctx: ExtensionContext): ToolResultEventResult | undefined {
 	const s = state;
 	if (!s || !s.settings.enabled || envDisabled()) return undefined;
-	const direction = DIRECTIONS[event.toolName];
-	if (direction === undefined || !s.settings.tools.includes(event.toolName)) return undefined;
-	const cutDirection = directionOf(event.toolName, event.isError);
+	if (DIRECTIONS[event.toolName] === undefined || !s.settings.tools.includes(event.toolName)) return undefined;
+	const settings = boundSettingsOf(s.settings);
+	const math = settings.math;
 
-	// Blind: no resolved window, or no usage yet. The Bound is pi's own
-	// figure, so a blind call behaves exactly like pi today and is inert.
+	// Blind: no resolved window, or no usage yet. The Bound is pi's own figure
+	// and no byte budget is enforced, so a blind call publishes exactly what pi
+	// produced, exactly like pi today.
 	const usage = ctx.getContextUsage();
 	const headroom = computeHeadroom({
 		effectiveWindow: ctx.model?.contextWindow,
 		reserveTokens: s.reserveTokens,
 		usedTokens: usage?.tokens,
 	});
-	const math = { bytesPerChar: s.settings.bytesPerChar, inflation: s.settings.inflation };
-
 	const batch = readBatch(ctx.sessionManager.buildContextEntries(), event.toolCallId);
-	const floorTokens = Math.max(1, tokensFromBytes(s.settings.minOutputBytes, math));
 	// The allowance is a per-message figure, written once and reused by every
-	// sibling, because the usage pi reports cannot include a sibling that has
-	// not finished. Blind leaves it at the outer max, which is inert.
-	const allowanceTokens = headroom.known ? Math.max(floorTokens, Math.floor(headroom.tokens * s.settings.shareOfHeadroom)) : s.settings.maxOutputTokens;
-	s.ledger.begin(batch.messageId, batch.calls, headroom.known ? headroom.tokens : 0, allowanceTokens);
+	// sibling. A blind call writes no baseline: the batch takes one from the
+	// first sibling that can read a Headroom, so a blind first call cannot
+	// freeze the whole message at the outer max.
+	s.ledger.begin(
+		batch.messageId,
+		batch.calls,
+		headroom.known ? { headroomTokens: headroom.tokens, allowanceTokens: messageAllowanceTokens(headroom, settings) } : null,
+	);
 	const view = s.ledger.view(batch.messageId);
 	if (!view) return undefined;
 
 	const bound = computeBound({
 		headroom,
-		settings: {
-			shareOfHeadroom: s.settings.shareOfHeadroom,
-			minOutputBytes: s.settings.minOutputBytes,
-			maxOutputTokens: s.settings.maxOutputTokens,
-			maxLines: s.settings.maxLines,
-			math,
-		},
+		settings,
 		remainingAllowanceTokens: view.remainingAllowanceTokens,
 		remainingCalls: view.remainingCalls,
 	});
 	s.lastBound = { toolName: event.toolName, tokens: bound.tokens, bytes: bound.bytes, blind: bound.blind };
-	if (bound.blind) return undefined;
-
-	const receivedBytes = measureBlocks(event.content as ContentBlock[]);
-	if (fitsWithinBudget(event.content as ContentBlock[], bound.bytes, bound.maxLines)) {
-		// The unbounded case: nothing is copied anywhere, so nothing is
-		// stored for it. The Ledger still learns what the session grew by.
+	const received = event.content as ContentBlock[];
+	const receivedBytes = measureBlocks(received);
+	if (bound.blind) {
+		// Inert, but not invisible to the batch: this call still grew the
+		// session by pi's whole result, and a sibling that does find a Headroom
+		// has to divide what is left of the message, not all of it.
+		s.ledger.record(batch.messageId, tokensFromBytes(receivedBytes, math));
+		return undefined;
+	}
+	if (fitsWithinBudget(received, bound.bytes, bound.maxLines)) {
+		// The unbounded case: the result fits inside its Bound, so nothing is
+		// copied anywhere and nothing is stored for it.
 		s.ledger.record(batch.messageId, tokensFromBytes(receivedBytes, math));
 		return undefined;
 	}
 
-	// Lossless or no cut: the Spill is written first, and a failure means
-	// pi's result is published as it arrived.
-	const spills = SPILLING.has(event.toolName);
-	const written = spills ? spillWrite(s, event) : undefined;
-	const spillPath = written?.path;
-	const adopted = written?.adopted ?? false;
-	if (spills && written === undefined) {
-		notifySpillFailureOnce(ctx, s);
-		s.ledger.record(batch.messageId, tokensFromBytes(receivedBytes, math));
-		return undefined;
-	}
-
-	const shown = spillPath === undefined ? undefined : displayPath(s.agentDir, spillPath);
+	// The Spill is named now and written last. Its path is part of the notice
+	// the model reads, so the cut has to be planned against it before it
+	// exists, and a call that never publishes one leaves no file behind.
+	const spill = SPILLING.has(event.toolName) ? reserveSpill(s, event) : undefined;
+	const shown = spill === undefined ? undefined : displayPath(s.agentDir, spill.path);
 	const pointer = buildPointer(shown);
+	// One live path: adopting pi's log moves the file pi named inside its own
+	// notice, so that name is rewritten to the Spill that will hold the bytes.
+	// The rewrite happens before any measuring, so the Bound is charged for
+	// the longer path it costs.
+	const adoptedFrom = spill === undefined ? undefined : adoptedLogPath(event);
+	const blocks =
+		spill === undefined || adoptedFrom === undefined || shown === undefined
+			? received
+			: rewriteSpillPath(received, adoptedFrom, shown).blocks;
+	const cutDirection = directionOf(event.toolName, event.isError);
+
 	// The notice the model reads counts against the Bound, so every cut is
-	// planned with its bytes reserved, then verified against the published
+	// planned with its bytes reserved and then verified against the published
 	// size. read needs its continuation offset before the notice is final, so
 	// read settles that number against the plan too.
 	const facts: NoticeFacts = {
@@ -247,7 +285,7 @@ function boundResult(event: ToolResultEvent, ctx: ExtensionContext): ToolResultE
 	};
 	const planInput = (notice: string) =>
 		cutToBudget({
-			blocks: event.content as ContentBlock[],
+			blocks,
 			budgetBytes: bound.bytes,
 			maxLines: bound.maxLines,
 			direction: cutDirection,
@@ -277,12 +315,8 @@ function boundResult(event: ToolResultEvent, ctx: ExtensionContext): ToolResultE
 
 	if (plan.fits && !plan.rewritten) {
 		// The reservation closed the gap on its own: no byte was dropped, so
-		// nothing is announced and nothing is spilled. The Spill is only
-		// removed when this extension wrote it: when it adopted pi's log, that
-		// file holds output pi already dropped from the session, and deleting
-		// it would be the data loss this extension exists to prevent.
-		if (spillPath !== undefined && !adopted) removeSpill(spillPath);
-		s.ledger.record(batch.messageId, tokensFromBytes(receivedBytes, math));
+		// nothing is announced and no Spill is written.
+		s.ledger.record(batch.messageId, tokensFromBytes(measureBlocks(blocks), math));
 		return undefined;
 	}
 	if (plan.fits) {
@@ -290,46 +324,86 @@ function boundResult(event: ToolResultEvent, ctx: ExtensionContext): ToolResultE
 		// published without that line and with nothing appended: the offset pi
 		// named pointed past the Bound, so leaving it would send the model to
 		// re-read content it already has.
-		const stripped = plan.blocks.map((block) => (block.kind === "image"
-			? { type: "image", data: block.block.data, mimeType: block.block.mimeType }
-			: { type: "text", text: block.kind === "pointer" ? pointer : block.text }));
+		const stripped = toPiBlocks(renderPlan(plan, pointer, ""));
 		const strippedBytes = measureBlocks(stripped as ContentBlock[]);
 		s.ledger.record(batch.messageId, tokensFromBytes(strippedBytes, math));
-		if (strippedBytes === receivedBytes) return undefined;
-		return { content: stripped as (TextContent | ImageContent)[] };
+		if (strippedBytes === measureBlocks(blocks)) return undefined;
+		return { content: stripped };
 	}
 
-	const content = renderPlan(plan, facts, pointer);
+	const content = toPiBlocks(renderPlan(plan, pointer, buildNotice(facts)));
 	const admittedBytes = measureBlocks(content as ContentBlock[]);
-	if (Number.isFinite(bound.bytes) && admittedBytes > bound.bytes) {
+	if (!fitsWithinBudget(content as ContentBlock[], bound.bytes, bound.maxLines)) {
 		// The Bound is a promise, so a plan that could not be made to fit is
 		// not published: pi's own result stands, and the Ledger records the
-		// size that really went in. Reaching this line would mean the budget
-		// settle loop ran out of passes, which the floor makes impossible in
-		// practice; it is here so the invariant is enforced rather than hoped.
-		if (spillPath !== undefined && !adopted) removeSpill(spillPath);
-		s.ledger.record(batch.messageId, tokensFromBytes(receivedBytes, math));
+		// size that really went in. Reaching this line means the budget settle
+		// loop ran out of passes, which the floor makes impossible in practice;
+		// it is here so the invariant is checked rather than hoped, and it is
+		// checked before the Spill is written so nothing has moved yet.
+		s.ledger.record(batch.messageId, tokensFromBytes(measureBlocks(blocks), math));
 		return undefined;
+	}
+
+	// Lossless or no cut, and last: the whole result is on disk before the cut
+	// text is published, so a write that cannot be made leaves pi's result
+	// alone rather than publishing a cut whose other half is missing.
+	if (spill !== undefined) {
+		const written = spillWrite(event, spill);
+		if (!written.ok) {
+			s.spillFailure = written.error;
+			notifySpillFailureOnce(ctx, s);
+			s.ledger.record(batch.messageId, tokensFromBytes(measureBlocks(blocks), math));
+			return undefined;
+		}
 	}
 	s.ledger.record(batch.messageId, tokensFromBytes(admittedBytes, math));
 	s.cuts.calls += 1;
 	s.cuts.droppedBytes += plan.droppedBytes;
 
-	const details = patchDetails(event, plan, bound.bytes, bound.maxLines, spills ? spillPath : undefined);
-	return { content: content as (TextContent | ImageContent)[], details };
+	const details = patchDetails(event, plan, bound.bytes, bound.maxLines, spill?.path);
+	return { content, details };
+}
+
+/** The Spill file one call will own, named before it is written. */
+interface ReservedSpill {
+	dir: string;
+	name: string;
+	path: string;
+}
+
+function reserveSpill(s: OutputLimitsState, event: ToolResultEvent): ReservedSpill {
+	const name = spillName(s.seq, event.toolName, event.toolCallId);
+	s.seq += 1;
+	return { dir: s.spillDir, name, path: path.join(s.spillDir, name) };
 }
 
 /**
- * Drop a Spill the cut did not need after all. A result that fits inside the
- * Bound is never kept in a second copy, so an over-eager reservation is
- * undone rather than left behind.
+ * pi's own throwaway log for this result, when it wrote one and it is there.
+ *
+ * For bash the hook receives `details.fullOutputPath`, the command's whole
+ * output including the part pi dropped, which is the only place those bytes
+ * exist. Adopting it is what makes a spilled bash result complete, so the
+ * notice names the Spill instead of the file this extension moved.
  */
-function removeSpill(spillPath: string): void {
+function adoptedLogPath(event: ToolResultEvent): string | undefined {
+	if (event.toolName !== "bash") return undefined;
+	const details = event.details as { fullOutputPath?: unknown } | undefined;
+	const logPath = typeof details?.fullOutputPath === "string" ? details.fullOutputPath : undefined;
+	if (logPath === undefined || logPath.length === 0) return undefined;
 	try {
-		fs.rmSync(spillPath, { force: true });
+		return fs.existsSync(logPath) ? logPath : undefined;
 	} catch {
-		// An undeletable empty Spill is a footprint wart, not a data loss.
+		return undefined;
 	}
+}
+
+/** This extension's structural blocks in pi's shape, order preserved. */
+function toPiBlocks(blocks: readonly ContentBlock[]): (TextContent | ImageContent)[] {
+	return blocks.map((block) =>
+		block.type === "image"
+			? { type: "image", data: block.data, mimeType: block.mimeType }
+			: { type: "text", text: block.text },
+	) as (TextContent | ImageContent)[];
 }
 
 /** The first line a read result showed, from the call's own arguments. */
@@ -338,42 +412,6 @@ function readStartLineOf(event: ToolResultEvent): number | undefined {
 	const offset = input?.offset;
 	if (typeof offset === "number" && Number.isFinite(offset) && offset >= 1) return Math.floor(offset);
 	return 1;
-}
-
-/**
- * The blocks the model receives.
- *
- * Kept blocks stay in order and the result is never collapsed. The crossing
- * block carries the appended notice line after the text that survived pi's
- * own cut and this one; a dropped text block becomes the one-line pointer;
- * image blocks are emitted untouched, because pi normalizes them after this
- * hook and cutting one would only lose bytes the session never had.
- */
-function renderPlan(plan: { blocks: PlannedBlock[] }, facts: NoticeFacts, pointer: string): (TextContent | ImageContent)[] {
-	const notice = buildNotice(facts);
-	const out: (TextContent | ImageContent)[] = [];
-	let noticePlaced = false;
-	for (const block of plan.blocks) {
-		switch (block.kind) {
-			case "image":
-				out.push({ type: "image", data: block.block.data, mimeType: block.block.mimeType });
-				break;
-			case "pointer":
-				out.push({ type: "text", text: pointer });
-				break;
-			case "cut":
-				out.push({ type: "text", text: `${block.text}\n\n${notice}` });
-				noticePlaced = true;
-				break;
-			case "keep":
-				out.push({ type: "text", text: block.text });
-				break;
-		}
-	}
-	// A result whose kept blocks are all images, or all pointers, has nowhere
-	// to carry the notice, so the line travels as its own block.
-	if (!noticePlaced) out.push({ type: "text", text: notice });
-	return out;
 }
 
 /**
@@ -444,23 +482,16 @@ function displayPath(agentDir: string, filePath: string): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Write the whole received result to a Spill file. Returns the path, or
- * undefined when the write failed.
+ * Write the whole received result to the Spill file this call reserved.
  *
  * For bash, pi's own throwaway log is moved into the Spill directory instead
- * of being left behind, and the result text follows it in the same file, so
- * one call has one complete file (decision 9).
+ * of being left behind, so one call has one complete file (decision 9). The
+ * result text is handed over lazily: when the log is adopted it already holds
+ * those bytes and more, and building a second copy of a 50KB result to throw it
+ * away is a cost the adopt path should not have to pay.
  */
-function spillWrite(s: OutputLimitsState, event: ToolResultEvent): { path: string; adopted: boolean } | undefined {
-	const details = event.details as { fullOutputPath?: string } | undefined;
-	const adopt = event.toolName === "bash" ? details?.fullOutputPath : undefined;
-	const name = spillName(s.seq, event.toolName, event.toolCallId);
-	s.seq += 1;
-	const text = `${textOf(event.content)}\n`;
-	const result = writeSpill(s.spillDir, name, text, adopt);
-	if (result.ok) return { path: result.path, adopted: result.adopted };
-	s.spillFailure = result.error;
-	return undefined;
+function spillWrite(event: ToolResultEvent, spill: ReservedSpill): SpillWrite {
+	return writeSpill(spill.dir, spill.name, () => `${textOf(event.content)}\n`, adoptedLogPath(event));
 }
 
 function textOf(content: readonly (TextContent | ImageContent)[]): string {
@@ -481,11 +512,6 @@ function notifySpillFailureOnce(ctx: ExtensionContext, s: OutputLimitsState): vo
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
-
-/** The agent directory, the way pi names it: `$PI_CODING_AGENT_DIR` or `~/.pi/agent`. */
-function agentDirOf(env: NodeJS.ProcessEnv = process.env): string {
-	return env.PI_CODING_AGENT_DIR ?? path.join(os.homedir(), ".pi", "agent");
-}
 
 /**
  * Read the settings, open the Spill directory, and sweep.
@@ -516,7 +542,6 @@ function openState(ctx: ExtensionContext): OutputLimitsState {
 		settings,
 		reserveTokens: readReserveTokens(ctx.cwd),
 		agentDir,
-		sessionId: ctx.sessionManager.getSessionId(),
 		spillDir: dir,
 		seq,
 		sweep,
@@ -552,14 +577,18 @@ function statusText(s: OutputLimitsState, ctx: ExtensionContext): string {
 		reserveTokens: s.reserveTokens,
 		usedTokens: usage?.tokens,
 	});
-	const math = { bytesPerChar: s.settings.bytesPerChar, inflation: s.settings.inflation };
-	const floorTokens = tokensFromBytes(s.settings.minOutputBytes, math);
+	const math = tokenMathOf(s.settings);
+	const floorTokens = floorTokensOf({ minOutputBytes: s.settings.minOutputBytes, math });
 	const footprint = spillFootprint(s.spillDir);
-	const outerBytes = Math.floor((s.settings.maxOutputTokens * s.settings.bytesPerChar) / s.settings.inflation);
+	// The outer max stated in the bytes it buys, and pi's own content figure
+	// named beside it: the two differ by the notice allowance, and `status` is
+	// where a user finds out what the extension actually caps at.
+	const outerBytes = bytesFromTokens(s.settings.maxOutputTokens, math);
+	const piBytes = PI_MAX_OUTPUT_BYTES + PI_NOTICE_SLACK_BYTES;
 	return [
 		`output-limits: ${s.settings.enabled && !envDisabled() ? "on" : "off"}`,
 		`tools: ${s.settings.tools.join(", ")}`,
-		`Bound: shareOfHeadroom=${s.settings.shareOfHeadroom}, minOutputBytes=${s.settings.minOutputBytes} (${formatBytes(s.settings.minOutputBytes)} ~${formatTokens(floorTokens)}), maxOutputTokens=${s.settings.maxOutputTokens} (${formatBytes(outerBytes)} ~${formatTokens(s.settings.maxOutputTokens)}; pi's own is ${formatBytes(PI_MAX_OUTPUT_BYTES)})`,
+		`Bound: shareOfHeadroom=${s.settings.shareOfHeadroom}, minOutputBytes=${s.settings.minOutputBytes} (${formatBytes(s.settings.minOutputBytes)} ~${formatTokens(floorTokens)}), maxOutputTokens=${s.settings.maxOutputTokens} (${formatBytes(outerBytes)} ~${formatTokens(s.settings.maxOutputTokens)}; pi's own cut is ${formatBytes(PI_MAX_OUTPUT_BYTES)} of content plus its notice, ${formatBytes(piBytes)} here)`,
 		`token math: bytesPerChar ${s.settings.bytesPerChar}, inflation ${s.settings.inflation}, maxLines ${s.settings.maxLines}`,
 		headroom.known
 			? `Headroom: ${formatTokens(headroom.tokens)} = window ${formatTokens(headroom.effectiveWindow)} - reserve ${formatTokens(headroom.reserveTokens)} - used ${formatTokens(headroom.usedTokens)}`
@@ -577,6 +606,11 @@ function describeBatch(s: OutputLimitsState): string {
 	const entry = s.ledger.latest();
 	if (!entry) return "no batch seen yet";
 	const calls = entry.calls > 0 ? `${entry.calls} call(s)` : "call count unread";
+	if (entry.headroomTokens === 0) {
+		// Every call so far was blind, so the batch has no allowance yet: it is
+		// open, and it takes its baseline from the first call that reads one.
+		return `${calls}, blind so far: no allowance set, ${formatTokens(entry.admittedTokens)} admitted`;
+	}
 	return `${calls}, admitted ${formatTokens(entry.admittedTokens)} against ${formatTokens(entry.allowanceTokens)} allowance`;
 }
 

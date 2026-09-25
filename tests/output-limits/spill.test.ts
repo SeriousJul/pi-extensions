@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mkdirPrivate, spillDir, spillFootprint, spillName, spillRoot, sweepSpills, writeSpill } from "../../extensions/output-limits/spill";
+import { mkdirPrivate, type SpillMove, spillDir, spillFootprint, spillName, spillRoot, sweepSpills, writeSpill } from "../../extensions/output-limits/spill";
 
 // The Spill file contract: one call, one file, private modes, a sweep that
 // touches only this extension's own directory, and writes that report failure
@@ -67,12 +67,65 @@ describe("writeSpill", () => {
 		expect(result.ok).toBe(true);
 		if (!result.ok) return;
 		expect(result.adopted).toBe(true);
+		if (!result.adopted) return;
+		// `sourcePath` names what was moved, so the caller can repoint the path
+		// pi wrote into the result text.
+		expect(result.sourcePath).toBe(piLog);
 		// pi's log is a superset of the text the hook received, so copying that
 		// text in again would double the file to state nothing new.
 		expect(readFileSync(result.path, "utf8")).toBe("the whole command output\n");
 		// pi's throwaway is moved, not left behind: one call, one file.
 		expect(existsSync(piLog)).toBe(false);
 		expect(statSync(result.path).mode & 0o777).toBe(0o600);
+	});
+
+	it("copies pi's log into place when the rename cannot cross the device", () => {
+		// The default Linux layout: `/tmp` is tmpfs, the agent dir is not, so
+		// `renameSync` throws `EXDEV` for every bash Spill. A Spill that gave up
+		// there would leave bash unbounded on the machine this extension is for.
+		const piLog = join(root, "pi-bash-throwaway.log");
+		writeFileSync(piLog, "the whole command output\n", { mode: 0o644 });
+		const result = writeSpill(dir, "1-bash-aaaa.log", "the tail pi showed\n", piLog, moveWith({ rename: throwsExdev }));
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.adopted).toBe(true);
+		if (!result.adopted) return;
+		expect(result.sourcePath).toBe(piLog);
+		expect(readFileSync(result.path, "utf8")).toBe("the whole command output\n");
+		// Moved, not duplicated: pi's throwaway does not stay behind.
+		expect(existsSync(piLog)).toBe(false);
+		// And private, whatever mode pi wrote it with: the copy inherits 0644.
+		expect(statSync(result.path).mode & 0o777).toBe(0o600);
+	});
+
+	it("writes the result text when pi's log can be moved neither way", () => {
+		// A copy that also fails must not abandon the Bound: the text the hook
+		// received is a complete Spill on its own, and pi's log stays where it
+		// is rather than being half-moved.
+		const piLog = join(root, "pi-bash-throwaway.log");
+		writeFileSync(piLog, "the whole command output\n");
+		const result = writeSpill(dir, "1-bash-aaaa.log", "the tail pi showed\n", piLog, moveWith({ rename: throwsExdev, copy: throwsIo }));
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.adopted).toBe(false);
+		expect(result.sourcePath).toBeUndefined();
+		expect(readFileSync(result.path, "utf8")).toBe("the tail pi showed\n");
+		expect(existsSync(piLog)).toBe(true);
+	});
+
+	it("builds a lazy result text only when it actually needs one", () => {
+		const piLog = join(root, "pi-bash-throwaway.log");
+		writeFileSync(piLog, "the whole command output\n");
+		let built = 0;
+		const lazy = () => {
+			built += 1;
+			return "the tail pi showed\n";
+		};
+		expect(writeSpill(dir, "1-bash-aaaa.log", lazy, piLog).ok).toBe(true);
+		expect(built).toBe(0);
+		// No log to adopt: the text is what the Spill is made of, so it is built.
+		expect(writeSpill(dir, "2-bash-bbbb.log", lazy, join(root, "never-existed.log")).ok).toBe(true);
+		expect(built).toBe(1);
 	});
 
 	it("writes the result text when pi left no log to adopt", () => {
@@ -105,6 +158,30 @@ describe("writeSpill", () => {
 		expect(readFileSync(same, "utf8")).toBe("already here\nmore\n");
 	});
 });
+
+/** The real file operations, with one replaced to fail like hardware does. */
+function moveWith(over: Partial<SpillMove>): SpillMove {
+	return {
+		exists: (target) => existsSync(target),
+		rename: (from, to) => renameSync(from, to),
+		copy: (from, to) => copyFileSync(from, to),
+		remove: (target) => rmSync(target, { force: true }),
+		...over,
+	};
+}
+
+/** The failure a rename across a device boundary throws. */
+function throwsExdev(): void {
+	const err = new Error("EXDEV: cross-device link not permitted, rename") as NodeJS.ErrnoException;
+	err.code = "EXDEV";
+	throw err;
+}
+
+function throwsIo(): void {
+	const err = new Error("EIO: i/o error, copyfile") as NodeJS.ErrnoException;
+	err.code = "EIO";
+	throw err;
+}
 
 describe("sweepSpills", () => {
 	const day = 24 * 60 * 60 * 1000;
@@ -158,6 +235,29 @@ describe("sweepSpills", () => {
 		utimesSync(file, 0, 0);
 		expect(sweepSpills(spillRoot(root), { maxTotalBytes: 10_000_000, maxAgeDays: 1 }).removed).toBe(1);
 		expect(existsSync(file)).toBe(false);
+	});
+
+	it("sweeps the rest when one session directory cannot be read", () => {
+		// One unreadable entry must not cost the sweep the whole tree: a throw
+		// out of the listing discarded every file it had found, so retention
+		// stopped in silence for a session directory a chmod or a race hid.
+		const stale = aged("1-bash-oldold.log", 10);
+		const fresh = aged("2-bash-newnew.log", 1);
+		const blocked = spillDir(root, "blocked-session");
+		mkdirSync(blocked, { recursive: true });
+		writeFileSync(join(blocked, "1-bash-aaaa.log"), "x".repeat(10));
+		chmodSync(blocked, 0o000);
+		let report;
+		try {
+			report = sweepSpills(spillRoot(root), { maxTotalBytes: 10_000_000, maxAgeDays: 7 });
+		} finally {
+			// Restored so the teardown can remove the tree.
+			chmodSync(blocked, 0o700);
+		}
+		expect(report.removed).toBe(1);
+		expect(existsSync(stale)).toBe(false);
+		expect(existsSync(fresh)).toBe(true);
+		expect(existsSync(join(blocked, "1-bash-aaaa.log"))).toBe(true);
 	});
 
 	it("is silent about a root that does not exist yet", () => {

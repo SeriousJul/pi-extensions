@@ -23,8 +23,9 @@
  * current through the assistant message at `tool_result` time in parallel
  * mode), the Ledger falls back to the accumulation alone: `remainingCalls`
  * is 1, so each call may take whatever the batch has left, clamped by the
- * floor and the outer max. The Ledger is authoritative either way, and no
- * call ever gets more than `maxOutputTokens`.
+ * floor and the outer max. The Ledger is authoritative either way, no call
+ * ever gets more than `maxOutputTokens`, and the accumulation is what bounds
+ * the batch, so an unbaselined or uncounted batch is still a batch.
  */
 
 /** One message's running batch state. */
@@ -33,7 +34,10 @@ export interface LedgerEntry {
 	messageId: string;
 	/** The calls that message asked for, or 0 when it did not read cleanly. */
 	calls: number;
-	/** The Headroom tokens the allowance was computed from. */
+	/**
+	 * The Headroom tokens the allowance was computed from, or 0 when the batch
+	 * is still unbaselined because every call so far was blind.
+	 */
 	headroomTokens: number;
 	/** The message allowance in tokens, floor and outer max included. */
 	allowanceTokens: number;
@@ -41,6 +45,12 @@ export interface LedgerEntry {
 	admittedTokens: number;
 	/** Calls already admitted for this message. */
 	admittedCalls: number;
+}
+
+/** The per-message figures a batch is opened on: see `Ledger.begin`. */
+export interface BatchBaseline {
+	headroomTokens: number;
+	allowanceTokens: number;
 }
 
 export interface LedgerView {
@@ -59,22 +69,41 @@ export class Ledger {
 	/**
 	 * Open (or return) the batch for one assistant message.
 	 *
-	 * `headroomTokens` and `allowanceTokens` are written on the first call of
-	 * the batch and never re-read, so every sibling divides the same
-	 * allowance. That is the once-per-message baseline ADR 0026 accepts. A
-	 * batch that already exists returns its stored baseline, so a change in
-	 * the Headroom mid-batch cannot move a sibling's Bound.
+	 * `baseline` is the message allowance and the Headroom it came from.
+	 * `computeBound` divides what is left of it, so it is a per-message figure
+	 * written once and reused by every sibling: the usage pi reports cannot
+	 * include a sibling that has not finished, and a baseline that moved
+	 * mid-batch would make the batch's total depend on call order. That is the
+	 * once-per-message figure ADR 0026 accepts.
+	 *
+	 * A `null` baseline means this call was blind, and a blind call writes no
+	 * baseline at all: the outer max is not an allowance, and freezing a batch
+	 * on it would leave every later sibling of the message dividing the whole
+	 * window. An unbaselined batch takes its baseline from the first call that
+	 * can read a Headroom, and keeps what the blind calls already admitted, so
+	 * the pass-through cost is still charged to the message.
 	 */
-	begin(messageId: string, calls: number, headroomTokens: number, allowanceTokens: number): LedgerEntry {
+	begin(messageId: string, calls: number, baseline: BatchBaseline | null): LedgerEntry {
 		const existing = this.entries.get(messageId);
 		if (existing) {
 			// The count can arrive late: the first sibling ran before the
 			// session read cleanly, a later one finds the message. Take the
 			// larger figure so the division is never worse than the truth.
 			if (calls > existing.calls) existing.calls = calls;
+			if (baseline !== null && existing.headroomTokens === 0) {
+				existing.headroomTokens = baseline.headroomTokens;
+				existing.allowanceTokens = baseline.allowanceTokens;
+			}
 			return existing;
 		}
-		const entry: LedgerEntry = { messageId, calls: Math.max(0, calls), headroomTokens, allowanceTokens, admittedTokens: 0, admittedCalls: 0 };
+		const entry: LedgerEntry = {
+			messageId,
+			calls: Math.max(0, calls),
+			headroomTokens: baseline?.headroomTokens ?? 0,
+			allowanceTokens: baseline?.allowanceTokens ?? 0,
+			admittedTokens: 0,
+			admittedCalls: 0,
+		};
 		this.entries.set(messageId, entry);
 		this.order.push(messageId);
 		// A session can hold many finished batches; only the current one and
@@ -93,7 +122,8 @@ export class Ledger {
 		const remainingAllowanceTokens = Math.max(0, entry.allowanceTokens - entry.admittedTokens);
 		// The count reads cleanly: divide what is left by what is left to come.
 		// It does not: let this call reach the whole remainder, and let the
-		// clamp cap what it may actually take.
+		// clamp cap what it may actually take. The remainder is what bounds the
+		// batch then, so the siblings must share one key for it to be a batch.
 		const remainingCalls = entry.calls > 0 ? Math.max(1, entry.calls - entry.admittedCalls) : 1;
 		return { entry, remainingAllowanceTokens, remainingCalls };
 	 }

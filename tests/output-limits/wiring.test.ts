@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager, type ExtensionContext, type ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage, ImageContent, TextContent, Usage, UserMessage } from "@earendil-works/pi-ai";
@@ -406,6 +406,37 @@ describe("bound and spill", () => {
 		expect(existsSync(piLog)).toBe(false);
 	});
 
+	it("leaves one live path in a capped bash result, not the pi log it moved", async () => {
+		// pi's own notice stays because it stays true. That is only honest once
+		// the file it names has moved into the Spill, so the name is rewritten
+		// too: a path to a moved file is a "No such file" waiting for the model.
+		seed([{ id: "c1", name: "bash" }]);
+		const captured = loadExtension(cwd, sm);
+		const ctx = ctxTight(captured);
+		const piLog = join(tmpdir(), "pi-bash-deadbeef.log");
+		writeFileSync(piLog, "the whole command output, including what pi dropped\n");
+		const source = `${bigOutput(2_000, 44)}\n\n[Showing lines 3071-4000 of 4000 (50.0KB limit). Full output: ${piLog}]`;
+		const patch = await captured.toolResult!(event({ toolName: "bash", toolCallId: "c1", content: [textBlock(source)], details: { fullOutputPath: piLog } }), ctx);
+		const text = published(patch, source);
+
+		// pi's notice survives, with its numbers intact and its path repointed.
+		expect(text).toContain("[Showing lines 3071-4000 of 4000 (50.0KB limit). Full output: ");
+		expect(text).not.toContain(piLog);
+		const named = /Full output: ([^\]]+)\]/.exec(text)?.[1];
+		expect(named, "pi's notice names no path").toBeDefined();
+		const resolved = named!.startsWith("~") ? join(homedir(), named!.slice(2)) : named!;
+		const files = spillFiles();
+		expect(resolved).toBe(join(agentDir, "output-limits", sm.getSessionId(), files[0]));
+		// This extension's own line names the same one file, and it is there.
+		expect(text.match(/[Ff]ull output: /g)).toHaveLength(2);
+		expect(existsSync(resolved)).toBe(true);
+		expect(existsSync(piLog)).toBe(false);
+		expect((patch!.details as Record<string, any>).fullOutputPath).toBe(resolved);
+		expect(spillText(files[0])).toBe("the whole command output, including what pi dropped\n");
+		// The rewrite is charged to the Bound, not added after it.
+		expect(Buffer.byteLength(text, "utf8")).toBeLessThanOrEqual(BOUND_BYTES);
+	});
+
 	it("spills grep, find, and ls, so the dropped half of a match list survives", async () => {
 		seed([
 			{ id: "g1", name: "grep" },
@@ -564,6 +595,55 @@ describe("ledger", () => {
 		const text = published(await captured.toolResult!(event({ toolName: "bash", toolCallId: "ghost", content: [textBlock(bigOutput(2_000, 44))] }), ctx), "");
 		expect(text).toContain("[output-limits: capped to");
 		expect(text).not.toContain("left for this message");
+	});
+
+	it("bounds a whole batch whose assistant message cannot be read", async () => {
+		// Probe 2's fallback, with three siblings instead of one. The call count
+		// is unknown, so each call may reach whatever the batch has left and the
+		// accumulation is what bounds them -- which is only true if the three
+		// share one batch key. Per-call keys gave every sibling a batch of one
+		// and left the message at three times its allowance.
+		// An assistant message that asked for calls, none of them this call's:
+		// the shape probe 2 warns about, where the session does not read
+		// cleanly at `tool_result` time.
+		writeSettings(DIVIDED);
+		seed([{ id: "some-other-call", name: "bash" }]);
+		const captured = loadExtension(cwd, sm);
+		const ctx = ctxTight(captured);
+		const source = bigOutput(2_000, 44);
+		let total = 0;
+		const texts: string[] = [];
+		for (const id of ["s1", "s2", "s3"]) {
+			const text = published(await captured.toolResult!(event({ toolName: "bash", toolCallId: id, content: [textBlock(source)] }), ctx), "");
+			texts.push(text);
+			total += Buffer.byteLength(text, "utf8");
+		}
+		// The allowance is 4096 tokens, which is the 8192-byte Bound. The first
+		// call spends it; the floor (256 bytes here) is what the rest may reach.
+		expect(texts[0]).toContain("capped to 8KB (4.1k tokens)");
+		expect(texts[1]).toContain("capped to 256B (128 tokens)");
+		expect(texts[2]).toContain("capped to 256B (128 tokens)");
+		expect(total).toBeLessThanOrEqual(BOUND_BYTES + 2 * 256 + 64);
+	});
+
+	it("does not freeze a batch at the outer max when its first call is blind", async () => {
+		// A call can reach the hook before pi has a usage figure to read. It
+		// passes pi's whole result through, and that must not be taken as the
+		// batch's allowance: the outer max is a clamp, not a budget. The sibling
+		// that does read a Headroom divides what the batch has left, and the
+		// blind pass-through counts against it.
+		seed([
+			{ id: "a", name: "bash" },
+			{ id: "b", name: "bash" },
+		]);
+		const captured = loadExtension(cwd, sm);
+		const source = bigOutput(2_000, 44);
+		expect(await captured.toolResult!(event({ toolName: "bash", toolCallId: "a", content: [textBlock(source)] }), withUsage(captured, sm, undefined))).toBeUndefined();
+		const text = published(await captured.toolResult!(event({ toolName: "bash", toolCallId: "b", content: [textBlock(source)] }), ctxTight(captured)), "");
+		// The floor is the last word here. Left at the blind baseline, this call
+		// would have reached the outer max instead: 26112 tokens, 52224 bytes.
+		expect(text).toContain("capped to 4KB (2k tokens)");
+		expect(Buffer.byteLength(text, "utf8")).toBeLessThanOrEqual(bytesFromTokens(2_048, MATH));
 	});
 
 	it("re-baselines after a compaction, a model switch, or a tree navigation", async () => {

@@ -9,6 +9,7 @@ import {
 	computeBound,
 	computeHeadroom,
 	cutBlocks,
+	cutToBudget,
 	DEFAULT_MAX_OUTPUT_TOKENS,
 	fitsWithinBudget,
 	floorTokensOf,
@@ -16,6 +17,10 @@ import {
 	formatTokens,
 	IMAGE_CHARGE_BYTES,
 	measureBlocks,
+	measurePublished,
+	messageAllowanceTokens,
+	renderPlan,
+	rewriteSpillPath,
 	type ContentBlock,
 	PI_MAX_OUTPUT_BYTES,
 	PI_MAX_OUTPUT_LINES,
@@ -53,6 +58,20 @@ const known = (tokens: number) => ({ known: true as const, tokens, effectiveWind
 
 function plan(blocks: ContentBlock[], over: Partial<Parameters<typeof cutBlocks>[0]> = {}) {
 	return cutBlocks({
+		blocks,
+		budgetBytes: 1_000_000,
+		maxLines: PI_MAX_OUTPUT_LINES,
+		direction: "head",
+		cutters: CUTTERS,
+		pointer: "[p]",
+		notice: "",
+		...over,
+	});
+}
+
+/** The same, with the budget verified against the published result. */
+function budgetPlan(blocks: ContentBlock[], over: Partial<Parameters<typeof cutToBudget>[0]> = {}) {
+	return cutToBudget({
 		blocks,
 		budgetBytes: 1_000_000,
 		maxLines: PI_MAX_OUTPUT_LINES,
@@ -153,8 +172,17 @@ describe("computeBound", () => {
 	it("is the share of the Headroom for a single call", () => {
 		const bound = computeBound({ headroom: known(64_000), settings: settings(), remainingAllowanceTokens: 16_000, remainingCalls: 1 });
 		expect(bound.tokens).toBe(16_000);
-		expect(bound.allowanceTokens).toBe(16_000);
 		expect(bound.bytes).toBe(bytesFromTokens(16_000, MATH));
+	});
+
+	it("states the message allowance once, for the wiring and the Bound alike", () => {
+		// The figure the Ledger opens a batch on is the one `computeBound`
+		// divides, so neither side can restate it and drift.
+		expect(messageAllowanceTokens(known(64_000), settings())).toBe(16_000);
+		expect(messageAllowanceTokens(known(100), settings())).toBe(floorTokensOf(settings()));
+		// A blind Headroom has no allowance: the batch stays unbaselined rather
+		// than freezing at the outer max.
+		expect(messageAllowanceTokens({ known: false }, settings())).toBe(0);
 	});
 
 	it("divides the allowance across the calls one assistant message asked for", () => {
@@ -281,7 +309,7 @@ describe("cutBlocks", () => {
 		const result = plan([image(), text("x".repeat(9_000))], { budgetBytes: IMAGE_CHARGE_BYTES + 100 });
 		expect(result.blocks[0]).toMatchObject({ kind: "image" });
 		expect(result.blocks[1]!.kind).toBe("cut");
-		expect(Buffer.byteLength((result.blocks[1] as { text: string }).text, "utf8")).toBeLessThanOrEqual(100);
+		expect(Buffer.byteLength((result.blocks[1] as Textish).text, "utf8")).toBeLessThanOrEqual(100);
 	});
 
 	it("applies the line budget as well as the byte budget", () => {
@@ -293,12 +321,12 @@ describe("cutBlocks", () => {
 		const body = `${"out\n".repeat(40)}[Showing lines 31-70 of 70. Full output: /tmp/pi-bash-1f2e.log]`;
 		const result = plan([text(body)], { budgetBytes: 120, direction: "tail" });
 		expect(result.blocks[0]!.kind).toBe("cut");
-		expect((result.blocks[0] as { text: string }).text).toContain("Full output: /tmp/pi-bash-1f2e.log]");
+		expect((result.blocks[0] as Textish).text).toContain("Full output: /tmp/pi-bash-1f2e.log]");
 	});
 
 	it("cuts on a UTF-8 boundary, never mid-character", () => {
 		const result = plan([text("中中中\n中中中\n中中中")], { budgetBytes: 11 });
-		const kept = (result.blocks[0] as { text: string }).text;
+		const kept = (result.blocks[0] as Textish).text;
 		expect(Buffer.byteLength(kept, "utf8")).toBeLessThanOrEqual(11);
 		expect(kept).toBe("中中中");
 	});
@@ -312,6 +340,108 @@ describe("cutBlocks", () => {
 		expect(result.keptBytes).toBe(7);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// The budget, verified: cutToBudget
+// ---------------------------------------------------------------------------
+
+describe("cutToBudget", () => {
+	const notice = "[output-limits: capped to 8KB (4.1k tokens) of the 16.4k token headroom; full output: ~/s/1-bash-c1.log]";
+	const shortNotice = "[output-limits: capped to 200B (100 tokens) of the 1k token headroom]";
+
+	it("publishes inside the byte Bound with its own notice counted", () => {
+		const body = `${"out\n".repeat(2_000)}tail`;
+		const budgetBytes = 4_000;
+		const result = budgetPlan([text(body)], { budgetBytes, notice });
+		const published = measurePublished(result, "[p]", notice);
+		expect(published.bytes).toBeLessThanOrEqual(budgetBytes);
+		expect(result.fits).toBe(false);
+	});
+
+	it("publishes inside the line Bound too, which the reservation alone misses", () => {
+		// The notice and the blank line before it are two more lines on top of
+		// what the cutter kept, so a plan that only respected the line budget
+		// while cutting would publish over it. This is the case where the byte
+		// budget is never crossed at all.
+		const body = Array.from({ length: 50 }, (_, i) => `line ${i + 1}`).join("\n");
+		const maxLines = 8;
+		const result = budgetPlan([text(body)], { budgetBytes: 100_000, maxLines, notice });
+		const published = measurePublished(result, "[p]", notice);
+		expect(published.lines).toBeLessThanOrEqual(maxLines);
+		expect(countResultLines(renderPlan(result, "[p]", notice))).toBeLessThanOrEqual(maxLines);
+		expect(result.keptLines).toBeLessThan(maxLines);
+	});
+
+	it("counts every pointer line as well", () => {
+		// Three blocks against a budget that holds one notice and two pointers:
+		// the reservation charges the worst case, which is every block but the
+		// crossing one dropped, so the published result still fits.
+		const rows = (n: number) => Array.from({ length: 20 }, (_, i) => `row ${n}${i}`).join("\n");
+		const blocks = [text(rows(1)), text(rows(2)), text(rows(3))];
+		const pointer = "[pointer to the spill file]";
+		const budgetBytes = 200;
+		const result = budgetPlan(blocks, { budgetBytes, pointer, notice: shortNotice });
+		const published = measurePublished(result, pointer, shortNotice);
+		expect(published.bytes).toBeLessThanOrEqual(budgetBytes);
+		expect(result.blocks.filter((block) => block.kind === "pointer")).toHaveLength(2);
+	});
+
+	it("renders what it measures, so the promise is about the published text", () => {
+		const result = budgetPlan([text("a".repeat(500))], { budgetBytes: 120, notice });
+		const rendered = renderPlan(result, "[p]", notice);
+		expect(measureBlocks(rendered)).toBe(measurePublished(result, "[p]", notice).bytes);
+		expect(rendered[rendered.length - 1]!.type).toBe("text");
+		expect((rendered[rendered.length - 1] as Textish).text).toContain("[output-limits: capped to");
+	});
+
+	it("leaves a result that fits alone, and does not announce a notice for it", () => {
+		const result = budgetPlan([text("one\ntwo")], { budgetBytes: 100, notice });
+		expect(result.fits).toBe(true);
+		expect(result.blocks).toEqual([{ kind: "keep", text: "one\ntwo" }]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// One live path: pi's own notice repointed at the Spill
+// ---------------------------------------------------------------------------
+
+describe("rewriteSpillPath", () => {
+	it("repoints the path pi named at the Spill that now holds the bytes", () => {
+		const body = "out\n\n[Showing lines 31-70 of 70 (50.0KB limit). Full output: /tmp/pi-bash-1f2e.log]";
+		const rewritten = rewriteSpillPath([text(body)], "/tmp/pi-bash-1f2e.log", "~/.pi/agent/output-limits/s/1-bash-c1.log");
+		expect(rewritten.changed).toBe(true);
+		expect((rewritten.blocks[0] as Textish).text).toBe(
+			"out\n\n[Showing lines 31-70 of 70 (50.0KB limit). Full output: ~/.pi/agent/output-limits/s/1-bash-c1.log]",
+		);
+		// The moved file's name is gone from the text, so the model cannot
+		// follow it into a "No such file".
+		expect((rewritten.blocks[0] as Textish).text).not.toContain("/tmp/");
+	});
+
+	it("repoints every occurrence across every text block, and touches no image", () => {
+		const picture: ContentBlock = { type: "image", data: "/tmp/pi-bash-1f2e.log", mimeType: "image/png" };
+		const rewritten = rewriteSpillPath([text("a /tmp/pi-bash-1f2e.log b /tmp/pi-bash-1f2e.log"), picture], "/tmp/pi-bash-1f2e.log", "/s/1.log");
+		expect((rewritten.blocks[0] as Textish).text).toBe("a /s/1.log b /s/1.log");
+		expect(rewritten.blocks[1]).toBe(picture);
+		expect(rewritten.changed).toBe(true);
+	});
+
+	it("says nothing changed when the path appears nowhere", () => {
+		const rewritten = rewriteSpillPath([text("plain output")], "/tmp/pi-bash-1f2e.log", "/s/1.log");
+		expect(rewritten.changed).toBe(false);
+		expect(rewritten.blocks).toEqual([text("plain output")]);
+	});
+
+	it("is a no-op when the path did not move", () => {
+		const same = rewriteSpillPath([text("/s/1.log")], "/s/1.log", "/s/1.log");
+		expect(same.changed).toBe(false);
+		const empty = rewriteSpillPath([text("x")], "", "/s/1.log");
+		expect(empty.changed).toBe(false);
+	});
+});
+
+/** The text of one block, for the casts these cases need. */
+type Textish = { text: string };
 
 // ---------------------------------------------------------------------------
 // read's continuation notice

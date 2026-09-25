@@ -25,12 +25,24 @@
  *   8. a real `grep` result past the Bound is capped and spilled
  *   9. the Spill directory is 0700 and every Spill file is 0600
  *  10. the off switch leaves everything alone: pi's own result and no Spill
+ *  11. with the agent dir on the home filesystem, which is where decision 20
+ *      puts the Spill root and is a different device from the `/tmp` pi logs
+ *      bash to, a bash result is still bounded: the adopt moves pi's log by
+ *      copy when a rename cannot cross the device, and the session text names
+ *      one live path
+ *
+ * Each run is its own `pi` process. The `on` and `off` runs keep the agent dir
+ * beside pi's temp dir, which is fast and tidy; the `cross-device` run puts it
+ * under the home filesystem, which is where decision 20 says the Spill root
+ * lives and what makes the `EXDEV` path real rather than simulated. On a
+ * machine where `/tmp` and the home share a device that run still proves the
+ * capping and the single live path; it just cannot exercise the copy.
  *
  *   node tests/output-limits/e2e-rpc.mjs
  */
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -109,9 +121,26 @@ function entriesFor(smFile, toolCallId) {
 	return sessionEntries(smFile).filter((entry) => entry.type === "message" && entry.message?.role === "toolResult" && entry.message?.toolCallId === toolCallId);
 }
 
-async function runSession(label, settings, cases) {
+/**
+ * A directory on the filesystem the home lives on. pi writes its bash logs to
+ * `$TMPDIR`, which is tmpfs on a typical Linux, so an agent dir here puts the
+ * Spill root on a different device from the file decision 9 says to move: the
+ * layout where a rename throws `EXDEV`.
+ */
+function homeAgentDir(label) {
+	const base = join(homedir(), ".cache", "pi-output-limits-e2e");
+	mkdirSync(base, { recursive: true });
+	return mkdtempSync(join(base, `${label}-`));
+}
+
+/**
+ * `agentDir` picks where the session's state lives. The default puts it beside
+ * pi's temp dir, which is fast and tidy; the cross-device run overrides it,
+ * because that is the layout real users have.
+ */
+async function runSession(label, settings, cases, { agentDir: pickAgentDir = () => mkdtempSync(join(tmpdir(), `output-limits-e2e-${label}-agent-`)) } = {}) {
 	const cwd = mkdtempSync(join(tmpdir(), `output-limits-e2e-${label}-`));
-	const agentDir = mkdtempSync(join(tmpdir(), `output-limits-e2e-${label}-agent-`));
+	const agentDir = pickAgentDir();
 	const caseFile = join(cwd, "e2e-case.json");
 	// A real file on disk, big enough for the read case to be cut.
 	const target = join(cwd, "big.ts");
@@ -241,8 +270,11 @@ const CASES = [
 			}
 			if (!text.includes("row 4000 ")) throw new Error(`bash's own tail was not kept:\n${text.slice(0, 200)}`);
 			if (!/pi-bash|output-limits/.test(text)) throw new Error("no full-output path named in the notice");
-			// And pi's own notice survived, because it stays true.
+			// And pi's own notice survived, because it stays true: the file it
+			// names is the Spill, and nothing in the text points at pi's moved
+			// throwaway.
 			if (!text.includes("[Showing lines")) throw new Error(`pi's own notice is gone:\n${text.slice(-400)}`);
+			assertOneLivePath(entries[0], text, "bash");
 			const details = entries[0].message.details ?? {};
 			// The patched figure is the real Bound, a few bytes below the clean
 			// 8192 because pi's usage counts this turn's own output too, and it
@@ -378,6 +410,29 @@ const CASES = [
 	},
 ];
 
+/**
+ * Every full-output path a capped result names, resolved for `~`. pi's notice
+ * and this extension's line each name one, so the honest promise is that the
+ * set has one member and that the member exists: one live path.
+ */
+function namedPaths(text) {
+	const found = [...text.matchAll(/[Ff]ull output: (\S+)\]/g)].map((m) => m[1]);
+	return [...new Set(found.map((p) => (p.startsWith("~") ? join(process.env.HOME ?? "~", p.slice(2)) : p)))];
+}
+
+function assertOneLivePath(entry, text, label) {
+	const named = namedPaths(text);
+	if (named.length !== 1) throw new Error(`${label}: the session text names ${named.length} distinct full-output paths, expected 1: ${JSON.stringify(named)}`);
+	if (!existsSync(named[0])) throw new Error(`${label}: the path the model is told to read does not exist: ${named[0]}`);
+	const details = entry.message.details ?? {};
+	if (details.fullOutputPath !== named[0]) {
+		throw new Error(`${label}: details.fullOutputPath ${details.fullOutputPath} is not the path the text names ${named[0]}`);
+	}
+	// Both lines point at the Spill, so pi's own throwaway is gone from the
+	// text: following it would have been a "No such file".
+	if (/pi-bash-[0-9a-f]+\.log/.test(text)) throw new Error(`${label}: pi's own throwaway path is still in the session text`);
+}
+
 const DISABLED_CASES = [
 	{
 		name: "off: the same big bash call is left at pi's own result with no Spill",
@@ -389,6 +444,37 @@ const DISABLED_CASES = [
 			if (text.includes("output-limits:")) throw new Error("the extension ran with the off switch set");
 			if (Buffer.byteLength(text, "utf8") <= BOUND_BYTES) throw new Error("the result was smaller than the Bound, so this case proves nothing");
 			if (spillNames(agentDir, file).length > 0) throw new Error(`a Spill was written while disabled: ${spillNames(agentDir, file).join(", ")}`);
+		},
+	},
+];
+
+// The flagship case, run where the Spill root actually lives: a different
+// filesystem from the `/tmp` log pi wrote for the same command.
+const CROSS_DEVICE_CASES = [
+	{
+		name: "a bash result is bounded when pi's log is on another device",
+		calls: [{ id: "e2-xdev", name: "bash", arguments: { command: BIG_COMMAND } }],
+		inputTokens: TIGHT_INPUT,
+		assert: ({ file }) => {
+			const entries = entriesFor(file, "e2-xdev");
+			if (entries.length !== 1) throw new Error(`expected one session entry for e2-xdev, got ${entries.length}`);
+			const text = resultText(entries[0]);
+			// The Bound holds, so the rename that could not cross the device did
+			// not turn into "leave pi's whole result in the session".
+			const { exact } = boundOf(entries[0], text);
+			if (exact > BOUND_BYTES || exact < BOUND_BYTES - 256) throw new Error(`the Bound is ${exact}, expected just under ${BOUND_BYTES}`);
+			if (Buffer.byteLength(text, "utf8") > exact) {
+				throw new Error(`session text is ${Buffer.byteLength(text, "utf8")} bytes, above its own ${exact}-byte Bound`);
+			}
+			if (!text.includes("[output-limits: capped to")) throw new Error("the extension left no notice at all");
+			if (!text.includes("row 4000 ")) throw new Error("bash's own tail was not kept");
+			assertOneLivePath(entries[0], text, "cross-device");
+			// The one live path is the complete file: what pi dropped crossed the
+			// device with it, by copy.
+			const spill = readFileSync(namedPaths(text)[0], "utf8");
+			for (const probe of ["row 1 ", "row 2000 ", "row 4000 "]) {
+				if (!spill.includes(probe)) throw new Error(`the Spill is missing ${probe}`);
+			}
 		},
 	},
 ];
@@ -408,13 +494,19 @@ const runs = [
 		settings: { compaction: { reserveTokens: RESERVE }, outputLimits: { enabled: false } },
 		cases: DISABLED_CASES,
 	},
+	{
+		label: "cross-device",
+		settings: { compaction: { reserveTokens: RESERVE }, outputLimits: { enabled: true } },
+		cases: CROSS_DEVICE_CASES,
+		agentDir: () => homeAgentDir("cross-device"),
+	},
 ];
 
 let failed = 0;
 for (const run of runs) {
 	let result;
 	try {
-		result = await runSession(run.label, run.settings, run.cases);
+		result = await runSession(run.label, run.settings, run.cases, run);
 	} catch (error) {
 		fail(`run ${run.label}: ${error.message}`);
 	}
