@@ -16,6 +16,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { cappedModelConfigs, clampModelWindow, parseCap } from "./cap";
 import { readReserveTokens } from "./settings";
+import { modelKey as piModelKey } from "../shared/settings.ts";
 
 const FLAG_NAME = "context-window";
 const ENV_VAR = "PI_CONTEXT_WINDOW";
@@ -40,7 +41,9 @@ export default function (pi: ExtensionAPI): void {
 			ctx.ui.notify(`context-cap: ${parsed.error}; cap not applied`, "error");
 			return;
 		}
-		const reserveTokens = readReserveTokens(ctx.cwd);
+		// The reserve is resolved for the model this session is on, because that
+		// is how pi resolves it, and this figure is the floor the cap must clear.
+		const reserveTokens = readReserveTokens(ctx.cwd, process.env, piModelKey(ctx.model));
 		if (parsed.cap <= reserveTokens) {
 			ctx.ui.notify(
 				`context-cap: cap ${parsed.cap} must be greater than compaction.reserveTokens (${reserveTokens}); cap not applied`,

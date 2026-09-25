@@ -119,12 +119,53 @@ describe("readReserveTokens", () => {
 		expect(readReserveTokens(cwd, { PI_CODING_AGENT_DIR: agentDir })).toBe(2048);
 	});
 
-	it("rejects a value that is not a positive number instead of trusting it", () => {
+	it("accepts 0, because pi does", () => {
+		// pi's validator rejects only a negative or a non-integer
+		// (`settings-manager.ts`: `!Number.isSafeInteger(v) || v < 0`), so 0 is a
+		// legal reserve and a reader that turns it into 16384 disagrees with the
+		// window pi is itself compacting against.
 		const cwd = fresh("cwd");
-		for (const bad of [0, -1, "8192", null, {}]) {
+		writeJson(join(cwd, ".pi", "settings.json"), { compaction: { reserveTokens: 0 } });
+		expect(readReserveTokens(cwd, { PI_CODING_AGENT_DIR: fresh("agent") })).toBe(0);
+	});
+
+	it("falls back for a value pi would reject, and for one it would never hold", () => {
+		const cwd = fresh("cwd");
+		for (const bad of [-1, 1.5, "8192", null, {}, [], true]) {
 			writeJson(join(cwd, ".pi", "settings.json"), { compaction: { reserveTokens: bad } });
-			expect(readReserveTokens(cwd, { PI_CODING_AGENT_DIR: fresh("agent") })).toBe(DEFAULT_RESERVE_TOKENS);
+			expect(readReserveTokens(cwd, { PI_CODING_AGENT_DIR: fresh("agent") }), JSON.stringify(bad)).toBe(DEFAULT_RESERVE_TOKENS);
 		}
+	});
+
+	it("reads the current model's override ahead of the plain setting, as pi resolves it", () => {
+		// pi answers `getCompactionReserveTokens(model)` as
+		// `modelOverrides[provider/id].reserveTokens ?? reserveTokens ?? default`,
+		// and a model that is not named never steers the answer.
+		const cwd = fresh("cwd");
+		const agentDir = fresh("agent");
+		writeJson(join(agentDir, "settings.json"), { compaction: { reserveTokens: 4096, modelOverrides: { "anthropic/claude-opus": { reserveTokens: 2048 } } } });
+		expect(readReserveTokens(cwd, { PI_CODING_AGENT_DIR: agentDir }, "anthropic/claude-opus")).toBe(2048);
+		// No key given, or a key the file does not name: the plain setting answers.
+		expect(readReserveTokens(cwd, { PI_CODING_AGENT_DIR: agentDir })).toBe(4096);
+		expect(readReserveTokens(cwd, { PI_CODING_AGENT_DIR: agentDir }, "openai/gpt-x")).toBe(4096);
+	});
+
+	it("lets the project file's override beat the global plain setting", () => {
+		// The order is pi's: a model override from either file wins over a plain
+		// setting from either file, because pi merges the files before resolving.
+		const cwd = fresh("cwd");
+		const agentDir = fresh("agent");
+		writeJson(join(agentDir, "settings.json"), { compaction: { reserveTokens: 8192 } });
+		writeJson(join(cwd, ".pi", "settings.json"), { compaction: { modelOverrides: { "p/m": { reserveTokens: 1024 } } } });
+		expect(readReserveTokens(cwd, { PI_CODING_AGENT_DIR: agentDir }, "p/m")).toBe(1024);
+	});
+
+	it("skips a malformed override instead of throwing the way pi does", () => {
+		// pi throws on a bad figure; a settings read here never throws, so a
+		// broken override falls through to the plain setting.
+		const cwd = fresh("cwd");
+		writeJson(join(cwd, ".pi", "settings.json"), { compaction: { reserveTokens: 4096, modelOverrides: { "p/m": { reserveTokens: "lots" } } } });
+		expect(readReserveTokens(cwd, { PI_CODING_AGENT_DIR: fresh("agent") }, "p/m")).toBe(4096);
 	});
 });
 

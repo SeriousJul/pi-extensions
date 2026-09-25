@@ -113,6 +113,19 @@ export function parseCount(section: string, key: string, value: unknown, fallbac
 	return fallback;
 }
 
+/**
+ * A positive integer that may also be left unset, with `null` as the unset
+ * answer. This is the shape a setting takes when its default is not one number
+ * but a rule the caller resolves later -- output limits' `maxLines` defaults to
+ * each tool's own figure from pi, not to a single line count.
+ */
+export function parseNullableCount(section: string, key: string, value: unknown, fallback: number | null, errors: string[]): number | null {
+	if (value === undefined || value === null) return fallback;
+	if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
+	errors.push(`${section}.${key} must be a positive integer or null, got: ${JSON.stringify(value)}`);
+	return fallback;
+}
+
 /** A positive number not above `max`, or the fallback with a report. */
 export function parseRatio(section: string, key: string, value: unknown, fallback: number, max: number, errors: string[]): number {
 	if (value === undefined || value === null) return fallback;
@@ -136,22 +149,58 @@ export function parseNames(section: string, key: string, value: unknown, fallbac
 // ---------------------------------------------------------------------------
 
 /**
- * The effective `compaction.reserveTokens`, the way pi merges it: the project
- * file beats the global file, and a file that names nothing, or names a value
- * that is not a positive finite number, falls to pi's built-in default.
- *
- * pi's own compaction reserve, which several extensions read to work out how
- * full a session is. Every one of them reads it the same way, so only this
- * module knows how.
+ * pi's key for one model inside `compaction.modelOverrides`: `"provider/id"`.
+ * A model with no provider or no id reads as no key, because `""` is not an
+ * override pi would ever resolve and a caller must not invent one.
  */
-export function readReserveTokens(cwd: string, env: NodeJS.ProcessEnv = process.env): number {
+export function modelKey(model: { provider?: string; id?: string } | undefined): string | undefined {
+	if (!model) return undefined;
+	const provider = model.provider ?? "";
+	const id = model.id ?? "";
+	if (provider.length === 0 || id.length === 0) return undefined;
+	return `${provider}/${id}`;
+}
+
+/**
+ * The effective `compaction.reserveTokens`, the way pi resolves it.
+ *
+ * pi merges the two files first and then reads the figure with
+ * `getCompactionTokenSetting`: this model's
+ * `compaction.modelOverrides[provider/id].reserveTokens` wins, the plain
+ * `compaction.reserveTokens` comes next, and pi's built-in default is last.
+ * The same order is what a reader of the two files has to reproduce, so
+ * `modelKey` is `"provider/id"` when the caller knows which model it is
+ * bounding for, and `undefined` reads the plain setting only.
+ *
+ * A value is accepted exactly where pi accepts it: a non-negative safe
+ * integer, which includes 0. pi throws on anything else and this module never
+ * throws, so a value pi would reject is skipped and the next source answers.
+ */
+export function readReserveTokens(cwd: string, env: NodeJS.ProcessEnv = process.env, modelKey?: string): number {
 	const globalSection = sectionOf(readSettingsJson(globalSettingsPath(env)).obj, "compaction");
 	const projectSection = sectionOf(readSettingsJson(projectSettingsPath(cwd)).obj, "compaction");
-	for (const section of [projectSection, globalSection]) {
-		const value = section?.reserveTokens;
-		if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
+	// Project first: pi's merge lets the project file win key by key, and a
+	// model override in either file beats a plain setting in either one.
+	const sections = [projectSection, globalSection];
+	if (modelKey !== undefined) {
+		const override = firstTokenSetting(sections, (section) => {
+			const overrides = sectionOf(section, "modelOverrides");
+			return overrides === null ? undefined : sectionOf(overrides, modelKey)?.reserveTokens;
+		});
+		if (override !== undefined) return override;
 	}
-	return DEFAULT_RESERVE_TOKENS;
+	const ordinary = firstTokenSetting(sections, (section) => section.reserveTokens);
+	return ordinary ?? DEFAULT_RESERVE_TOKENS;
+}
+
+/** The first value in order that pi would accept as a token setting. */
+function firstTokenSetting(sections: (SettingsObject | null)[], read: (section: SettingsObject) => unknown): number | undefined {
+	for (const section of sections) {
+		if (section === null) continue;
+		const value = read(section);
+		if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return value;
+	}
+	return undefined;
 }
 
 // ---------------------------------------------------------------------------
