@@ -21,9 +21,12 @@ produced. This extension does that, and only ever bounds downward.
   named in tokens and enforced in bytes. It is a per-call figure, and it never
   rises above what pi itself published for a result: the hook runs after pi's
   cut, so the larger bytes are not in hand, and a raise is not what this is for.
-  The outer max is set so that a result pi called in bounds is left exactly as
-  pi produced it, which is pi's own content figure plus the slack pi's notice
-  line adds past it.
+  The rule covers BOTH units. pi truncates its content to its byte figure and
+  its line figure and only then appends its own notice, so a result pi calls in
+  bounds sits past both figures by that notice, and the outer max carries an
+  allowance in each unit. An outer max set to pi's content figure alone re-cut
+  output pi had blessed on the byte axis; a line max of exactly pi's content
+  figure did it on the line axis.
 - **Headroom.** The **Effective window** minus pi's `compaction.reserveTokens`
   minus the usage pi reports. The Effective window already carries the llama
   refresh heal and the Context window cap clamp, so all three extensions
@@ -43,7 +46,19 @@ produced. This extension does that, and only ever bounds downward.
 - **Spill.** The complete result goes to a file under the agent dir, with
   retention and a sweep at session start. bash, grep, find, and ls spill. read
   does not: its source is already a file, so its Bound cuts and rewrites pi's
-  own `Use offset=N to continue` notice to the smaller cut.
+  own `Use offset=N to continue` notice to the smaller cut. That pointer is
+  never simply taken away. A read result that fits inside its Bound once pi's
+  own notice line is set aside is left exactly as pi produced it, notice and all,
+  because no content was dropped and pi's offset is still the true one: a
+  pointerless read result is the one way this extension could lose text for
+  good. The cost, at most, is pi's own notice past the Bound.
+- **Line ceiling, per tool.** pi does not cut every tool by line. bash and read
+  get its line figure; grep, find, and ls hand their own cutter
+  `Number.MAX_SAFE_INTEGER`, because their match, result, and entry limits
+  already cap the rows and only the byte figure is left to bind. The ceiling
+  follows pi per tool, so a 2000-line grep result stays whole. Naming
+  `maxLines` in settings is a deliberate choice and applies to every bounded
+  tool.
 - **Fidelity, stated exactly.** The Spill holds everything the hook received,
   which is not always everything the tool produced. For bash the hook receives
   `details.fullOutputPath`, pi's log of the command's whole output, so the
@@ -123,8 +138,8 @@ on reload.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `true` | Turn the extension on or off. |
-| `maxOutputTokens` | pi's own 50KB content cut plus the slack its notice adds past it, in tokens | The outer max. Always on, and still invisible until Headroom gets tight. |
-| `maxLines` | `2000` | The line max, matching pi. |
+| `maxOutputTokens` | pi's own 50KB content cut plus the slack its notice adds past it, in tokens | The outer max on the byte axis. Always on, and still invisible until Headroom gets tight. |
+| `maxLines` | unset, meaning each tool's own figure from pi: pi's 2000 content lines plus the two lines its notice costs, for bash and read, and no line ceiling for grep, find, and ls | The outer max on the line axis. pi does not cut every tool by line, and neither does this extension by default. |
 | `inflation` | `2.0` | The factor on pi's chars/4 estimate, matching the Safe branch summary. |
 | `bytesPerChar` | `4` | pi's own `CHARS_PER_TOKEN`. |
 | `shareOfHeadroom` | `0.25` | The share of the Headroom one assistant message may spend. |
@@ -134,7 +149,11 @@ on reload.
 | `spill.maxAgeDays` | `7` | The Spill age the session-start sweep enforces. |
 
 `compaction.reserveTokens` stays pi's own setting, read here and never written.
-The extension does not touch pi's compaction threshold or `keepRecentTokens`.
+It is read the way pi resolves it: this model's
+`compaction.modelOverrides[provider/id].reserveTokens` first, then the plain
+setting, then pi's built-in default, and a value is accepted wherever pi accepts
+one, which includes 0. The extension does not touch pi's compaction threshold or
+`keepRecentTokens`.
 
 Spill files live in `~/.pi/agent/output-limits/<session-id>/`, beside the
 sessions, because the agent dir is already private. Files are mode 0600 in a
@@ -154,10 +173,14 @@ undo is not one.
 
 - `status` (also the bare form): the active Bound inputs and the Spill
   directory footprint. It does not enumerate Spill files for the model; that is
-  what bash is for.
+  what bash is for. It also counts the cuts whose Bound had already reached the
+  outer max, so a cut caused by a ceiling rather than by pressure near the window
+  is visible instead of silent: that figure should always read zero unless the
+  user set an outer max below pi's own.
 - `settings [key=value ...]`: shows the keys, or writes the named ones and
   persists them to the project settings file when one exists, else the global
-  file. Every other setting is preserved.
+  file. Every other setting is preserved. `maxLines=auto` writes the unset
+  answer back, which hands the line ceiling back to pi per tool.
 - `off` / `on`: writes `enabled` and reloads the session state.
 
 ## How it composes
