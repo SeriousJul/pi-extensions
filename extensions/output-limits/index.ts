@@ -626,7 +626,11 @@ function statusText(s: OutputLimitsState, ctx: ExtensionContext): string {
 		// the outer max was not caused by the window: a ceiling did it, which is
 		// the one state this extension must never be in. Every cut of an open
 		// session used to land here silently.
-		`sessions with the Headroom ample: ${s.ceilingCuts} cut(s) bound by a ceiling, not by pressure${s.ceilingCuts === 0 ? " (as intended)" : " -- a ceiling is cutting what pi blessed"}`,
+		// The tripwire the review asked for. A cut whose Bound had already reached
+		// the outer max was not caused by the window: a ceiling did it, and that is
+		// the one state this extension must never be in. Every cut of an open
+		// session used to land here silently.
+		`ceiling cuts: ${s.ceilingCuts} cut(s) bound by maxOutputTokens or maxLines rather than by the Headroom${s.ceilingCuts === 0 ? " (as intended)" : " -- a ceiling is cutting what pi blessed"}`,
 		`sweep at start: removed ${s.sweep.removed} file(s), freed ${formatBytes(s.sweep.bytesFreed)}; limits ${formatBytes(s.settings.spill.maxTotalBytes)} and ${s.settings.spill.maxAgeDays} day(s)`,
 	].join("\n");
 }
@@ -788,8 +792,7 @@ function parsePair(kv: string, patch: SettingsPatch): string | undefined {
 		else if (!Number.isInteger(Number(raw)) || Number(raw) <= 0) return `outputLimits.maxLines must be a positive integer or auto, got: ${raw}`;
 		else patch.maxLines = Number(raw);
 		return;
-	}
-	const value = Number(raw);
+	}	const value = Number(raw);
 	if (!Number.isFinite(value) || value <= 0) return `outputLimits.${key} must be a positive number, got: ${raw}`;
 	switch (key) {
 		case "maxOutputTokens":

@@ -948,6 +948,44 @@ describe("/output-limits", () => {
 		expect(text).toContain("Spill: 1 cut");
 		// It reports the footprint, not an enumeration for the model to read.
 		expect(text).not.toContain("1-bash");
+		// The line ceiling is stated as the per-tool rule it is, because one
+		// number would be a lie for three of the five tools.
+		expect(text).toContain("bash 2002/read 2002");
+		expect(text).toContain("grep/find/ls none");
+		// And the tripwire the ceiling bug needed: this cut was the window's, so
+		// the ceiling count stays at zero.
+		expect(text).toContain("ceiling cuts: 0 cut(s)");
+	});
+
+	it("status counts a cut that a ceiling caused rather than the Headroom", async () => {
+		// The default outer max is pi's own figure, so with the window open no
+		// result should be cut at all. A ceiling the user set below pi's figure
+		// can still cut, and `status` has to say so instead of letting the number
+		// hide among the Headroom-driven cuts.
+		writeSettings({ maxOutputTokens: 4_096 });
+		seed([{ id: "c1", name: "bash" }]);
+		const captured = loadExtension(cwd, sm);
+		const ctx = withUsage(captured, sm, usedFor(129_616));
+		const text = published(await captured.toolResult!(event({ toolName: "bash", toolCallId: "c1", content: [textBlock(bigOutput(900, 44))] }), ctx), "");
+		expect(text).toContain("capped to 8KB (4.1k tokens)");
+		captured.notifications.length = 0;
+		await captured.command!("status", ctx);
+		const status = captured.notifications.map((n) => n.message).join("\n");
+		expect(status).toContain("ceiling cuts: 1 cut(s)");
+		expect(status).toContain("a ceiling is cutting what pi blessed");
+	});
+
+	it("settings maxLines=auto writes the unset answer back", async () => {
+		seed([{ id: "c1", name: "bash" }]);
+		const captured = loadExtension(cwd, sm);
+		const ctx = ctxTight(captured);
+		await captured.command!("settings maxLines=600", ctx);
+		expect(JSON.parse(readFileSync(join(cwd, ".pi", "settings.json"), "utf8")).outputLimits.maxLines).toBe(600);
+		await captured.command!("settings maxLines=auto", ctx);
+		expect(JSON.parse(readFileSync(join(cwd, ".pi", "settings.json"), "utf8")).outputLimits.maxLines).toBeNull();
+		captured.notifications.length = 0;
+		await captured.command!("settings", ctx);
+		expect(captured.notifications.map((n) => n.message).join("\n")).toContain("outputLimits.maxLines=auto");
 	});
 
 	it("off and on persist the switch and reload the state", async () => {
