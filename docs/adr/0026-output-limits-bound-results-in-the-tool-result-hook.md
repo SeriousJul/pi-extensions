@@ -30,20 +30,39 @@ message (pi guarantees `ctx.sessionManager` is synchronized through it) and
 tracks what it has admitted in the Ledger, because the usage pi reports cannot
 include a sibling that has not finished. Five tools are in scope, named in a
 settings list, with pi's own cut direction per tool: tail for bash, head for
-read, grep, find, and ls. read is bounded without a Spill, because pi's notice
+read, grep, find, and ls. An error result keeps its tail whoever produced it,
+which is decision 18 and the one exception to that per-tool rule: the line that
+says why something failed sits at the end, so the visible case is a failing
+`grep`. read is bounded without a Spill, because pi's notice
 already names the file and the offset to continue from, and a second copy of
 file content that is already on disk answers no need.
 
-Two invariants govern the mechanism. It is one-directional: a Bound above pi's
-50 KB is not available, because those bytes are gone before the hook runs, and
-we chose not to pursue the upstream change that would plumb `limits` into the
-tool options. It is lossless or it does not cut: when a Spill write fails, the
-extension leaves pi's result alone, reports once per session, and still records
+Two invariants govern the mechanism. It is one-directional: a Bound above what
+pi itself published for a result is not available, because those bytes are gone
+before the hook runs, and we chose not to pursue the upstream change that would
+plumb `limits` into the tool options. The outer max is therefore pi's content
+figure plus the slack pi's own notice adds past it, since pi truncates its
+content to 50 KB and then appends its notice line: a result pi itself calls in
+bounds sits a little past the figure, and an outer max set to exactly 50 KB
+would re-cut it and stop being invisible while the Headroom is ample. The
+invariant holds at the boundary that matters, which is pi's published result,
+not pi's internal constant. It is lossless or it does not cut: when a Spill
+write fails, the extension leaves pi's result alone, reports once per session,
+and still records
 the real admitted size, so a disk-full run costs context instead of losing
 text. Where pi already wrote its own throwaway for a cut bash result, the
-extension moves that file into the Spill directory and continues appending to
-it, so one call has one file and the copy holds everything, including the part
-pi dropped. There is no reader tool for a Spill: the agent has bash, and
+extension moves that file into the Spill directory and adopts it as the Spill,
+so one call has one file and the copy holds everything, including the part pi
+dropped. Nothing is appended to it: pi's log is a superset of the text the hook
+received, so copying that text in again would double the file to state nothing
+new. The move is a rename when the two directories share a device and a copy
+when they do not, which is the ordinary case on Linux, where `/tmp` is its own
+filesystem and the Spill root sits beside the sessions; a device boundary that
+the rename alone could not cross would otherwise fail the one thing the ticket
+asked for. Because that move takes the file pi's own notice points at, the
+extension rewrites the path pi named to the Spill that now holds the bytes, and
+charges those bytes to the Bound: one result leaves exactly one live path in
+front of the model. There is no reader tool for a Spill: the agent has bash, and
 `rg` over one bounded file is the case that matters.
 
 Rejected alternatives. Overriding the six tools by registering their names, so
@@ -72,7 +91,14 @@ test's stack trace is often the largest thing in a turn, and the floor is what
 keeps them diagnosable. The extension reads the context figure once per
 assistant message rather than once per call, and invalidates that baseline on
 compaction, model switch, and tree navigation, because each changes the
-projection. No system prompt line advertises the Bound: pi's per-result notice
+projection. A blind call writes no baseline at all, because the outer max is a
+clamp and not an allowance: freezing a batch on it would let every later sibling
+of the message reach the whole window, so the batch takes its baseline from the
+first call that can read a Headroom and keeps what the blind ones already
+admitted. When the call count does not read, the siblings still share one batch
+key, taken from the newest assistant entry in the branch, because with no count
+each call may reach the whole remainder and the accumulation is the only thing
+bounding them. No system prompt line advertises the Bound: pi's per-result notice
 stays true and the extension's own notice names the real number for that call.
 The Admitted text carries the extension's notice and its pointer lines, so
 those bytes are reserved out of the Bound before the cut runs rather than added

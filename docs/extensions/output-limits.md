@@ -19,8 +19,11 @@ produced. This extension does that, and only ever bounds downward.
 
 - **Bound.** `clamp(shareOfHeadroom x Headroom, minOutputBytes, maxOutputTokens)`,
   named in tokens and enforced in bytes. It is a per-call figure, and it never
-  rises above pi's own per-call limit: the hook runs after pi's cut, so the
-  larger bytes are not in hand, and a raise is not what this is for.
+  rises above what pi itself published for a result: the hook runs after pi's
+  cut, so the larger bytes are not in hand, and a raise is not what this is for.
+  The outer max is set so that a result pi called in bounds is left exactly as
+  pi produced it, which is pi's own content figure plus the slack pi's notice
+  line adds past it.
 - **Headroom.** The **Effective window** minus pi's `compaction.reserveTokens`
   minus the usage pi reports. The Effective window already carries the llama
   refresh heal and the Context window cap clamp, so all three extensions
@@ -34,7 +37,9 @@ produced. This extension does that, and only ever bounds downward.
   counted and the allowance is divided among them, with the **Ledger** tracking
   what has already been admitted for that message, because the usage pi reports
   cannot include a sibling that has not finished. A call that needs less than
-  its share leaves the difference for the calls that come after it.
+  its share leaves the difference for the calls that come after it. When the
+  count does not read cleanly, the siblings still share one batch, so the
+  accumulation is what bounds them.
 - **Spill.** The complete result goes to a file under the agent dir, with
   retention and a sweep at session start. bash, grep, find, and ls spill. read
   does not: its source is already a file, so its Bound cuts and rewrites pi's
@@ -43,14 +48,25 @@ produced. This extension does that, and only ever bounds downward.
   which is not always everything the tool produced. For bash the hook receives
   `details.fullOutputPath`, pi's log of the command's whole output, so the
   Spill holds the whole output: pi's throwaway is moved into the Spill
-  directory rather than left behind, and one call has one complete file. For
+  directory rather than left behind, and one call has one complete file. The
+  move crosses a device boundary by copy when a rename cannot, which is the
+  ordinary case: `/tmp` is its own filesystem and the Spill root sits beside the
+  sessions. For
   grep, find, and ls pi has already dropped the tail past its own 50KB before
   the hook runs, so their Spill holds pi's result and the user's loss becomes
   one cut preserved in a file instead of two cuts that are not.
+- **One live path.** A capped result names one file, and that file exists. When
+  this extension moves pi's log into the Spill, the path pi wrote inside its own
+  notice is rewritten to the Spill that holds those bytes now, so the model is
+  never sent to read a moved file. The rewrite is charged to the Bound, like
+  every other byte the model receives.
 - **Blind.** When `ctx.getContextUsage()` returns nothing, which happens with
   no resolved window and right after a compaction that has no usage yet, the
   Bound is `maxOutputTokens` and nothing is cut: a blind call behaves exactly
-  like pi today.
+  like pi today. A blind call opens no batch baseline either. The outer max is a
+  clamp, not an allowance, so the batch takes its figures from the first call
+  that can read a Headroom, and what the blind calls passed through still counts
+  against it.
 - **Images and errors.** Image blocks are charged against the Bound and never
   cut, because pi normalizes images after the hook. Error results are bounded
   too, and an error keeps its tail whoever produced it, because the line that
@@ -62,14 +78,21 @@ produced. This extension does that, and only ever bounds downward.
 
 ## What you see
 
-The model's view of a capped result keeps pi's own notice, which stays true,
-and adds one line with the real numbers:
+The model's view of a capped result keeps pi's own notice, with the path it
+names repointed at the Spill, and adds one line with the real numbers:
 
 ```
+[Showing lines 1-148 of 4000 (50.0KB limit). Full output:
+~/.pi/agent/output-limits/<session-id>/4-bash-c1d2e3f4.log]
+
 [output-limits: capped to 8KB (4.1k tokens) of the 16k token headroom left for
 this message (3 calls); full output:
 ~/.pi/agent/output-limits/<session-id>/4-bash-c1d2e3f4.log]
 ```
+
+One result, one path, and the file is there. When pi's log for a bash cut is
+moved into the Spill, the path pi named would otherwise lead to a file that no
+longer exists, so it is rewritten to the file that now holds those bytes.
 
 For read, the second half is pi's continuation instead, rewritten to the
 smaller cut:
@@ -100,7 +123,7 @@ on reload.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `true` | Turn the extension on or off. |
-| `maxOutputTokens` | pi's own 50KB in tokens | The outer max. Always on, and still invisible until Headroom gets tight. |
+| `maxOutputTokens` | pi's own 50KB content cut plus the slack its notice adds past it, in tokens | The outer max. Always on, and still invisible until Headroom gets tight. |
 | `maxLines` | `2000` | The line max, matching pi. |
 | `inflation` | `2.0` | The factor on pi's chars/4 estimate, matching the Safe branch summary. |
 | `bytesPerChar` | `4` | pi's own `CHARS_PER_TOKEN`. |
@@ -160,3 +183,6 @@ instead.
 - `npm run e2e:output-limits` - a real `pi` process in RPC mode with a scripted
   provider, driving real `bash`, `read`, and `grep` calls. This is the seam that
   proves the session file holds the capped text and the Spill holds the rest.
+  One of its runs puts the agent dir on the home filesystem, which is a
+  different device from the `/tmp` pi logs bash spills to, so the move that
+  cannot be a rename is proved to be a copy.
