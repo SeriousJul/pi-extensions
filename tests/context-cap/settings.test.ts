@@ -63,4 +63,19 @@ describe("readReserveTokens", () => {
 		writeJson(join(agentDir, "settings.json"), { compaction: { reserveTokens: "lots" } });
 		expect(readReserveTokens(cwd, { PI_CODING_AGENT_DIR: agentDir })).toBe(DEFAULT_RESERVE_TOKENS);
 	});
+
+	it("honours a reserveTokens of 0, which is what context-cap read before the shared reader", () => {
+		// Regression: pi accepts 0 as a legal `compaction.reserveTokens`, and
+		// context-cap's own reader on main returned it. When the reserve reads
+		// were unified the shared rule demanded a positive number, so a user who
+		// compacted with nothing held back got the built-in 16384 in the gate
+		// below -- a cap of, say, 12000 was then rejected as too small for no
+		// reason. One reserve, one answer, and it is pi's.
+		const cwd = makeCwd();
+		const agentDir = makeCwd();
+		writeJson(join(agentDir, "settings.json"), { compaction: { reserveTokens: 0 } });
+		expect(readReserveTokens(cwd, { PI_CODING_AGENT_DIR: agentDir })).toBe(0);
+		writeJson(join(agentDir, "settings.json"), { compaction: { reserveTokens: -1 } });
+		expect(readReserveTokens(cwd, { PI_CODING_AGENT_DIR: agentDir })).toBe(DEFAULT_RESERVE_TOKENS);
+	});
 });

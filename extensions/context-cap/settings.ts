@@ -1,34 +1,12 @@
-import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-
-/** pi's built-in default for compaction.reserveTokens (packages/coding-agent compaction settings). */
-export const DEFAULT_RESERVE_TOKENS = 16384;
-
-interface SettingsShape {
-	compaction?: { reserveTokens?: unknown };
-}
-
 /**
- * Read the effective compaction.reserveTokens the way pi merges settings:
- * project <cwd>/.pi/settings.json overrides global <agentDir>/settings.json,
- * which defaults to ~/.pi/agent. Missing or unreadable files fall through to
- * the built-in default.
+ * Settings for the context-cap extension.
+ *
+ * The only figure it reads of pi's is `compaction.reserveTokens`, and that
+ * read is the shared one in `extensions/shared/settings.ts`: project
+ * `<cwd>/.pi/settings.json` over global `<agentDir>/settings.json`, resolved
+ * for the live model through `compaction.modelOverrides` the way pi resolves
+ * it, over pi's built-in default. This module keeps the name the extension
+ * imports and re-exports the default it reports, so the precedence rule lives
+ * in one file for every extension that needs it.
  */
-export function readReserveTokens(cwd: string, env: NodeJS.ProcessEnv = process.env): number {
-	const globalPath = env.PI_CODING_AGENT_DIR
-		? join(env.PI_CODING_AGENT_DIR, "settings.json")
-		: join(homedir(), ".pi", "agent", "settings.json");
-	const projectPath = join(cwd, ".pi", "settings.json");
-	return readReserveTokensAt(projectPath) ?? readReserveTokensAt(globalPath) ?? DEFAULT_RESERVE_TOKENS;
-}
-
-function readReserveTokensAt(path: string): number | undefined {
-	try {
-		const parsed = JSON.parse(readFileSync(path, "utf8")) as SettingsShape;
-		const value = parsed?.compaction?.reserveTokens;
-		return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-	} catch {
-		return undefined;
-	}
-}
+export { DEFAULT_RESERVE_TOKENS, readReserveTokens } from "../shared/settings.ts";

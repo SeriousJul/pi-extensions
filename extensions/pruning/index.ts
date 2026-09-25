@@ -26,6 +26,7 @@ import { nextEngagement } from "./engagement.ts";
 import { pruneGate, type GateDecision } from "./gate.ts";
 import { createRecallTool } from "./recall.ts";
 import { readPruningSettings, readReserveTokens, writePruningSettings, type PruningSettings } from "./settings.ts";
+import { modelKey as piModelKey } from "../shared/settings.ts";
 
 interface PruneStats {
 	outputs: number;
@@ -182,7 +183,10 @@ export default function pruningExtension(pi: ExtensionAPI): void {
 		for (const error of errors) ctx.ui.notify(`pruning: ${error}`, "error");
 		state = {
 			settings,
-			reserveTokens: readReserveTokens(ctx.cwd),
+			// pi resolves its reserve per model, and Pruning's threshold is that
+			// reserve: reading it for the live model is what keeps the gate on the
+			// same edge pi compacts at.
+			reserveTokens: readReserveTokens(ctx.cwd, process.env, piModelKey(ctx.model)),
 			firstActivationNotified: false,
 			engaged: false,
 			resetPending: false,
