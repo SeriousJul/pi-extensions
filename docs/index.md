@@ -42,6 +42,7 @@ list with `pi list`.
 | [initial-context](/extensions/initial-context) | `/ctx` shows the token breakdown of the agent's initial context, with per-tool usage. |
 | [model-router](/extensions/model-router) | Recovers a session from a provider usage-limit halt (switch to a fallback or wait for the reset, then resume). |
 | [llama-refresh](/extensions/llama-refresh) | Self-heals the context window of a session that resolved a local llama.cpp model while it was asleep. |
+| [output-starvation](/extensions/output-starvation) | Refuses a request whose output budget collapsed to pi's floor: one report line and an aborted turn, at most once per turn. |
 | [quota](/extensions/quota) | Monitors the OpenAI ChatGPT plan quota: a footer line with the used windows, and a `/quota` detail view. |
 | [sync](/extensions/sync/) | Cross-device pi config sync: `/sync` plus the `pi-sync` CLI, three-way merge, v1 backend a secret GitHub Gist. |
 | [usage](/extensions/usage) | The `pi-usage` CLI and the usage report: token and cost usage across all pi sessions. |

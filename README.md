@@ -16,6 +16,7 @@ VitePress from the [`docs/`](docs/) folder.
 - **compress** - replaces finished turns in outgoing requests with one short standing-in message; the session file stays intact.
 - **pruning** - two-level context control: prunes large tool outputs out of the request at pi's compaction threshold, and lets the prune gate cancel the compaction when pruning alone frees enough headroom.
 - **output-limits** - bounds the size of a tool result before pi stores it, against a share of the session's headroom, and keeps the whole result in a spill file so the cut is lossless.
+- **output-starvation** - refuses a request whose output budget collapsed to pi's floor: one report line and an aborted turn, at most once per turn, so the provider is never asked for a non-answer.
 - **edit-assist** - corrects and diagnoses built-in edit calls: an oldText that differs from the file only in leading whitespace is corrected before execution, and the success result carries a one-line honesty note naming the line; a no-match failure gets the Nearest region with a unified diff, an ambiguous match gets the occurrence line numbers, a malformed call gets one targeted hint, and the stock error text is always kept.
 - **background-jobs** - `bash_bg`, `job_wait`, `job_status`: run long commands in the background and wait on them once, instead of sleep-and-tail loops.
 - **skills** - a curated skill tree loaded by pi from the package's `skills/` directory, with `npm run skills:update` to three-way-merge upstream changes into the copies. The `mattpocock/` skills come from [mattpocock/skills](https://github.com/mattpocock/skills), MIT licensed (the upstream `LICENSE` ships at `skills/mattpocock/LICENSE`).
@@ -37,6 +38,7 @@ See the [pi packages docs](https://github.com/earendil-works/pi/blob/main/packag
 | compress | [docs](https://seriousjul.github.io/pi-extensions/extensions/compress.html) |
 | pruning | [docs](https://seriousjul.github.io/pi-extensions/extensions/pruning.html) |
 | output-limits | [docs](https://seriousjul.github.io/pi-extensions/extensions/output-limits.html) |
+| output-starvation | [docs](https://seriousjul.github.io/pi-extensions/extensions/output-starvation.html) |
 | edit-assist | [docs](https://seriousjul.github.io/pi-extensions/extensions/edit-assist.html) |
 | background-jobs | [docs](https://seriousjul.github.io/pi-extensions/extensions/background-jobs.html) |
 
