@@ -529,6 +529,17 @@ a Bound is a share of.
 _Avoid_: free space, remaining context, slack (implies a reserve pi does not
 use this way)
 
+**Output starvation**:
+The state of a request whose context estimate leaves pi's output clamp
+nothing to give: the Effective window minus the estimate minus the clamp's
+safety margin is at or below pi's floor, so the payload goes out carrying the
+floor as its max tokens and the provider answers a one-token non-answer the
+transcript records as a `length` stop. The name of what the guard refuses to
+send.
+_Avoid_: truncation (a cut that keeps an answer and loses its tail), length
+stop (the transcript record of a starved turn that went out), overflow
+(the window's state, not the budget's)
+
 **Spill**:
 The lossless file copy of a result this extension cut, held under the agent
 directory beside the sessions. The cut text goes to the model; the whole
