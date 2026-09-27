@@ -24,12 +24,21 @@ footer showing the capped window as the model's budget.
 - The cap is a ceiling: the effective window is the smaller of the cap and
   the model's resolved window (after `models.json` `modelOverrides`). It
   never grows a window.
+- For a live-catalog provider (llama.cpp), whose model list pi re-fetches
+  from the server, the cap is not re-registered: a static capped list would
+  freeze the live window in place. There the cap is enforced on the
+  session's model at every boundary the window is consumed (selection, run
+  start, turn start, turn end, run settle), so a mid-session model
+  re-apply (the llama refresh heal) cannot widen it past the cap.
 - It is session-wide: the initial model, model switches, scoped-model
   cycling, and resume all operate under the cap. The `/model` picker and
   the footer context percentage show the capped window.
 - Compaction timing, overflow detection, and the footer percentage all
   use the capped window, because pi reads one field:
   `model.contextWindow`.
+- The resolved cap is published to a shared record, so the llama refresh
+  compare clamps both sides of its compare to it: a drift the cap hides
+  (the live window stays above the cap) moves nothing and says nothing.
 - A one-time notice confirms the active cap at startup.
 
 ## Rejection
@@ -43,13 +52,17 @@ pi reports an error and runs uncapped when:
 ## How it works
 
 On session start the extension re-registers each provider that has a
-model above the cap with capped copies of its full model list, and
-clamps the model objects the session already resolved in place. See
+model above the cap with capped copies of its full model list, clamps
+the model objects the session already resolved in place, and publishes
+the resolved cap to the shared record in
+`extensions/shared/context-window-cap.ts` (the llama refresh compare
+reads it). See
 [ADR 0004](/adr/0004-context-window-cap-via-provider-reregistration).
 
 ## Known edges
 
 - Providers whose model list pi refreshes from the network after startup
-  (for example a local llama.cpp server) keep the capped list taken at
-  session start until the next session.
+  (for example a local llama.cpp server) keep their live list: the cap
+  skips their re-registration and clamps the session's model at every
+  boundary the window is consumed.
 - A model with no configured auth is left untouched.

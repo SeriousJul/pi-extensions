@@ -1,464 +1,637 @@
+// Unit tests for the engine-free llama-refresh decision core (ADR 0027).
+// The core owns attempt accounting across both Heal moments, the symptom
+// trigger, the command re-arm, and the guards; the pi wiring (index.ts)
+// only binds events. Every dependency is faked here.
+
 import { describe, expect, it } from "vitest";
-import type { Api, Model } from "@earendil-works/pi-ai";
 
 import {
 	createLlamaRefresh,
-	FALLBACK_WINDOW,
-	LLAMA_CPP_PROVIDER,
+	NEAR_EMPTY_OUTPUT_TOKENS,
+	NO_MODEL_LINE,
 	type LlamaRefresh,
-	type RefreshDecision,
-} from "../../extensions/llama-refresh/refresh";
+	type LlamaRefreshDeps,
+	type ModelRef,
+	REFRESH_TIMEOUT_MS,
+	windowCheckFailedLine,
+	windowConfirmedLine,
+	windowReappliedLine,
+} from "../../extensions/llama-refresh/refresh.ts";
 
-// ---------------------------------------------------------------------------
-// Harness
-// ---------------------------------------------------------------------------
+const REF: ModelRef = { provider: "llama.cpp", id: "test-model" };
+const OTHER: ModelRef = { provider: "openai", id: "gpt" };
 
-function model(provider: string, id: string, contextWindow: number): Model<Api> {
-	return {
-		id,
-		name: id,
-		provider,
-		api: "openai-completions",
-		baseUrl: "http://127.0.0.1:8080/v1",
-		reasoning: false,
-		input: ["text"],
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow,
-		maxTokens: 8192,
-	} as Model<Api>;
-}
+// The core only reads contextWindow off a model and hands the model object
+// to applyModel, so a fake needs nothing else.
+const model = (contextWindow: number) => ({ contextWindow }) as never;
 
-const LA = LLAMA_CPP_PROVIDER;
-const TRUE_WINDOW = 200192;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 interface Harness {
-	llamaRefresh: LlamaRefresh;
-	/** Read-backs the registry serves, keyed by provider/id. */
-	registry: Map<string, Model<Api>>;
-	refreshCalls: number;
-	applied: Model<Api>[];
-	setRegistry(provider: string, id: string, window: number | undefined): void;
-	setRefreshOk(ok: boolean): void;
-	/** A hook the fake refresh runs before it resolves, to land a select or a second settled run mid-check. */
-	setOnRefresh(fn: (() => void) | undefined): void;
-	/** Make the fake registry read-back throw, as a stale session's getter would. */
-	setResolveThrows(throws: boolean): void;
-	/** Make the core's session look stale, as after a replacement or reload. */
-	setIsCurrent(current: boolean): void;
-	start(): void;
-	select(provider: string, id: string): void;
-	settled(provider: string, id: string, window: number): Promise<RefreshDecision>;
+	core: LlamaRefresh;
+	/** The window the registry currently reports; tests mutate it through the onRefresh hook. */
+	registry: { window: number | undefined };
+	/** Runs as the catalog refresh completes, before the read-back. */
+	onRefresh: () => void;
+	refreshCount: () => number;
+	/** The refresh options the last refreshCatalog call received. */
+	lastRefreshOpts: () => { timeoutMs?: number } | undefined;
+	/** Fail the next n refreshes (server down). */
+	failNext: (n: number) => void;
+	/** Make the next refresh take n ms (models a slow server; the pre-request timeout fails it). */
+	delayNext: (ms: number) => void;
+	applied: () => number[];
+	/** Flip the isCurrent probe (a session replacement or reload). */
+	setCurrent: (current: boolean) => void;
+	/** Set the active Context window cap (undefined clears it). */
+	setCap: (cap: number | undefined) => void;
+	/** Refuse the next apply (pi.setModel declined). */
+	refuseNextApply: () => void;
 }
 
 function makeHarness(): Harness {
-	const registry = new Map<string, Model<Api>>();
-	let refreshOk = true;
-	let refreshCalls = 0;
-	let onRefresh: (() => void) | undefined;
-	let resolveThrows = false;
-	let isCurrent = true;
-	const applied: Model<Api>[] = [];
+	const registry: Harness["registry"] = { window: 40192 };
+	let failuresLeft = 0;
+	let delayMs = 0;
+	let current = true;
+	let refuseApply = false;
+	let cap: number | undefined;
+	let refreshes = 0;
+	let opts: { timeoutMs?: number } | undefined;
+	const appliedWindows: number[] = [];
 
-	const llamaRefresh = createLlamaRefresh({
-		refreshCatalog: async () => {
-			refreshCalls += 1;
-			onRefresh?.();
-			return refreshOk;
-		},
-		resolveModel: (ref) => {
-			if (resolveThrows) throw new Error("stale session");
-			return registry.get(`${ref.provider}/${ref.id}`);
-		},
-		applyModel: async (m) => {
-			applied.push(m);
+	const deps: LlamaRefreshDeps = {
+		refreshCatalog: async (nextOpts) => {
+			opts = nextOpts;
+			refreshes += 1;
+			if (failuresLeft > 0) {
+				failuresLeft -= 1;
+				return false;
+			}
+			if (delayMs > 0) {
+				const duration = delayMs;
+				delayMs = 0;
+				await sleep(1);
+				// Model the wiring's hard deadline: a refresh that cannot
+				// finish inside its budget fails.
+				if (nextOpts?.timeoutMs !== undefined && duration > nextOpts.timeoutMs) return false;
+			}
+			harness.onRefresh();
 			return true;
 		},
-		isCurrent: () => isCurrent,
-	});
-
-	return {
-		llamaRefresh,
-		registry,
-		get refreshCalls() {
-			return refreshCalls;
+		resolveModel: (ref) => {
+			if (ref.provider !== REF.provider || ref.id !== REF.id) return undefined;
+			return registry.window === undefined ? undefined : model(registry.window);
 		},
-		applied,
-		setRegistry(provider: string, id: string, window: number | undefined) {
-			if (window === undefined) {
-				registry.delete(`${provider}/${id}`);
-			} else {
-				registry.set(`${provider}/${id}`, model(provider, id, window));
+		applyModel: async (m) => {
+			if (refuseApply) {
+				refuseApply = false;
+				return false;
 			}
+			appliedWindows.push((m as { contextWindow: number }).contextWindow);
+			return true;
 		},
-		setRefreshOk(ok: boolean) {
-			refreshOk = ok;
-		},
-		setOnRefresh(fn) {
-			onRefresh = fn;
-		},
-		setResolveThrows(throws) {
-			resolveThrows = throws;
-		},
-		setIsCurrent(current) {
-			isCurrent = current;
-		},
-		start: () => llamaRefresh.onSessionStart(),
-		select: (provider, id) => llamaRefresh.onModelSelect({ provider, id }),
-		settled: (provider, id, window) => llamaRefresh.onTurnEnd({ provider, id, contextWindow: window }),
+		isCurrent: () => current,
+		windowCap: () => cap,
 	};
+
+	const harness: Harness = {
+		core: createLlamaRefresh(deps),
+		registry,
+		onRefresh: () => undefined,
+		refreshCount: () => refreshes,
+		lastRefreshOpts: () => opts,
+		failNext: (n) => {
+			failuresLeft = n;
+		},
+		delayNext: (ms) => {
+			delayMs = ms;
+		},
+		applied: () => appliedWindows,
+		setCurrent: (v) => {
+			current = v;
+		},
+		setCap: (v) => {
+			cap = v;
+		},
+		refuseNextApply: () => {
+			refuseApply = true;
+		},
+	};
+	return harness;
 }
 
-// ---------------------------------------------------------------------------
-// Eligibility and the heal
-// ---------------------------------------------------------------------------
-
-describe("eligible turn end", () => {
-	it("re-applies the re-resolved model exactly once when the window changed", async () => {
+describe("llama-refresh core", () => {
+	it("heals drift at the pre-request moment and reports the move", async () => {
 		const h = makeHarness();
-		h.setRegistry(LA, "m1", TRUE_WINDOW);
+		h.core.onSessionStart();
+		h.core.onModelSelect(REF);
+		h.onRefresh = () => {
+			h.registry.window = 160000;
+		};
 
-		const decision = await h.settled(LA, "m1", FALLBACK_WINDOW);
+		const decision = await h.core.onPreRequest(REF);
 
-		expect(decision).toEqual({ kind: "re-apply", model: expect.objectContaining({ contextWindow: TRUE_WINDOW }) });
-		expect(h.refreshCalls).toBe(1);
-		expect(h.applied).toHaveLength(1);
-		expect(h.applied[0]?.contextWindow).toBe(TRUE_WINDOW);
+		expect(decision).toEqual({ kind: "re-apply", from: 40192, to: 160000, model: model(160000) });
+		expect(h.refreshCount()).toBe(1);
+		expect(h.applied()).toEqual([160000]);
 	});
 
-	it("re-applies the model exactly as the registry resolved it, not a copy", async () => {
+	it("heals drift at the post-request moment when the model was asleep at selection", async () => {
 		const h = makeHarness();
-		h.setRegistry(LA, "m1", TRUE_WINDOW);
+		h.registry.window = 128000;
+		h.core.onSessionStart();
+		h.core.onModelSelect(REF);
+		// The first refresh still sees the model asleep; the Wake completes
+		// during the first request, so the second refresh sees the true value.
+		h.onRefresh = () => {
+			if (h.refreshCount() >= 2) h.registry.window = 160000;
+		};
 
-		const decision = await h.settled(LA, "m1", FALLBACK_WINDOW);
+		const pre = await h.core.onPreRequest(REF);
+		expect(pre).toEqual({ kind: "unchanged", window: 128000 });
+		expect(h.applied()).toEqual([]);
 
-		expect(decision.kind).toBe("re-apply");
-		if (decision.kind === "re-apply") {
-			expect(h.applied[0]).toBe(decision.model);
-		}
-		expect(h.applied[0]).toBe(h.registry.get(`${LA}/m1`));
+		const post = await h.core.onPostRequest(REF);
+		expect(post).toEqual({ kind: "re-apply", from: 128000, to: 160000, model: model(160000) });
+		expect(h.applied()).toEqual([160000]);
+		// The settled moment runs awaited inside its boundary, so its
+		// catalog read carries the hard budget.
+		expect(h.lastRefreshOpts()).toEqual({ timeoutMs: REFRESH_TIMEOUT_MS });
 	});
 
-	it("does not re-apply when the refresh confirms the Fallback window", async () => {
+	it("shrinks a window the server came back with smaller, in either direction", async () => {
 		const h = makeHarness();
-		h.setRegistry(LA, "m1", FALLBACK_WINDOW);
+		h.registry.window = 160000;
+		h.core.onSessionStart();
+		h.core.onModelSelect(REF);
+		h.onRefresh = () => {
+			h.registry.window = 40192;
+		};
 
-		const decision = await h.settled(LA, "m1", FALLBACK_WINDOW);
+		const decision = await h.core.onPreRequest(REF);
 
-		expect(decision).toEqual({ kind: "re-resolve" });
-		expect(h.refreshCalls).toBe(1);
-		expect(h.applied).toHaveLength(0);
+		expect(decision).toEqual({ kind: "re-apply", from: 160000, to: 40192, model: model(40192) });
+		expect(h.applied()).toEqual([40192]);
 	});
 
-	it("keeps a model genuinely loaded at 128000 silent, and spends its Attempt", async () => {
+	it("spends one Attempt per Heal moment and skips once spent", async () => {
 		const h = makeHarness();
-		h.setRegistry(LA, "m1", FALLBACK_WINDOW);
+		h.core.onSessionStart();
+		h.core.onModelSelect(REF);
 
-		const first = await h.settled(LA, "m1", FALLBACK_WINDOW);
-		const second = await h.settled(LA, "m1", FALLBACK_WINDOW);
-
-		expect(first).toEqual({ kind: "re-resolve" });
-		expect(second).toEqual({ kind: "skip" });
-		expect(h.refreshCalls).toBe(1);
-		expect(h.applied).toHaveLength(0);
+		expect((await h.core.onPreRequest(REF)).kind).toBe("unchanged");
+		expect(h.refreshCount()).toBe(1);
+		// The pre-request Attempt is spent: a later turn start skips without
+		// refreshing.
+		expect((await h.core.onPreRequest(REF)).kind).toBe("skip");
+		expect(h.refreshCount()).toBe(1);
+		// The post-request Attempt is still unspent and runs its own compare.
+		expect((await h.core.onPostRequest(REF)).kind).toBe("unchanged");
+		expect(h.refreshCount()).toBe(2);
+		expect((await h.core.onPostRequest(REF)).kind).toBe("skip");
+		expect(h.refreshCount()).toBe(2);
 	});
 
-	it("does nothing when the refresh no longer lists the model", async () => {
+	it("a new selection re-arms both Attempts", async () => {
 		const h = makeHarness();
-		// Asleep catalog: the model is absent from the persisted store.
-		h.setRegistry(LA, "m1", undefined);
+		h.core.onSessionStart();
+		h.core.onModelSelect(REF);
+		await h.core.onPreRequest(REF);
+		await h.core.onPostRequest(REF);
+		expect(h.refreshCount()).toBe(2);
 
-		const decision = await h.settled(LA, "m1", FALLBACK_WINDOW);
-
-		expect(decision).toEqual({ kind: "re-resolve" });
-		expect(h.refreshCalls).toBe(1);
-		expect(h.applied).toHaveLength(0);
+		// A selection of a different model re-arms its own Attempts; the
+		// old selection stays spent.
+		h.core.onModelSelect(OTHER);
+		h.core.onModelSelect(REF);
+		expect((await h.core.onPreRequest(REF)).kind).toBe("unchanged");
+		expect((await h.core.onPostRequest(REF)).kind).toBe("unchanged");
+		expect(h.refreshCount()).toBe(4);
+		expect((await h.core.onPreRequest(REF)).kind).toBe("skip");
 	});
 
-	it("does nothing a second time once the Attempt is spent", async () => {
+	it("a failed refresh spends nothing, so the next moment retries", async () => {
 		const h = makeHarness();
-		h.setRegistry(LA, "m1", TRUE_WINDOW);
+		h.core.onSessionStart();
+		h.core.onModelSelect(REF);
+		h.failNext(1);
+		h.onRefresh = () => {
+			h.registry.window = 160000;
+		};
 
-		await h.settled(LA, "m1", FALLBACK_WINDOW);
-		const second = await h.settled(LA, "m1", FALLBACK_WINDOW);
-
-		expect(second).toEqual({ kind: "skip" });
-		expect(h.refreshCalls).toBe(1);
-		expect(h.applied).toHaveLength(1);
-	});
-});
-
-// ---------------------------------------------------------------------------
-// Ineligibility
-// ---------------------------------------------------------------------------
-
-describe("ineligible turn end", () => {
-	it("ignores non-llama.cpp models", async () => {
-		const h = makeHarness();
-		h.setRegistry("cloud", "gpt", TRUE_WINDOW);
-
-		const decision = await h.settled("cloud", "gpt", FALLBACK_WINDOW);
-
-		expect(decision).toEqual({ kind: "skip" });
-		expect(h.refreshCalls).toBe(0);
-		expect(h.applied).toHaveLength(0);
+		// The pre-request refresh fails: no Attempt spent, no report.
+		expect((await h.core.onPreRequest(REF)).kind).toBe("skip");
+		expect(h.refreshCount()).toBe(1);
+		expect(h.applied()).toEqual([]);
+		// The pre-request moment retries on the next turn start and heals.
+		const decision = await h.core.onPreRequest(REF);
+		expect(decision).toEqual({ kind: "re-apply", from: 40192, to: 160000, model: model(160000) });
+		expect(h.refreshCount()).toBe(2);
 	});
 
-	it("ignores a llama.cpp model already on its true window", async () => {
+	it("the symptom trigger spends an unspent Attempt and never re-arms", async () => {
 		const h = makeHarness();
-		h.setRegistry(LA, "m1", TRUE_WINDOW);
+		h.core.onSessionStart();
+		h.core.onModelSelect(REF);
+		// The pre-request compare confirms the window (no drift yet), so the
+		// pre Attempt is spent and the post Attempt is not.
+		await h.core.onPreRequest(REF);
+		// The server drifts between the request and the truncated answer.
+		h.onRefresh = () => {
+			h.registry.window = 160000;
+		};
 
-		const decision = await h.settled(LA, "m1", TRUE_WINDOW);
-
-		expect(decision).toEqual({ kind: "skip" });
-		expect(h.refreshCalls).toBe(0);
-		expect(h.applied).toHaveLength(0);
-	});
-});
-
-// ---------------------------------------------------------------------------
-// The Attempt
-// ---------------------------------------------------------------------------
-
-describe("attempt", () => {
-	it("retries on the next turn end when a refresh fails, without spending the Attempt", async () => {
-		const h = makeHarness();
-		h.setRegistry(LA, "m1", TRUE_WINDOW);
-		h.setRefreshOk(false);
-
-		const first = await h.settled(LA, "m1", FALLBACK_WINDOW);
-
-		expect(first).toEqual({ kind: "skip" });
-		expect(h.refreshCalls).toBe(1);
-		expect(h.applied).toHaveLength(0);
-
-		h.setRefreshOk(true);
-		const second = await h.settled(LA, "m1", FALLBACK_WINDOW);
-
-		expect(second.kind).toBe("re-apply");
-		expect(h.refreshCalls).toBe(2);
-		expect(h.applied).toHaveLength(1);
+		// The truncated turn spends the unspent post-request Attempt on an
+		// extra compare and heals.
+		const symptom = await h.core.onTruncatedTurn(REF, 1);
+		expect(symptom).toEqual({ kind: "re-apply", from: 40192, to: 160000, model: model(160000) });
+		expect(h.refreshCount()).toBe(2);
+		// The symptom compare runs awaited inside the turn boundary, so its
+		// catalog read carries the hard budget.
+		expect(h.lastRefreshOpts()).toEqual({ timeoutMs: REFRESH_TIMEOUT_MS });
+		// The settled moment finds its Attempt spent and skips.
+		expect((await h.core.onPostRequest(REF)).kind).toBe("skip");
+		// A later truncated turn re-arms nothing: both Attempts are spent.
+		expect((await h.core.onTruncatedTurn(REF, 1)).kind).toBe("skip");
+		expect(h.refreshCount()).toBe(2);
 	});
 
-	it("retries every turn end while the server stays down, and heals when it comes back", async () => {
+	it("the symptom trigger takes an unspent pre Attempt the post refresh left behind", async () => {
 		const h = makeHarness();
-		h.setRegistry(LA, "m1", TRUE_WINDOW);
-		h.setRefreshOk(false);
+		h.core.onSessionStart();
+		h.core.onModelSelect(REF);
+		// The pre-request refresh failed (server down): its Attempt is still
+		// unspent, and the post Attempt has not run yet either.
+		h.failNext(1);
+		await h.core.onPreRequest(REF);
+		h.onRefresh = () => {
+			h.registry.window = 160000;
+		};
 
-		await h.settled(LA, "m1", FALLBACK_WINDOW);
-		await h.settled(LA, "m1", FALLBACK_WINDOW);
-		h.setRefreshOk(true);
-		const third = await h.settled(LA, "m1", FALLBACK_WINDOW);
-
-		expect(third.kind).toBe("re-apply");
-		expect(h.refreshCalls).toBe(3);
-		expect(h.applied).toHaveLength(1);
+		// The truncated turn spends the unspent post-request Attempt first.
+		const symptom = await h.core.onTruncatedTurn(REF, 1);
+		expect(symptom).toEqual({ kind: "re-apply", from: 40192, to: 160000, model: model(160000) });
+		expect(h.refreshCount()).toBe(2);
+		// The pre Attempt was never spent: a later truncated turn may spend
+		// it - spending an unspent Attempt is not re-arming one.
+		expect((await h.core.onTruncatedTurn(REF, 1)).kind).toBe("unchanged");
+		expect(h.refreshCount()).toBe(3);
 	});
 
-	it("re-arms on a new model selection", async () => {
+	it("the symptom trigger ignores a non-near-empty truncated answer", async () => {
 		const h = makeHarness();
-		h.setRegistry(LA, "m1", TRUE_WINDOW);
-		h.setRegistry(LA, "m2", TRUE_WINDOW);
+		h.core.onSessionStart();
+		h.core.onModelSelect(REF);
+		await h.core.onPreRequest(REF);
 
-		await h.settled(LA, "m1", FALLBACK_WINDOW);
-		h.select(LA, "m2");
-		const decision = await h.settled(LA, "m2", FALLBACK_WINDOW);
+		const decision = await h.core.onTruncatedTurn(REF, NEAR_EMPTY_OUTPUT_TOKENS + 1);
 
-		expect(decision.kind).toBe("re-apply");
-		expect(h.applied.map((m) => m.id)).toEqual(["m1", "m2"]);
+		expect(decision.kind).toBe("skip");
+		expect(h.refreshCount()).toBe(1);
 	});
 
-	it("re-arms a switch away and back, so a return after a sleep still heals", async () => {
+	it("the pre-request timeout fails the refresh and spends nothing", async () => {
 		const h = makeHarness();
-		h.setRegistry(LA, "m1", TRUE_WINDOW);
-		h.setRegistry(LA, "m2", TRUE_WINDOW);
+		h.core.onSessionStart();
+		h.core.onModelSelect(REF);
+		h.onRefresh = () => {
+			h.registry.window = 160000;
+		};
+		h.delayNext(REFRESH_TIMEOUT_MS + 1000);
 
-		await h.settled(LA, "m1", FALLBACK_WINDOW); // m1 spends its Attempt
-		h.select(LA, "m2");
-		h.select(LA, "m1"); // back to m1 - fresh selection
-		const decision = await h.settled(LA, "m1", FALLBACK_WINDOW);
-
-		expect(decision.kind).toBe("re-apply");
-		expect(h.applied.map((m) => m.id)).toEqual(["m1", "m1"]);
+		// The pre-request moment enforces its hard budget: a refresh that
+		// cannot finish in time fails and spends nothing.
+		expect(h.lastRefreshOpts()).toBeUndefined();
+		const decision = await h.core.onPreRequest(REF);
+		expect(decision.kind).toBe("skip");
+		expect(h.lastRefreshOpts()).toEqual({ timeoutMs: REFRESH_TIMEOUT_MS });
+		expect(h.applied()).toEqual([]);
+		// The next moment retries inside its budget and heals.
+		const retry = await h.core.onPreRequest(REF);
+		expect(retry).toEqual({ kind: "re-apply", from: 40192, to: 160000, model: model(160000) });
 	});
 
-	it("keys the Attempt per selection, so one spent selection never blocks another", async () => {
+	it("the command re-arms the pre-request Attempt and runs one compare", async () => {
 		const h = makeHarness();
-		h.setRegistry(LA, "m1", TRUE_WINDOW);
-		h.setRegistry(LA, "m2", TRUE_WINDOW);
+		h.core.onSessionStart();
+		h.core.onModelSelect(REF);
+		await h.core.onPreRequest(REF);
+		await h.core.onPostRequest(REF);
+		expect(h.refreshCount()).toBe(2);
 
-		await h.settled(LA, "m1", FALLBACK_WINDOW); // m1 spends its Attempt
-		const m2 = await h.settled(LA, "m2", FALLBACK_WINDOW);
-		const m1Again = await h.settled(LA, "m1", FALLBACK_WINDOW);
-
-		expect(m2.kind).toBe("re-apply");
-		expect(m1Again).toEqual({ kind: "skip" });
-		expect(h.applied.map((m) => m.id)).toEqual(["m1", "m2"]);
+		// The server drifted since; the command re-arms one Attempt and the
+		// compare heals.
+		h.registry.window = 40192;
+		h.onRefresh = () => {
+			h.registry.window = 160000;
+		};
+		const decision = await h.core.onCommand(REF);
+		expect(decision).toEqual({ kind: "re-apply", from: 40192, to: 160000, model: model(160000) });
+		expect(h.refreshCount()).toBe(3);
 	});
 
-	it("re-arms on a new session start", async () => {
+	it("the command reports an unchanged confirm and a check failure", async () => {
 		const h = makeHarness();
-		h.setRegistry(LA, "m1", TRUE_WINDOW);
+		h.core.onSessionStart();
+		h.core.onModelSelect(REF);
 
-		await h.settled(LA, "m1", FALLBACK_WINDOW); // spends the Attempt
-		h.start();
-		const decision = await h.settled(LA, "m1", FALLBACK_WINDOW);
+		const confirm = await h.core.onCommand(REF);
+		expect(confirm).toEqual({ kind: "unchanged", window: 40192 });
 
-		expect(decision.kind).toBe("re-apply");
-		expect(h.applied).toHaveLength(2);
+		h.failNext(1);
+		h.core.onModelSelect(REF);
+		const failed = await h.core.onCommand(REF);
+		expect(failed.kind).toBe("skip");
 	});
 
-	it("re-arms after a restart of a session whose stored window is still the Fallback window", async () => {
-		// Fresh core instance, as the wiring rebuilds on session start; the
-		// persisted catalog still carries the Fallback window written while
-		// the model was asleep.
-		const before = makeHarness();
-		before.setRegistry(LA, "m1", FALLBACK_WINDOW);
-		await before.settled(LA, "m1", FALLBACK_WINDOW);
-		expect(before.applied).toHaveLength(0);
-
-		const after = makeHarness();
-		after.setRegistry(LA, "m1", TRUE_WINDOW); // the wake is done; the refresh now sees it
-		const decision = await after.settled(LA, "m1", FALLBACK_WINDOW);
-
-		expect(decision.kind).toBe("re-apply");
-		expect(after.applied).toHaveLength(1);
-	});
-});
-
-// ---------------------------------------------------------------------------
-// In-flight selects and failure-proof
-// ---------------------------------------------------------------------------
-
-describe("a select during the check", () => {
-	it("skips the re-apply when the user selects a different model during the in-flight refresh", async () => {
+	it("the command keeps the post-request Attempt's state", async () => {
 		const h = makeHarness();
-		h.setRegistry(LA, "m1", TRUE_WINDOW);
-		h.setRegistry(LA, "m2", TRUE_WINDOW);
-		h.setOnRefresh(() => h.select(LA, "m2")); // the user selects mid-refresh
+		h.core.onSessionStart();
+		h.core.onModelSelect(REF);
+		await h.core.onPreRequest(REF);
+		expect(h.refreshCount()).toBe(1);
 
-		const decision = await h.settled(LA, "m1", FALLBACK_WINDOW);
-
-		expect(decision).toEqual({ kind: "skip" });
-		expect(h.refreshCalls).toBe(1);
-		expect(h.applied).toHaveLength(0);
+		// The post Attempt is still unspent: the command re-arms only the
+		// pre Attempt, and the settled moment keeps its own compare.
+		await h.core.onCommand(REF);
+		expect(h.refreshCount()).toBe(2);
+		expect((await h.core.onPostRequest(REF)).kind).toBe("unchanged");
+		expect(h.refreshCount()).toBe(3);
 	});
 
-	it("still lets the user's new selection heal on its own Attempt", async () => {
+	it("the command skips a non-llama model without a refresh", async () => {
 		const h = makeHarness();
-		h.setRegistry(LA, "m1", TRUE_WINDOW);
-		h.setRegistry(LA, "m2", TRUE_WINDOW);
+		h.core.onSessionStart();
+		h.core.onModelSelect(OTHER);
+
+		expect((await h.core.onCommand(OTHER)).kind).toBe("skip");
+		expect(h.refreshCount()).toBe(0);
+	});
+
+	it("a non-llama selection skips every moment without a refresh", async () => {
+		const h = makeHarness();
+		h.core.onSessionStart();
+		h.core.onModelSelect(OTHER);
+
+		expect((await h.core.onPreRequest(OTHER)).kind).toBe("skip");
+		expect((await h.core.onPostRequest(OTHER)).kind).toBe("skip");
+		expect((await h.core.onTruncatedTurn(OTHER, 1)).kind).toBe("skip");
+		expect(h.refreshCount()).toBe(0);
+	});
+
+	it("the generation guard rejects a re-apply after a mid-flight select", async () => {
+		const h = makeHarness();
+		h.core.onSessionStart();
+		h.core.onModelSelect(REF);
+		h.delayNext(20);
 		let selected = false;
-		// The user selects once, during the first refresh.
-		h.setOnRefresh(() => {
+		h.onRefresh = () => {
+			h.registry.window = 160000;
+			// A manual select lands while the first refresh is in flight.
 			if (!selected) {
 				selected = true;
-				h.select(LA, "m2");
+				h.core.onModelSelect(REF);
 			}
-		});
+		};
 
-		await h.settled(LA, "m1", FALLBACK_WINDOW); // the m1 check is voided by the select
-		const decision = await h.settled(LA, "m2", FALLBACK_WINDOW); // the user's model heals
+		const inFlight = h.core.onPreRequest(REF);
+		const decision = await inFlight;
 
-		expect(decision.kind).toBe("re-apply");
-		expect(h.applied.map((m) => m.id)).toEqual(["m2"]);
+		// The user's choice wins: the in-flight compare skips its re-apply,
+		// and the re-armed selection re-evaluates from scratch: its Attempts
+		// are unspent, so the next moment runs a fresh compare (the registry
+		// is already healed, so it confirms and stays silent).
+		expect(decision.kind).toBe("skip");
+		expect(h.applied()).toEqual([]);
+		const retry = await h.core.onPreRequest(REF);
+		expect(retry).toEqual({ kind: "unchanged", window: 160000 });
+		expect(h.refreshCount()).toBe(2);
 	});
 
-	it("skips the re-apply even when the user re-selects the checked model", async () => {
+	it("the isCurrent guard rejects a re-apply after a session replacement", async () => {
 		const h = makeHarness();
-		h.setRegistry(LA, "m1", TRUE_WINDOW);
-		h.setOnRefresh(() => h.select(LA, "m1")); // the select moves the generation either way
+		h.core.onSessionStart();
+		h.core.onModelSelect(REF);
+		h.delayNext(20);
+		h.onRefresh = () => {
+			h.registry.window = 160000;
+			h.setCurrent(false);
+		};
 
-		const decision = await h.settled(LA, "m1", FALLBACK_WINDOW);
+		const decision = await h.core.onPreRequest(REF);
 
-		expect(decision).toEqual({ kind: "skip" });
-		expect(h.applied).toHaveLength(0);
+		expect(decision.kind).toBe("skip");
+		expect(h.applied()).toEqual([]);
+	});
+
+	it("an apply refusal spends the Attempt and reports nothing", async () => {
+		const h = makeHarness();
+		h.core.onSessionStart();
+		h.core.onModelSelect(REF);
+		h.onRefresh = () => {
+			h.registry.window = 160000;
+		};
+		h.refuseNextApply();
+
+		const decision = await h.core.onPreRequest(REF);
+
+		expect(decision.kind).toBe("skip");
+		expect(h.applied()).toEqual([]);
+		expect((await h.core.onPreRequest(REF)).kind).toBe("skip");
+		expect(h.refreshCount()).toBe(1);
+	});
+
+	it("the registry losing the model degrades to silence", async () => {
+		const h = makeHarness();
+		h.core.onSessionStart();
+		h.core.onModelSelect(REF);
+		h.onRefresh = () => {
+			h.registry.window = undefined;
+		};
+
+		const decision = await h.core.onPreRequest(REF);
+
+		expect(decision.kind).toBe("skip");
+		expect(h.applied()).toEqual([]);
+		expect((await h.core.onPostRequest(REF)).kind).toBe("skip");
+		expect(h.refreshCount()).toBe(2);
+	});
+
+	it("a restored selection reads as unspent without a model_select", async () => {
+		const h = makeHarness();
+		h.core.onSessionStart();
+		// No onModelSelect: pi resolves a restored session's model without
+		// emitting model_select.
+		h.onRefresh = () => {
+			h.registry.window = 160000;
+		};
+
+		const decision = await h.core.onPreRequest(REF);
+
+		expect(decision).toEqual({ kind: "re-apply", from: 40192, to: 160000, model: model(160000) });
+	});
+
+	it("a session start clears spent Attempts", async () => {
+		const h = makeHarness();
+		h.core.onSessionStart();
+		h.core.onModelSelect(REF);
+		await h.core.onPreRequest(REF);
+		expect(h.refreshCount()).toBe(1);
+
+		// A new session re-evaluates the selection from scratch.
+		h.core.onSessionStart();
+		h.onRefresh = () => {
+			h.registry.window = 160000;
+		};
+		const decision = await h.core.onPreRequest(REF);
+		expect(decision).toEqual({ kind: "re-apply", from: 40192, to: 160000, model: model(160000) });
+		expect(h.refreshCount()).toBe(2);
+	});
+
+	it("two moments never compare the same selection at once", async () => {
+		const h = makeHarness();
+		h.core.onSessionStart();
+		h.core.onModelSelect(REF);
+		h.delayNext(20);
+
+		const pre = h.core.onPreRequest(REF);
+		// While the pre-request compare is in flight, the settled moment
+		// finds the selection busy and skips; it does not queue behind it.
+		expect((await h.core.onPostRequest(REF)).kind).toBe("skip");
+		const decision = await pre;
+		expect(decision.kind).toBe("unchanged");
+		expect(h.refreshCount()).toBe(1);
+		// The post-request Attempt survived the busy skip and still runs.
+		expect((await h.core.onPostRequest(REF)).kind).toBe("unchanged");
+		expect(h.refreshCount()).toBe(2);
 	});
 });
 
-describe("concurrent checks", () => {
-	it("serializes two settled runs on one selection into one refresh and one re-apply", async () => {
+describe("the context window cap", () => {
+	it("a cap that hides the drift moves nothing and says nothing", async () => {
 		const h = makeHarness();
-		h.setRegistry(LA, "m1", TRUE_WINDOW);
-		let second: Promise<RefreshDecision> | undefined;
-		// The second run settles while the first refresh is in flight.
-		h.setOnRefresh(() => {
-			second = h.settled(LA, "m1", FALLBACK_WINDOW);
-		});
+		h.setCap(32000);
+		// The session holds the cap; the catalog drifts while staying above
+		// it, so the clamped value never moves.
+		h.registry.window = 32000;
+		h.core.onSessionStart();
+		h.core.onModelSelect(REF);
+		h.onRefresh = () => {
+			h.registry.window = 40192;
+		};
 
-		const first = await h.settled(LA, "m1", FALLBACK_WINDOW);
+		const decision = await h.core.onPreRequest(REF);
 
-		expect(first.kind).toBe("re-apply");
-		// The checks serialized: the second ran after the first spent the
-		// selection's Attempt and skipped.
-		expect(await second!).toEqual({ kind: "skip" });
-		expect(h.refreshCalls).toBe(1);
-		expect(h.applied).toHaveLength(1);
+		expect(decision).toEqual({ kind: "unchanged", window: 32000 });
+		expect(h.applied()).toEqual([]);
+		// The Attempt was spent on the confirm; no later moment re-runs it.
+		expect((await h.core.onPreRequest(REF)).kind).toBe("skip");
+		expect((await h.core.onPostRequest(REF)).kind).toBe("unchanged");
 	});
 
-	it("lets the later settled run heal after the earlier one spends the Attempt", async () => {
+	it("a cap above the drifted value still shows the move", async () => {
 		const h = makeHarness();
-		h.setRegistry(LA, "m1", TRUE_WINDOW);
-		let second: Promise<RefreshDecision> | undefined;
-		// The first refresh fails while the second run settles on top of it.
-		h.setRefreshOk(false);
-		h.setOnRefresh(() => {
-			if (h.refreshCalls === 1) {
-				second = h.settled(LA, "m1", FALLBACK_WINDOW);
-			} else {
-				// The server comes back for the second check's refresh.
-				h.setRefreshOk(true);
-			}
+		h.setCap(64000);
+		// The session holds the cap, clamped from a stale 160000; the live
+		// value drifts to 40192, below the cap, so the clamped value moves.
+		h.registry.window = 64000;
+		h.core.onSessionStart();
+		h.core.onModelSelect(REF);
+		h.onRefresh = () => {
+			h.registry.window = 40192;
+		};
+
+		const decision = await h.core.onPreRequest(REF);
+
+		expect(decision).toEqual({ kind: "re-apply", from: 64000, to: 40192, model: model(40192) });
+		expect(h.applied()).toEqual([40192]);
+	});
+
+	it("a drift from below the cap to above it heals to the clamped value", async () => {
+		const h = makeHarness();
+		h.setCap(32000);
+		// The session runs at the live 24000 (below the cap); the server
+		// comes back at 40192, above the cap, so the session moves to the
+		// cap, not to the raw live value.
+		h.registry.window = 24000;
+		h.core.onSessionStart();
+		h.core.onModelSelect(REF);
+		h.onRefresh = () => {
+			h.registry.window = 40192;
+		};
+
+		const decision = await h.core.onPreRequest(REF);
+
+		// The re-apply passes the registry's model as pi resolved it; the
+		// cap's boundary clamp finalizes the session at the cap, and the
+		// line reports the clamped move.
+		expect(decision).toEqual({ kind: "re-apply", from: 24000, to: 32000, model: model(40192) });
+		expect(h.applied()).toEqual([40192]);
+	});
+
+	it("the clamp applies to an uncapped registry copy the session never clamped", async () => {
+		const h = makeHarness();
+		h.setCap(32000);
+		// The refresh replaced the registry's object before the cap's clamp
+		// ran, so the copy reads the uncapped 40192 while the session holds
+		// the cap: the compare must still see no move.
+		h.registry.window = 40192;
+		h.core.onSessionStart();
+		h.core.onModelSelect(REF);
+
+		const decision = await h.core.onPreRequest(REF);
+
+		expect(decision).toEqual({ kind: "unchanged", window: 32000 });
+		expect(h.applied()).toEqual([]);
+	});
+
+	it("the command confirms the clamped window, not the raw registry value", async () => {
+		const h = makeHarness();
+		h.setCap(32000);
+		// The registry copy is uncapped (a refresh landed since the last
+		// clamp); the session holds the cap.
+		h.registry.window = 40192;
+		h.core.onSessionStart();
+		h.core.onModelSelect(REF);
+
+		const decision = await h.core.onCommand(REF);
+
+		expect(decision).toEqual({ kind: "unchanged", window: 32000 });
+		expect(h.applied()).toEqual([]);
+	});
+
+	it("a throwing cap probe degrades to the uncapped compare", async () => {
+		// The probe throws (an impossible state, but the core never errors):
+		// the compare degrades to no cap, the pre-amendment behavior, and
+		// still heals the raw move.
+		let registryWindow = 32000;
+		const core = createLlamaRefresh({
+			refreshCatalog: async () => {
+				registryWindow = 40192;
+				return true;
+			},
+			resolveModel: () => model(registryWindow),
+			applyModel: async () => true,
+			isCurrent: () => true,
+			windowCap: () => {
+				throw new Error("no cap record");
+			},
 		});
+		core.onSessionStart();
+		core.onModelSelect(REF);
 
-		const first = await h.settled(LA, "m1", FALLBACK_WINDOW);
+		const decision = await core.onPreRequest(REF);
 
-		expect(first).toEqual({ kind: "skip" });
-		// The first refresh failed, so the Attempt is unspent and the second,
-		// queued behind it, heals the selection.
-		expect(await second!).toEqual({ kind: "re-apply", model: expect.objectContaining({ contextWindow: TRUE_WINDOW }) });
-		expect(h.refreshCalls).toBe(2);
-		expect(h.applied).toHaveLength(1);
+		expect(decision).toEqual({ kind: "re-apply", from: 32000, to: 40192, model: model(40192) });
 	});
 });
 
-describe("a check that outlives its session", () => {
-	it("never re-applies when the session was replaced mid-check, and spends the Attempt", async () => {
-		const h = makeHarness();
-		h.setRegistry(LA, "m1", TRUE_WINDOW);
-		// The session is replaced during the in-flight refresh: the core's
-		// context is invalidated and the shared set-model now belongs to the
-		// new session.
-		h.setOnRefresh(() => h.setIsCurrent(false));
-
-		const decision = await h.settled(LA, "m1", FALLBACK_WINDOW);
-
-		expect(decision).toEqual({ kind: "skip" });
-		expect(h.refreshCalls).toBe(1);
-		expect(h.applied).toHaveLength(0);
-
-		// The Attempt is spent by the successful refresh: this (now dead)
-		// selection never retries through the old core.
-		h.setIsCurrent(true);
-		const second = await h.settled(LA, "m1", FALLBACK_WINDOW);
-		expect(second).toEqual({ kind: "skip" });
-	});
-});
-
-describe("failure-proof", () => {
-	it("degrades to silence when the registry read-back throws, and spends the Attempt", async () => {
-		const h = makeHarness();
-		h.setRegistry(LA, "m1", TRUE_WINDOW);
-		h.setResolveThrows(true);
-
-		const decision = await h.settled(LA, "m1", FALLBACK_WINDOW);
-
-		expect(decision).toEqual({ kind: "re-resolve" });
-		expect(h.refreshCalls).toBe(1);
-		expect(h.applied).toHaveLength(0);
-
-		// The Attempt is spent: a late read failure does not retry.
-		h.setResolveThrows(false);
-		const second = await h.settled(LA, "m1", FALLBACK_WINDOW);
-		expect(second).toEqual({ kind: "skip" });
+describe("report lines", () => {
+	it("builds every line in exactly one place", () => {
+		expect(windowReappliedLine(40192, 160000, REF)).toBe("llama window: 40192 -> 160000 (llama.cpp/test-model)");
+		expect(windowConfirmedLine(160000, REF)).toBe("llama window: 160000 (llama.cpp/test-model)");
+		expect(windowCheckFailedLine(REF)).toBe("llama window: check failed (llama.cpp/test-model)");
+		expect(NO_MODEL_LINE).toBe("llama window: no model selected");
 	});
 });

@@ -26,14 +26,34 @@ compare applies a window in either direction: a server that comes back smaller
 shrinks the session, because a window we refuse to shrink is the same quiet lie
 that took an evening of journal reading to find.
 
-Comparing the registry against itself is what makes this safe beside the
-context-cap extension. That extension caps at both layers: it re-registers each
-provider with `contextWindow: Math.min(cap, model.contextWindow)`, and it clamps
-the session's already-resolved model object in place. No extension-facing read
-returns a pre-cap window, so "compare the raw catalog value with the live value"
-has no raw operand. A before-and-after compare of the registry copy keeps both
-sides under the same cap, so a cap that hides drift is a cap doing its job, and a
-cap above a drifted window still shows the move.
+The e2e against the shared mock router proved the interaction with the
+context-cap extension and forced one amendment to it (recorded here and in
+ADR 0004). The cap used to re-register every provider above the cap with a
+static capped model list. For a live-catalog provider like llama.cpp that is
+the wrong layer: pi's composer replaces the live list with the static one, the
+window stops moving in either direction, and a live window that shrinks below
+the cap leaves the session believing in more context than the server has - the
+original failure, frozen in. The cap now skips dynamic providers (the
+composed provider exposes `refreshModels`) and clamps the session's model in
+place at every boundary the window is consumed: selection, run start, turn
+start, turn end, and run settle. The registry then tracks the uncapped live
+value, and the before-and-after compare sees it. Each moment runs awaited
+inside its own boundary event (pi awaits the extension's turn_start, turn_end,
+and agent_settled handlers), so a re-apply lands inside the boundary the cap
+clamps: with llama refresh loaded before the cap, the cap's later handler in
+the same boundary still sees the re-apply and clamps it before the window is
+consumed. That await is why every forced catalog read carries the same hard
+budget: it bounds not only the delay the pre-request moment may add to a
+request but the delay the settled and symptom moments may add to the settle.
+The compare clamps both sides to the cap the context-cap extension publishes
+to the shared record (extensions/shared/context-window-cap.ts), so it compares
+the value the session holds with the value the session will hold after the
+boundary clamp: a drift that stays above the cap moves nothing and says
+nothing - the session already holds the cap, so there is no re-apply, no
+transcript entry, and no line - and a drift that crosses below the cap heals
+for real, reported at the clamped value the session actually holds. With the
+reverse extension order, one request per heal may see the uncapped window
+before the next clamp.
 
 One-shot budgeting cannot loop, and the reason is a pi detail worth writing down:
 `modelsAreEqual` in pi-ai compares only `id` and `provider`. The heal's own
@@ -43,7 +63,12 @@ gets one Attempt per Heal moment, two in total, and a new selection re-arms both
 A turn that ends `stopReason: "length"` with a near-empty output may spend an
 unspent Attempt on an extra compare, and can never re-arm one. A refresh that
 fails or times out spends nothing, exactly as before, so the second moment keeps
-the information the first one could not get.
+the information the first one could not get. The failure check matters in a way
+the e2e proved: a refused connection makes pi's refresh resolve with the error
+recorded per provider, not reject, and the provider keeps its previous model
+list. A compare that runs on that stale list sees no move and would spend the
+Attempt on a phantom confirm, so the wiring counts a refresh as failed when the
+result carries the llama.cpp provider's error, inside or outside the deadline.
 
 **Considered options**: read the live `meta.n_ctx` straight from the server for
 detection, using the model's own `baseUrl`, and force pi's refresh only when a
