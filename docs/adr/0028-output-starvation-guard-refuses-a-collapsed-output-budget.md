@@ -16,13 +16,21 @@ state is Output starvation.
 The guard reads the payload pi has already built in the `before_provider_request`
 hook and refuses the request when the payload's budget is pi's saturated floor.
 The trigger is keyed on pi's clamp saturating, not on a threshold this repo
-chooses: the payload's budget is compared to `PI_OUTPUT_FLOOR`, read back from
-pi's own clamp through the branch that returns `max(MIN_MAX_TOKENS, maxTokens)`
-(a non-positive window, an empty context, and maxTokens 1 leave exactly the
-floor). pi-ai keeps the constant module-private, so the read-back is the
-contract: if pi moves the floor, this one expression moves with it, and the
-unit test that pins the current value (1) is the tripwire. A token threshold
-invented here would silently disagree with pi whenever pi's arithmetic moves.
+chooses: the payload's budget is compared to `PI_OUTPUT_FLOOR`, pi's floor.
+pi-ai keeps the floor (`MIN_MAX_TOKENS`) module-private, and pi's extension
+loader aliases only the package entry points - its alias for the pi-ai entry
+is a prefix and swallows every pi-ai subpath, so the clamp's own module
+cannot be imported from an extension at all. The floor is therefore pinned
+to the value pi 0.87.1 gives it (1), and the unit test that pins the
+constant against pi's own clamp (run against the npm package, where the
+subpath is importable) is the tripwire: if pi moves the floor, that test is
+where it shows up. A token threshold invented here would silently disagree
+with pi whenever pi's arithmetic moves. The same loader rule applies to the
+estimator: the context figure the report line names is computed by a
+line-for-line mirror of pi-ai's `estimateContextTokens` (the function pi's
+clamp reads), and the unit test compares the mirror against the real
+function over fixture sessions, so any divergence from pi's arithmetic fails
+the suite.
 
 The refusal is one report line and the run's own abort, because that is the
 loudest refusal the hook can express. pi's `before_provider_request` handler may
@@ -35,8 +43,9 @@ already-aborted signal before any byte leaves the process, the turn ends as an
 abort instead of a one-token `length` answer, and pi never retries an abort.
 The line names the facts, one line, in the glossary's vocabulary:
 `output starvation: refused (llama.cpp/m1): context estimate 13757, Effective
-window 16000, output budget 1`. The estimate is pi's own estimator over the
-session projection, so the line names the figure that collapsed the budget.
+window 16000, output budget 1`. The estimate is the mirror of pi-ai's
+estimator (the function pi's clamp reads) over the session projection, so
+the line names the figure that collapsed the budget.
 
 The budget of the guard itself: at most one refusal per turn. The flag resets
 on every `turn_start` and on `session_start`, so a refusal can never become a

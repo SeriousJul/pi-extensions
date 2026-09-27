@@ -24,15 +24,17 @@ Output starvation, and a starved request is a failure, not a request.
   window, and the budget pi computed:
   - `output starvation: refused (llama.cpp/m1): context estimate 13757, Effective window 16000, output budget 1`
 
-The estimate is pi's own estimator over the session projection, so the line
-names the figure that collapsed the budget. A failure to compute it degrades to
+The estimate is a mirror of pi-ai's estimator - the function pi's clamp
+reads - run over the session projection, so the line names the figure that
+collapsed the budget. A failure to compute it degrades to
 0 in the line; the trigger is the payload, never the estimate.
 
 ## How it works
 
 The decision lives in the engine-free core module
 (`extensions/output-starvation/guard.ts`): the trigger is the payload's budget
-compared to pi's floor, read back from pi's own clamp, and the one place the
+compared to pi's floor (pinned to the value pi's clamp floors at, since the
+clamp's module is not importable from an extension), and the one place the
 report line exists. The pi wiring (`index.ts`) only binds the
 `before_provider_request`, `turn_start`, and `session_start` events and owns
 the refusal. The guard registers no compaction hook, so it cannot stand in the

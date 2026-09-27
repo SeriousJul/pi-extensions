@@ -6,9 +6,17 @@
 
 import { describe, expect, it } from "vitest";
 
-import type { Api, Model, TranscriptContext } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, ImageContent, Model, SystemMessage, TranscriptContext, UserMessage } from "@earendil-works/pi-ai";
 import { clampMaxTokensToContext } from "@earendil-works/pi-ai/api/simple-options";
-import { budgetOf, isStarved, PI_OUTPUT_FLOOR, starvationLine, type StarvationFacts } from "../../extensions/output-starvation/guard.ts";
+import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
+import {
+	budgetOf,
+	estimateProjectionTokens,
+	isStarved,
+	PI_OUTPUT_FLOOR,
+	starvationLine,
+	type StarvationFacts,
+} from "../../extensions/output-starvation/guard.ts";
 
 // A model just enough for pi's clamp: the window and the budget the model
 // asks for.
@@ -82,6 +90,95 @@ describe("isStarved", () => {
 		expect(isStarved(undefined)).toBe(false);
 		expect(isStarved(null)).toBe(false);
 	});
+});
+
+describe("estimateProjectionTokens", () => {
+	// The mirror must stay line-for-line with pi-ai's own estimator, so the
+	// tripwire compares it against the real function (importable here, in
+	// the test process, where pi-ai's subpaths resolve) over sessions that
+	// exercise every branch of the estimator.
+	let clock = 0;
+	const user = (content: string | ImageContent[]): UserMessage => {
+		clock += 1000;
+		return { role: "user", content, timestamp: clock };
+	};
+	const system = (content: string): SystemMessage => {
+		clock += 1000;
+		return { role: "system", content, timestamp: clock };
+	};
+	const assistant = (usage: { totalTokens: number }, stopReason: AssistantMessage["stopReason"]): AssistantMessage => {
+		clock += 1000;
+		return {
+			role: "assistant",
+			content: [{ type: "text", text: "done" }],
+			api: "openai-completions",
+			provider: "llama.cpp",
+			model: "m1",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: usage.totalTokens,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason,
+			timestamp: clock,
+		};
+	};
+
+	// A summary written last and placed first: its new timestamp sits ahead
+	// of the response it now precedes, which is the insertion the anchor
+	// logic must see.
+	const reordered: TranscriptContext["messages"] = (() => {
+		const q1 = user("q1");
+		const a1 = assistant({ totalTokens: 50 }, "stop");
+		const q2 = user("q2");
+		const summary = system("summary");
+		return [summary, q1, a1, q2];
+	})();
+
+	const sessions: Array<[string, TranscriptContext["messages"]]> = [
+		["empty session", []],
+		[
+			"one answered turn and a trailing prompt",
+			[user("q1"), assistant({ totalTokens: 50 }, "stop"), user("f".repeat(400))],
+		],
+		[
+			"two answered turns: the anchor is the last response",
+			[user("q1"), assistant({ totalTokens: 50 }, "stop"), user("q2"), assistant({ totalTokens: 700 }, "stop"), user("g".repeat(200))],
+		],
+		[
+			"an aborted response carries no anchor; an earlier one does",
+			[user("q1"), assistant({ totalTokens: 50 }, "stop"), user("q2"), assistant({ totalTokens: 900 }, "aborted"), user("q3")],
+		],
+		[
+			"an errored response carries no anchor",
+			[user("q1"), assistant({ totalTokens: 50 }, "error"), user("q2")],
+		],
+		[
+			"a zero-usage response carries no anchor",
+			[user("q1"), assistant({ totalTokens: 0 }, "stop"), user("q2")],
+		],
+		[
+			"an image rides along at the estimator's flat image cost",
+			[user("q1"), user([ { type: "image", data: "aGVsbG8=", mimeType: "image/png" } ]), assistant({ totalTokens: 50 }, "stop"), user("q2")],
+		],
+		[
+			"a response inserted before a later user message keeps its anchor; a message timestamp before it does not",
+			[user("q1"), assistant({ totalTokens: 50 }, "stop"), user("q2"), assistant({ totalTokens: 60 }, "stop"), user("q3")],
+		],
+		[
+			"a summary written later and placed first invalidates the anchor of a response before it",
+			reordered,
+		],
+	];
+
+	for (const [name, messages] of sessions) {
+		it(`matches pi-ai's estimateContextTokens: ${name}`, () => {
+			expect(estimateProjectionTokens(messages)).toBe(estimateContextTokens(messages).tokens);
+		});
+	}
 });
 
 describe("starvationLine", () => {

@@ -29,20 +29,19 @@
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Message } from "@earendil-works/pi-ai";
-import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
-import { budgetOf, isStarved, PI_OUTPUT_FLOOR, starvationLine } from "./guard.ts";
+import { budgetOf, estimateProjectionTokens, isStarved, PI_OUTPUT_FLOOR, starvationLine } from "./guard.ts";
 
-/** pi's own estimate of the context this request would carry: the same
- * estimator and the same projected messages pi's clamp reads, so the line
- * names the figure that collapsed the budget. A failure degrades to 0:
- * the trigger is the payload, never the estimate. */
+/** pi's own estimate of the context this request would carry: the mirror
+ * of pi-ai's estimator over the same projected messages pi's clamp reads,
+ * so the line names the figure that collapsed the budget. A failure
+ * degrades to 0: the trigger is the payload, never the estimate. */
 function contextEstimate(ctx: ExtensionContext): number {
 	try {
 		const messages = ctx.sessionManager.buildSessionProjection().messages;
-		// The projection is pi-agent-core's AgentMessage[]; pi-ai's estimator
-		// reads the same array at runtime (it is what pi's clamp reads), so
-		// one type bridge stands at the package boundary.
-		return estimateContextTokens(messages as unknown as readonly Message[]).tokens;
+		// The projection is pi-agent-core's AgentMessage[]; the mirror reads
+		// the same array at runtime (it is what pi's clamp reads), so one
+		// type bridge stands at the package boundary.
+		return estimateProjectionTokens(messages as unknown as readonly Message[]);
 	} catch {
 		return 0;
 	}
