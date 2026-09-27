@@ -31,9 +31,9 @@
     "typebox": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-agent-core": "^0.86.0",
-    "@earendil-works/pi-coding-agent": "^0.86.0",
-    "@earendil-works/pi-tui": "^0.86.0",
+    "@earendil-works/pi-agent-core": "^0.87.1",
+    "@earendil-works/pi-coding-agent": "^0.87.1",
+    "@earendil-works/pi-tui": "^0.87.1",
     "@resvg/resvg-js": "^2.6.2",
     "@types/node": "^26.6.2",
     "@xterm/headless": "^6.0.0",
@@ -54,6 +54,7 @@
     "e2e:context-cap": "node tests/context-cap/e2e-rpc.mjs",
     "e2e:edit-assist": "node tests/edit-assist/e2e-rpc.mjs",
     "e2e:initial-context": "node tests/initial-context/e2e-rpc.mjs",
+    "e2e:llama-refresh": "node tests/llama-refresh/e2e-rpc.mjs",
     "e2e:output-limits": "node tests/output-limits/e2e-rpc.mjs",
     "e2e:pruning": "node tests/pruning/e2e-rpc.mjs",
     "e2e:quota": "node tests/quota/e2e-rpc.mjs",

@@ -1,5 +1,13 @@
 # Context window cap via provider re-registration
 
+Amended by [ADR 0027](/adr/0027-the-live-catalog-comparison-heals-the-window) for
+live-catalog providers: the re-registration is skipped for a provider that
+re-fetches its model list from the server (it exposes `refreshModels`),
+because the composer replaces the live list with the static one and the
+window stops moving in either direction. For those providers the cap is
+enforced by clamping the session's model in place at every boundary the
+window is consumed. The rest stands.
+
 The `context-cap` extension limits a session's effective context window so
 auto-compaction fires early. pi has no cap concept; the only source of truth is
 `model.contextWindow` on the model object the session resolves. We apply the

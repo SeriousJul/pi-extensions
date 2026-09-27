@@ -24,6 +24,12 @@ footer showing the capped window as the model's budget.
 - The cap is a ceiling: the effective window is the smaller of the cap and
   the model's resolved window (after `models.json` `modelOverrides`). It
   never grows a window.
+- For a live-catalog provider (llama.cpp), whose model list pi re-fetches
+  from the server, the cap is not re-registered: a static capped list would
+  freeze the live window in place. There the cap is enforced on the
+  session's model at every boundary the window is consumed (selection, run
+  start, turn start, turn end, run settle), so a mid-session model
+  re-apply (the llama refresh heal) cannot widen it past the cap.
 - It is session-wide: the initial model, model switches, scoped-model
   cycling, and resume all operate under the cap. The `/model` picker and
   the footer context percentage show the capped window.
