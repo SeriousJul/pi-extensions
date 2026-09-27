@@ -18,8 +18,8 @@
  *      spends an unspent Attempt on an extra compare, and never re-arms
  *   6. dead server: the pre-request failure degrades to silence, the
  *      refresh spends nothing, and the next turn heals
- *   7. context-cap: the cap keeps the session at the cap no matter how the
- *      catalog moves above it; drift that crosses below the cap still heals
+ *   7. context-cap: a drift the cap hides moves nothing and says nothing
+ *      (no repair, no message); a drift that crosses below the cap heals
  *   8. /llama-window: the command re-arms one Attempt, reports the heal,
  *      confirms an unchanged window, and reports a check failure
  *
@@ -183,10 +183,10 @@ async function prompt(rpc, message) {
 	const settled = countEvents(rpc, "agent_settled");
 	const result = await rpc.request("prompt", { message });
 	if (!result.success) fail(`prompt: ${JSON.stringify(result)}`);
+	// pi emits the agent_settled event only after the extension's settled
+	// handler finishes, so by the time this observation lands the
+	// post-request compare is done; no beat is needed.
 	await waitFor(() => countEvents(rpc, "agent_settled") > settled, "the run to settle", TIMEOUT_MS);
-	// The unattended moments (post-request compare, symptom compare) run
-	// after agent_settled; give them a beat to finish.
-	await sleep(800);
 }
 
 async function window(rpc) {
@@ -362,26 +362,32 @@ const healedLine = (from, to) => `llama window: ${from} -> ${to} (llama.cpp/${MO
 			if (!switched.success) fail(`7. set_model ${id}: ${JSON.stringify(switched)}`);
 		}
 	};
-	// The catalog drifts while staying above the cap. The comparison sees
-	// the uncapped move (the cap keeps the session model clamped, not the
-	// registry) and reports a heal the cap immediately undoes: one cosmetic
-	// line, and the session stays at the cap.
+	// The catalog drifts while staying above the cap: the compare clamps
+	// both sides to the cap, sees no move, and gives no repair and no
+	// message (story 11), while the session stays at the cap.
 	mock.setNCtx(MODEL, 40192);
 	await rearm();
+	const changes0 = await modelChangeCount(rpc);
+	const notifies0 = rpc.notifies.length;
 	await prompt(rpc, "Reply with exactly: OK");
 	if ((await window(rpc)) !== CAP) fail(`7. the session escaped the cap; window is ${await window(rpc)}`);
 	console.log("ok: the session stays at the cap");
-	if (!rpc.notifies.includes(healedLine(CAP, 40192))) fail(`7. the cosmetic heal line is missing; notifies: ${JSON.stringify(rpc.notifies)}`);
-	console.log("ok: the one cosmetic heal line, verbatim");
+	if (rpc.notifies.length !== notifies0) fail(`7. the hidden drift reported; got: ${JSON.stringify(rpc.notifies.slice(notifies0))}`);
+	console.log("ok: no message");
+	if ((await modelChangeCount(rpc)) !== changes0) fail("7. the hidden drift wrote a model change entry");
+	console.log("ok: no repair (no model change entry)");
 	// The live value crosses below the cap: the clamped value genuinely
 	// moves, and the heal is real.
 	mock.setNCtx(MODEL, 24000);
 	await rearm();
+	const changes1 = await modelChangeCount(rpc);
 	await prompt(rpc, "Reply with exactly: OK");
 	if ((await window(rpc)) !== 24000) fail("7. the window did not follow the drift below the cap");
 	console.log("ok: the window followed the drift below the cap");
 	if (!rpc.notifies.includes(healedLine(CAP, 24000))) fail(`7. missing heal line; notifies: ${JSON.stringify(rpc.notifies)}`);
 	console.log("ok: one report line, verbatim");
+	if ((await modelChangeCount(rpc)) !== changes1 + 1) fail("7. the heal did not add exactly one model change entry");
+	console.log("ok: the heal added one model change entry");
 	await rpc.close();
 }
 

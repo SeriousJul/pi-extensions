@@ -38,7 +38,8 @@
 // The real dependencies the core receives: a forced, network-allowed catalog
 // refresh scoped to the llama.cpp provider (with the hard deadline for the
 // pre-request moment), a registry read-back by provider and id, a probe of
-// whether the session is still current, and the model re-application through
+// whether the session is still current, the active context window cap the
+// context-cap extension publishes, and the model re-application through
 // pi.setModel. A refresh that fails (server down, aborted, timed out, stale
 // context) is absorbed here as a plain false, so a down server degrades to
 // today's behavior instead of erroring every turn.
@@ -54,6 +55,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
+import { getActiveWindowCap } from "../shared/context-window-cap.ts";
 import {
 	createLlamaRefresh,
 	LLAMA_CPP_PROVIDER,
@@ -87,21 +89,20 @@ export default function (pi: ExtensionAPI): void {
 							force: true,
 							providers: [LLAMA_CPP_PROVIDER],
 						});
+					// The refresh keeps running after a timeout (a late catalog
+					// is better than none) and must never reject unhandled.
+					const pending = refresh();
+					pending.catch(() => undefined);
+					let result: Awaited<ReturnType<typeof refresh>> | undefined;
 					if (opts?.timeoutMs !== undefined) {
-						// Every moment runs awaited inside its boundary, so
-						// its catalog read carries a hard deadline: a refresh
-						// that cannot finish in time fails instead of delaying
-						// the request or the settle by an unknown time. The
-						// background refresh keeps running (a late catalog is
-						// better than none) and never rejects unhandled.
+						// Every moment in production passes a hard deadline, so a
+						// refresh that cannot finish in time fails instead of
+						// delaying the request or the settle by an unknown time.
 						let timer: ReturnType<typeof setTimeout> | undefined;
 						const timedOut = new Promise<never>((_, reject) => {
 							timer = setTimeout(() => reject(new Error("catalog refresh timed out")), opts.timeoutMs);
 							timer.unref?.();
 						});
-						const pending = refresh();
-						pending.catch(() => undefined);
-						let result: Awaited<ReturnType<typeof refresh>> | undefined;
 						try {
 							result = await Promise.race([pending, timedOut]);
 						} catch {
@@ -109,15 +110,18 @@ export default function (pi: ExtensionAPI): void {
 						} finally {
 							clearTimeout(timer);
 						}
-						// A fast failure (a refused connection) resolves the
-						// refresh with the error recorded per provider instead of
-						// rejecting: the deadline alone does not make the read a
-						// success, or the compare would run on the stale list and
-						// spend the Attempt on a phantom confirm.
-						return result !== undefined && !result.aborted && !result.errors.has(LLAMA_CPP_PROVIDER);
+					} else {
+						// No deadline: the caller wants the refresh to run to
+						// completion. Every moment in production passes one, so
+						// this branch only serves a deadline-free caller.
+						result = await pending;
 					}
-					const result = await refresh();
-					return !result.aborted && !result.errors.has(LLAMA_CPP_PROVIDER);
+					// A fast failure (a refused connection) resolves the refresh
+					// with the error recorded per provider instead of rejecting:
+					// the deadline alone does not make the read a success, or the
+					// compare would run on the stale list and spend the Attempt on
+					// a phantom confirm.
+					return result !== undefined && !result.aborted && !result.errors.has(LLAMA_CPP_PROVIDER);
 				} catch {
 					return false;
 				}
@@ -141,6 +145,9 @@ export default function (pi: ExtensionAPI): void {
 					return false;
 				}
 			},
+			// The context-cap extension publishes the cap it resolved in
+			// session_start; the core clamps both sides of the compare to it.
+			windowCap: () => getActiveWindowCap(),
 		});
 		// A new session start re-arms every selection's Attempts.
 		llamaRefresh.onSessionStart();

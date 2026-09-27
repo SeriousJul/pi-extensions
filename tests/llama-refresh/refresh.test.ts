@@ -43,6 +43,8 @@ interface Harness {
 	applied: () => number[];
 	/** Flip the isCurrent probe (a session replacement or reload). */
 	setCurrent: (current: boolean) => void;
+	/** Set the active Context window cap (undefined clears it). */
+	setCap: (cap: number | undefined) => void;
 	/** Refuse the next apply (pi.setModel declined). */
 	refuseNextApply: () => void;
 }
@@ -53,6 +55,7 @@ function makeHarness(): Harness {
 	let delayMs = 0;
 	let current = true;
 	let refuseApply = false;
+	let cap: number | undefined;
 	let refreshes = 0;
 	let opts: { timeoutMs?: number } | undefined;
 	const appliedWindows: number[] = [];
@@ -89,6 +92,7 @@ function makeHarness(): Harness {
 			return true;
 		},
 		isCurrent: () => current,
+		windowCap: () => cap,
 	};
 
 	const harness: Harness = {
@@ -106,6 +110,9 @@ function makeHarness(): Harness {
 		applied: () => appliedWindows,
 		setCurrent: (v) => {
 			current = v;
+		},
+		setCap: (v) => {
+			cap = v;
 		},
 		refuseNextApply: () => {
 			refuseApply = true;
@@ -498,6 +505,125 @@ describe("llama-refresh core", () => {
 		// The post-request Attempt survived the busy skip and still runs.
 		expect((await h.core.onPostRequest(REF)).kind).toBe("unchanged");
 		expect(h.refreshCount()).toBe(2);
+	});
+});
+
+describe("the context window cap", () => {
+	it("a cap that hides the drift moves nothing and says nothing", async () => {
+		const h = makeHarness();
+		h.setCap(32000);
+		// The session holds the cap; the catalog drifts while staying above
+		// it, so the clamped value never moves.
+		h.registry.window = 32000;
+		h.core.onSessionStart();
+		h.core.onModelSelect(REF);
+		h.onRefresh = () => {
+			h.registry.window = 40192;
+		};
+
+		const decision = await h.core.onPreRequest(REF);
+
+		expect(decision).toEqual({ kind: "unchanged", window: 32000 });
+		expect(h.applied()).toEqual([]);
+		// The Attempt was spent on the confirm; no later moment re-runs it.
+		expect((await h.core.onPreRequest(REF)).kind).toBe("skip");
+		expect((await h.core.onPostRequest(REF)).kind).toBe("unchanged");
+	});
+
+	it("a cap above the drifted value still shows the move", async () => {
+		const h = makeHarness();
+		h.setCap(64000);
+		// The session holds the cap, clamped from a stale 160000; the live
+		// value drifts to 40192, below the cap, so the clamped value moves.
+		h.registry.window = 64000;
+		h.core.onSessionStart();
+		h.core.onModelSelect(REF);
+		h.onRefresh = () => {
+			h.registry.window = 40192;
+		};
+
+		const decision = await h.core.onPreRequest(REF);
+
+		expect(decision).toEqual({ kind: "re-apply", from: 64000, to: 40192, model: model(40192) });
+		expect(h.applied()).toEqual([40192]);
+	});
+
+	it("a drift from below the cap to above it heals to the clamped value", async () => {
+		const h = makeHarness();
+		h.setCap(32000);
+		// The session runs at the live 24000 (below the cap); the server
+		// comes back at 40192, above the cap, so the session moves to the
+		// cap, not to the raw live value.
+		h.registry.window = 24000;
+		h.core.onSessionStart();
+		h.core.onModelSelect(REF);
+		h.onRefresh = () => {
+			h.registry.window = 40192;
+		};
+
+		const decision = await h.core.onPreRequest(REF);
+
+		// The re-apply passes the registry's model as pi resolved it; the
+		// cap's boundary clamp finalizes the session at the cap, and the
+		// line reports the clamped move.
+		expect(decision).toEqual({ kind: "re-apply", from: 24000, to: 32000, model: model(40192) });
+		expect(h.applied()).toEqual([40192]);
+	});
+
+	it("the clamp applies to an uncapped registry copy the session never clamped", async () => {
+		const h = makeHarness();
+		h.setCap(32000);
+		// The refresh replaced the registry's object before the cap's clamp
+		// ran, so the copy reads the uncapped 40192 while the session holds
+		// the cap: the compare must still see no move.
+		h.registry.window = 40192;
+		h.core.onSessionStart();
+		h.core.onModelSelect(REF);
+
+		const decision = await h.core.onPreRequest(REF);
+
+		expect(decision).toEqual({ kind: "unchanged", window: 32000 });
+		expect(h.applied()).toEqual([]);
+	});
+
+	it("the command confirms the clamped window, not the raw registry value", async () => {
+		const h = makeHarness();
+		h.setCap(32000);
+		// The registry copy is uncapped (a refresh landed since the last
+		// clamp); the session holds the cap.
+		h.registry.window = 40192;
+		h.core.onSessionStart();
+		h.core.onModelSelect(REF);
+
+		const decision = await h.core.onCommand(REF);
+
+		expect(decision).toEqual({ kind: "unchanged", window: 32000 });
+		expect(h.applied()).toEqual([]);
+	});
+
+	it("a throwing cap probe degrades to the uncapped compare", async () => {
+		// The probe throws (an impossible state, but the core never errors):
+		// the compare degrades to no cap, the pre-amendment behavior, and
+		// still heals the raw move.
+		let registryWindow = 32000;
+		const core = createLlamaRefresh({
+			refreshCatalog: async () => {
+				registryWindow = 40192;
+				return true;
+			},
+			resolveModel: () => model(registryWindow),
+			applyModel: async () => true,
+			isCurrent: () => true,
+			windowCap: () => {
+				throw new Error("no cap record");
+			},
+		});
+		core.onSessionStart();
+		core.onModelSelect(REF);
+
+		const decision = await core.onPreRequest(REF);
+
+		expect(decision).toEqual({ kind: "re-apply", from: 32000, to: 40192, model: model(40192) });
 	});
 });
 

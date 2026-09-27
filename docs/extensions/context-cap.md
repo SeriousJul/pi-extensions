@@ -36,6 +36,9 @@ footer showing the capped window as the model's budget.
 - Compaction timing, overflow detection, and the footer percentage all
   use the capped window, because pi reads one field:
   `model.contextWindow`.
+- The resolved cap is published to a shared record, so the llama refresh
+  compare clamps both sides of its compare to it: a drift the cap hides
+  (the live window stays above the cap) moves nothing and says nothing.
 - A one-time notice confirms the active cap at startup.
 
 ## Rejection
@@ -49,13 +52,17 @@ pi reports an error and runs uncapped when:
 ## How it works
 
 On session start the extension re-registers each provider that has a
-model above the cap with capped copies of its full model list, and
-clamps the model objects the session already resolved in place. See
+model above the cap with capped copies of its full model list, clamps
+the model objects the session already resolved in place, and publishes
+the resolved cap to the shared record in
+`extensions/shared/context-window-cap.ts` (the llama refresh compare
+reads it). See
 [ADR 0004](/adr/0004-context-window-cap-via-provider-reregistration).
 
 ## Known edges
 
 - Providers whose model list pi refreshes from the network after startup
-  (for example a local llama.cpp server) keep the capped list taken at
-  session start until the next session.
+  (for example a local llama.cpp server) keep their live list: the cap
+  skips their re-registration and clamps the session's model at every
+  boundary the window is consumed.
 - A model with no configured auth is left untouched.

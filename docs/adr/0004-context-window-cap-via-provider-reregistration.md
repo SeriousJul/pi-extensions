@@ -6,7 +6,13 @@ re-fetches its model list from the server (it exposes `refreshModels`),
 because the composer replaces the live list with the static one and the
 window stops moving in either direction. For those providers the cap is
 enforced by clamping the session's model in place at every boundary the
-window is consumed. The rest stands.
+window is consumed. The cap extension also publishes the cap it resolves in
+session_start to the shared record in
+extensions/shared/context-window-cap.ts, so the llama refresh compare can
+clamp both sides of its registry-to-registry compare to the value the session
+actually holds: a cap that hides a drift (the live window stays above the
+cap) then moves nothing and says nothing instead of re-applying a window the
+cap clamps back. The rest stands.
 
 The `context-cap` extension limits a session's effective context window so
 auto-compaction fires early. pi has no cap concept; the only source of truth is

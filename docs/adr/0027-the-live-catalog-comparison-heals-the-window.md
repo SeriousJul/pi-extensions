@@ -41,14 +41,19 @@ value, and the before-and-after compare sees it. Each moment runs awaited
 inside its own boundary event (pi awaits the extension's turn_start, turn_end,
 and agent_settled handlers), so a re-apply lands inside the boundary the cap
 clamps: with llama refresh loaded before the cap, the cap's later handler in
-the same boundary still sees the re-apply and undoes it before the window is
+the same boundary still sees the re-apply and clamps it before the window is
 consumed. That await is why every forced catalog read carries the same hard
 budget: it bounds not only the delay the pre-request moment may add to a
 request but the delay the settled and symptom moments may add to the settle.
-A drift that stays above the cap reports a cosmetic heal line per spent moment
-that the cap undoes at its boundary; a drift that crosses below the cap heals
-for real. With the reverse extension order, one request per heal may see the
-uncapped window before the next clamp.
+The compare clamps both sides to the cap the context-cap extension publishes
+to the shared record (extensions/shared/context-window-cap.ts), so it compares
+the value the session holds with the value the session will hold after the
+boundary clamp: a drift that stays above the cap moves nothing and says
+nothing - the session already holds the cap, so there is no re-apply, no
+transcript entry, and no line - and a drift that crosses below the cap heals
+for real, reported at the clamped value the session actually holds. With the
+reverse extension order, one request per heal may see the uncapped window
+before the next clamp.
 
 One-shot budgeting cannot loop, and the reason is a pi detail worth writing down:
 `modelsAreEqual` in pi-ai compares only `id` and `provider`. The heal's own

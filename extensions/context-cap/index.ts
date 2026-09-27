@@ -21,11 +21,17 @@
  * The cap value comes from --context-window or PI_CONTEXT_WINDOW (flag wins).
  * It is read in session_start, not at load time: pi fills extension flag
  * values after extensions load, so a top-level read would only see defaults.
+ * The resolved value is published to the shared record in
+ * extensions/shared/context-window-cap.ts: the llama refresh compare clamps
+ * both sides of its registry-to-registry compare to that value, so a cap
+ * that hides a drift (the live window stays above the cap) moves nothing
+ * and says nothing instead of re-applying a window the cap clamps back.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { cappedModelConfigs, clampModelWindow, parseCap } from "./cap";
 import { readReserveTokens } from "./settings";
 import { modelKey as piModelKey } from "../shared/settings.ts";
+import { getActiveWindowCap, setActiveWindowCap } from "../shared/context-window-cap.ts";
 
 const FLAG_NAME = "context-window";
 const ENV_VAR = "PI_CONTEXT_WINDOW";
@@ -36,21 +42,26 @@ export default function (pi: ExtensionAPI): void {
 		description: "Cap the context window in tokens for this session",
 	});
 
-	let activeCap: number | undefined;
-
 	const clampActive = (ctx: ExtensionContext): void => {
-		if (activeCap !== undefined) clampModelWindow(ctx.model, activeCap);
+		// The clamp is in place, not a replacement, because pi resolves the
+		// session's model to the same object the registry returns (the model
+		// runtime hands out its provider list's own model objects to both):
+		// clamping ctx.model clamps the value every reader of the registry -
+		// including the llama refresh compare - sees.
+		const cap = getActiveWindowCap();
+		if (cap !== undefined) clampModelWindow(ctx.model, cap);
 	};
 
 	pi.on("session_start", (event, ctx) => {
 		const flagValue = pi.getFlag(FLAG_NAME);
 		const raw = typeof flagValue === "string" && flagValue.length > 0 ? flagValue : process.env[ENV_VAR];
 		if (raw === undefined) {
-			activeCap = undefined;
+			setActiveWindowCap(undefined);
 			return;
 		}
 		const parsed = parseCap(raw);
 		if (!parsed.ok) {
+			setActiveWindowCap(undefined);
 			ctx.ui.notify(`context-cap: ${parsed.error}; cap not applied`, "error");
 			return;
 		}
@@ -58,15 +69,19 @@ export default function (pi: ExtensionAPI): void {
 		// is how pi resolves it, and this figure is the floor the cap must clear.
 		const reserveTokens = readReserveTokens(ctx.cwd, process.env, piModelKey(ctx.model));
 		if (parsed.cap <= reserveTokens) {
+			setActiveWindowCap(undefined);
 			ctx.ui.notify(
 				`context-cap: cap ${parsed.cap} must be greater than compaction.reserveTokens (${reserveTokens}); cap not applied`,
 				"error",
 			);
 			return;
 		}
-		activeCap = parsed.cap;
+		// Publish the active cap: the llama refresh compare clamps both sides
+		// of its compare to it, so a cap that hides a drift moves nothing and
+		// says nothing. Cleared on every path where no cap applies, above.
+		setActiveWindowCap(parsed.cap);
 		const allModels = ctx.modelRegistry.getAll();
-		for (const [provider, models] of cappedModelConfigs(allModels, activeCap)) {
+		for (const [provider, models] of cappedModelConfigs(allModels, parsed.cap)) {
 			const originals = allModels.filter((model) => model.provider === provider);
 			if (!originals.some((model) => ctx.modelRegistry.hasConfiguredAuth(model))) continue;
 			// A dynamic provider re-fetches its model list from the server
@@ -79,14 +94,15 @@ export default function (pi: ExtensionAPI): void {
 			if (typeof ctx.modelRegistry.getProvider(provider)?.refreshModels === "function") continue;
 			pi.registerProvider(provider, { models });
 		}
-		clampModelWindow(ctx.model, activeCap);
+		clampModelWindow(ctx.model, parsed.cap);
 		if (event.reason === "startup") {
-			ctx.ui.notify(`Context window capped at ${activeCap} tokens`, "info");
+			ctx.ui.notify(`Context window capped at ${parsed.cap} tokens`, "info");
 		}
 	});
 
 	pi.on("model_select", (event) => {
-		if (activeCap !== undefined) clampModelWindow(event.model, activeCap);
+		const cap = getActiveWindowCap();
+		if (cap !== undefined) clampModelWindow(event.model, cap);
 	});
 
 	// The session's model is clamped at every boundary the window is

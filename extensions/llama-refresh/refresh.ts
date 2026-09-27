@@ -21,9 +21,13 @@
  * boundary the window is consumed. The moments run awaited inside their
  * boundary, so a re-apply lands where the cap's clamp of that boundary still
  * sees it: with this extension loaded before the cap, the session window
- * never exceeds the cap at a boundary. A drift that stays above the cap
- * reports a cosmetic heal line per moment that the cap undoes; a drift that
- * crosses below the cap heals for real.
+ * never exceeds the cap at a boundary. The compare clamps both sides to the
+ * cap the context-cap extension publishes, so it compares the value the
+ * session holds with the value the session will hold after the boundary
+ * clamp: a drift that stays above the cap moves nothing and says nothing
+ * (the session already holds the cap - no re-apply, no transcript entry, no
+ * line), and a drift that crosses below the cap heals for real, reported at
+ * the clamped value the session actually holds.
  *
  * Budget: a selection gets one Attempt per Heal moment, two in total, and a
  * new selection re-arms both. A turn that ends `stopReason: "length"` with a
@@ -109,6 +113,15 @@ export interface LlamaRefreshDeps {
 	 * through the shared runtime, which now belongs to the new session.
 	 */
 	isCurrent: () => boolean;
+	/**
+	 * The session's active Context window cap, or undefined when no cap
+	 * applies. The context-cap extension publishes the value it resolved in
+	 * session_start; the compare clamps both sides to it, so a cap that hides
+	 * a drift (the live window stays above the cap) moves nothing and says
+	 * nothing, and a heal reports the clamped value the session will actually
+	 * hold.
+	 */
+	windowCap: () => number | undefined;
 }
 
 export interface LlamaRefresh {
@@ -223,11 +236,30 @@ export function createLlamaRefresh(deps: LlamaRefreshDeps): LlamaRefresh {
 			// apply. The Attempt is spent either way.
 			return { kind: "skip" };
 		}
-		if (before.contextWindow === after.contextWindow) {
-			// The live catalog confirmed the value the registry already
-			// held: no re-apply, no transcript entry, no report line. A
-			// cap that clamps both sides to the same value lands here.
-			return { kind: "unchanged", window: before.contextWindow };
+		// The active cap clamps both sides to the value the session will
+		// actually hold: the context-cap extension publishes it, and its
+		// boundary clamp finalizes whatever the re-apply lands. A registry
+		// copy may read uncapped (a refresh replaced the object before the
+		// clamp ran), so the clamp applies to the copy, not just to the
+		// session's model.
+		let cap: number | undefined;
+		try {
+			cap = deps.windowCap();
+		} catch {
+			// A throwing probe degrades to no cap: the pre-amendment compare,
+			// with the cap's boundary clamp still protecting the session.
+			cap = undefined;
+		}
+		const effective = (window: number) => (cap === undefined ? window : Math.min(window, cap));
+		const from = effective(before.contextWindow);
+		const to = effective(after.contextWindow);
+		if (from === to) {
+			// The live catalog confirmed the value the session holds: no
+			// re-apply, no transcript entry, no report line. A cap that hides
+			// the drift (the live value stays above the cap) lands here: the
+			// session already holds the cap, and the cap does its job without
+			// a message.
+			return { kind: "unchanged", window: from };
 		}
 		// A manual model select landed during the in-flight compare: the
 		// user's choice wins, and the re-apply would clobber it.
@@ -254,7 +286,10 @@ export function createLlamaRefresh(deps: LlamaRefreshDeps): LlamaRefresh {
 			// the compare reports nothing (the Attempt is spent).
 			return { kind: "skip" };
 		}
-		return { kind: "re-apply", from: before.contextWindow, to: after.contextWindow, model: after };
+		// The re-apply passes the registry's model exactly as pi resolved it;
+		// the cap's boundary clamp finalizes the session value, so the line
+		// reports the effective move, not the uncapped live value.
+		return { kind: "re-apply", from, to, model: after };
 	};
 
 	const compareExclusive = (ref: ModelRef, moment: Moment, opts?: { timeoutMs?: number }): Promise<RefreshDecision> | undefined => {

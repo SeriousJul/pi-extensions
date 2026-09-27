@@ -27,7 +27,8 @@ it, so the extension compares instead of matching.
   `/llama-window` command re-arms the pre-request Attempt and runs one
   compare on demand.
 - Every applied heal reports one line, and every command run reports one
-  line:
+  line (under an active cap, the values are the clamped windows the session
+  actually holds):
   - `llama window: 40192 -> 160000 (llama.cpp/model)` - an applied heal
   - `llama window: 160000 (llama.cpp/model)` - a command that confirmed an
     unchanged window
@@ -49,10 +50,12 @@ it, so the extension compares instead of matching.
 - The check stays safe beside the context-cap extension: the cap skips
   live-catalog providers (a static capped list would freeze the live
   window) and clamps the session model in place at every boundary the
-  window is consumed. A drift that stays above the cap reports a cosmetic
-  heal line per moment the cap undoes at its boundary; a drift that
-  crosses below the cap heals for real. Load this extension before
-  context-cap, so the cap's clamp of a boundary lands after this
+  window is consumed. The compare clamps both sides to the cap the
+  context-cap extension publishes, so a drift that stays above the cap
+  moves nothing and says nothing - no repair, no message, because the
+  session already holds the cap - and a drift that crosses below the cap
+  heals for real, reported at the clamped value. Load this extension
+  before context-cap, so the cap's clamp of a boundary lands after this
   extension's re-apply in that boundary.
 - Non-llama.cpp models are ignored entirely.
 
@@ -61,7 +64,8 @@ it, so the extension compares instead of matching.
 The decision logic lives in the engine-free core module
 (`extensions/llama-refresh/refresh.ts`); the pi wiring (`index.ts`) only
 binds events and supplies the real dependencies (registry refresh, registry
-read-back, `pi.setModel`, the currency probe). The notify lines are built
-in the core module in exactly one place, so a test can assert a line
+read-back, `pi.setModel`, the currency probe, and the active cap from the
+shared record the context-cap extension publishes). The notify lines are
+built in the core module in exactly one place, so a test can assert a line
 verbatim.
 See [ADR 0027](/adr/0027-the-live-catalog-comparison-heals-the-window).
