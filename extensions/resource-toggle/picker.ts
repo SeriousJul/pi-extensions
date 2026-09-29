@@ -19,7 +19,6 @@ import type { TUI } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { projectOverrideState, resourceLabel } from "./lib/state-machine.ts";
 import type { MachineContext, ResourceInfo, ResourceType, SettingsState, ToggleOp, WriteMode } from "./lib/types.ts";
-import { RESOURCE_TYPES } from "./lib/types.ts";
 import { buildResourceRows, refOf, renderResourceRow, type ResourceRow } from "./tui.ts";
 
 const TYPE_LABELS: Record<ResourceType, string> = {
@@ -40,13 +39,16 @@ export interface ResourcePickerDeps {
   resources: ResourceInfo[];
   /** The settings arrays at open; a pick re-reads them through applyPick. */
   settings: SettingsState;
-  machine: { cwd: string; agentDir: string; configDir: string };
+  machine: MachineContext;
   /** Whether the project view is available (project trusted). */
   projectTrusted: boolean;
   /** The self-guard: is this path the loaded resource-toggle? */
   isSelf: (path: string) => boolean;
-  /** Applies the pick: the same self-guard, write, and report the named call runs. */
-  applyPick: (resource: ResourceInfo) => Promise<{ ok: boolean; text: string }>;
+  /**
+   * Applies the pick in the picker's active mode: the same self-guard, write,
+   * and report a named call in that mode would run.
+   */
+  applyPick: (resource: ResourceInfo, mode: WriteMode) => Promise<{ ok: boolean; text: string }>;
   /** How many item lines fit at the current terminal size. */
   viewport: () => number;
   /** Leaves the picker; the result is the successful pick's report. */
@@ -144,7 +146,7 @@ export function createResourcePickerTui(deps: ResourcePickerDeps) {
     error = undefined;
     tui.requestRender();
     void deps
-      .applyPick(row.resource)
+      .applyPick(row.resource, mode)
       .then((result) => {
         busy = false;
         if (result.ok) {

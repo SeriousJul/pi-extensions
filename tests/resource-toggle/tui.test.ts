@@ -8,7 +8,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import { createResourceToggleTui } from "../../extensions/resource-toggle/tui.ts";
 import { createResourcePickerTui } from "../../extensions/resource-toggle/picker.ts";
-import type { MachineContext, ResourceInfo, SettingsState, ToggleOp } from "../../extensions/resource-toggle/lib/types.ts";
+import type { MachineContext, ResourceInfo, SettingsState, ToggleOp, WriteMode } from "../../extensions/resource-toggle/lib/types.ts";
 import { emptyScopeArrays } from "../../extensions/resource-toggle/lib/types.ts";
 import type { WriteOutcome } from "../../extensions/resource-toggle/lib/writer.ts";
 
@@ -291,8 +291,9 @@ interface PickerRig {
   press: (data: string) => void;
   tick: () => Promise<void>;
   applyPickCalls: ResourceInfo[];
+  applyPickModes: WriteMode[];
   closeCalls: ({ text: string } | null)[];
-  setApplyPick: (impl: (resource: ResourceInfo) => Promise<{ ok: boolean; text: string }>) => void;
+  setApplyPick: (impl: (resource: ResourceInfo, mode: WriteMode) => Promise<{ ok: boolean; text: string }>) => void;
 }
 
 function makePickerRig(
@@ -301,13 +302,15 @@ function makePickerRig(
     initialMode?: "global" | "project";
     settings?: SettingsState;
     theme?: Theme;
-    applyPick?: (resource: ResourceInfo) => Promise<{ ok: boolean; text: string }>;
+    applyPick?: (resource: ResourceInfo, mode: WriteMode) => Promise<{ ok: boolean; text: string }>;
   } = {},
 ): PickerRig {
   const applyPickCalls: ResourceInfo[] = [];
+  const applyPickModes: WriteMode[] = [];
   const closeCalls: ({ text: string } | null)[] = [];
   let applyPickImpl =
-    opts.applyPick ?? (async (resource: ResourceInfo) => ({ ok: true, text: `applied to ${resource.displayName}` }));
+    opts.applyPick ??
+    (async (resource: ResourceInfo) => ({ ok: true, text: `applied to ${resource.displayName}` }));
   const component = createResourcePickerTui({
     tui: fakeTui,
     theme: opts.theme ?? fakeTheme,
@@ -318,9 +321,10 @@ function makePickerRig(
     machine,
     projectTrusted: true,
     isSelf: () => false,
-    applyPick: async (resource) => {
+    applyPick: async (resource, pickMode) => {
       applyPickCalls.push(resource);
-      return applyPickImpl(resource);
+      applyPickModes.push(pickMode);
+      return applyPickImpl(resource, pickMode);
     },
     viewport: () => 20,
     close: (result) => {
@@ -332,6 +336,7 @@ function makePickerRig(
     press: (data) => component.handleInput(data),
     tick: () => new Promise((r) => setTimeout(r, 0)),
     applyPickCalls,
+    applyPickModes,
     closeCalls,
     setApplyPick: (impl) => {
       applyPickImpl = impl;
@@ -410,6 +415,19 @@ describe("resource picker TUI", () => {
     expect(rig.applyPickCalls.length).toBe(0);
     expect(rig.closeCalls.length).toBe(0);
     expect(rig.render().join("\n")).toContain(`Refused: "tool.ts" is a package resource; package rows are read-only.`);
+  });
+
+  it("a pick after a tab mode switch applies in the active mode, not the command's", async () => {
+    const rig = makePickerRig({ operation: { op: "enable", mode: "global" }, initialMode: "global" });
+    rig.press("\t"); // global -> project
+    // dummy.ts is disabled in global and has no project override, so its
+    // row is actionable in project mode: the pick must go to project.
+    rig.press("\r");
+    await rig.tick();
+    expect(rig.applyPickCalls.length).toBe(1);
+    expect(rig.applyPickCalls[0]?.displayName).toBe("dummy.ts");
+    expect(rig.applyPickModes[0]).toBe("project");
+    expect(rig.closeCalls[0]).toEqual({ text: "applied to dummy.ts" });
   });
 
   it("tab switches the mode; project mode shows the inherited global marks", () => {

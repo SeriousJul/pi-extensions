@@ -298,7 +298,10 @@ export default function (pi: ExtensionAPI): void {
                 machine: machine(),
                 projectTrusted: ctx.isProjectTrusted(),
                 isSelf: (path) => isSelf(path),
-                applyPick: (resource) => applyResource(operation, resource),
+                // Rebuild the op at pick time: a Tab switch in the picker
+                // changes the mode a pick must apply in.
+                applyPick: (resource, pickMode) =>
+                  applyResource(operation.op === "inherit" ? operation : { op: operation.op, mode: pickMode }, resource),
                 viewport: () => Math.max(5, tui.terminal.rows - 8),
                 close: (result) => {
                   pick = result;
