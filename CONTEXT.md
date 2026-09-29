@@ -329,6 +329,14 @@ read plus the re-apply), model update
 One unit pi loads from disk: an extension, a skill, a prompt template, or a theme. A resource has a location, a scope (global or project), and a Toggle state.
 _Avoid_: plugin (pi's word is extension), feature, component
 
+**Resource description**:
+The one-line text that says what a resource does, derived from its source file: the frontmatter of the SKILL.md for a skill, the frontmatter or first non-empty line of the template for a prompt, the leading block comment of the entry file for an extension, and none for a theme. Read-only: never written to settings, never part of the Toggle state.
+_Avoid_: summary (the Compression and compaction word), annotation, blurb
+
+**Resource picker**:
+The single-pick selection that opens when /enable, /disable, or /inherit runs without a name: every resource as a row with its state and description, type-anywhere filter, and a pick that applies the one toggle, closes, and reloads. Its counterpart is the interactive list, the multi-toggle grid of /resources.
+_Avoid_: list selection (the user's word; the interactive list owns the list name), chooser, selector (pi's word for its built-in model and theme dialogs)
+
 **Top-level resource**:
 A resource loaded from an auto-discovered location or a settings array entry, instead of one bundled in a package. A package resource's state lives in its Package filter, not in a settings resource array.
 _Avoid_: local resource, installed resource
