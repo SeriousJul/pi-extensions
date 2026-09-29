@@ -21,14 +21,36 @@ export interface ScopeArrays {
   themes: string[];
 }
 
-export function emptyScopeArrays(): ScopeArrays {
-  return { extensions: [], skills: [], prompts: [], themes: [] };
+/** An object-form packages entry: a package source plus per-resource-type filter patterns. */
+export interface PackageFilter {
+  source: string;
+  /** Patterns for the package's extensions, relative to the package root. */
+  extensions?: string[];
+  /** Patterns for the package's skills, relative to the package root. */
+  skills?: string[];
+  /** Patterns for the package's prompt templates, relative to the package root. */
+  prompts?: string[];
+  /** Patterns for the package's themes, relative to the package root. */
+  themes?: string[];
+}
+
+/** One packages-array entry: a plain source string (no filter) or object form. */
+export type PackageEntry = string | PackageFilter;
+
+/** The toggle-relevant state of one settings file. */
+export interface ScopeState extends ScopeArrays {
+  /** The packages entries (package sources, optionally with filters). */
+  packages: PackageEntry[];
+}
+
+export function emptyScopeState(): ScopeState {
+  return { extensions: [], skills: [], prompts: [], themes: [], packages: [] };
 }
 
 /** The toggle-relevant state of both settings files. */
 export interface SettingsState {
-  global: ScopeArrays;
-  project: ScopeArrays;
+  global: ScopeState;
+  project: ScopeState;
 }
 
 /** A top-level resource the state machine operates on. */
@@ -40,6 +62,12 @@ export interface ResourceRef {
   scope: Scope;
   /** Absolute base directory the resource resolves patterns against (may differ from the default). */
   baseDir?: string;
+  /**
+   * For a package resource: the packages source that carries it, as written
+   * in the settings. It locates the packages entry the toggle manages.
+   * Absent for a top-level resource.
+   */
+  packageSource?: string;
 }
 
 /** One toggle operation. "inherit" is project mode only. */
@@ -57,6 +85,20 @@ export interface MachineContext {
   agentDir: string;
   /** The project config directory name (".pi" by default). */
   configDir: string;
+  /**
+   * The loaded path of the resource-toggle extension itself. A transition
+   * that would disable it is refused; absent in contexts without a
+   * resource-toggle (then nothing is refused).
+   */
+  selfPath?: string;
+  /**
+   * The top-level (non-package) resources, as known to the caller. The
+   * self-heal keeps any resource-array pattern one of them relies on, so
+   * a pattern that also names a real top-level resource at the same
+   * relative path survives. Absent when the caller does not know the
+   * list; then the self-heal removes nothing.
+   */
+  topLevelRefs?: ResourceRef[];
 }
 
 /** One loadable resource with its derived state, as shown in lists. */
@@ -72,6 +114,13 @@ export interface ResourceInfo {
   /** Package source, "auto" (auto-discovered), or "local" (settings entry). */
   source: string;
   baseDir?: string;
+  /**
+   * True when the resource's package source is a single file. pi loads a
+   * single-file source unconditionally and never applies a packages-array
+   * filter to it, so its state cannot be toggled; the toggle is refused
+   * with a clear message.
+   */
+  singleFilePackage?: boolean;
   /** Effective state: what pi loads right now, project overrides applied. */
   enabled: boolean;
   /** State in the resource's own scope: the global view of the list. */

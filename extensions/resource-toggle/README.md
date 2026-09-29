@@ -1,10 +1,11 @@
 # Resource Toggle
 
 Enable and disable extensions, skills, prompt templates, and themes from
-inside a running session. The state lives in pi's native settings override
-patterns - the same files and format `pi config` uses (ADR 0012) - so the
-two tools are interchangeable and a change made in one shows up in the
-other.
+inside a running session. The state lives in pi's native settings - the
+same files and format `pi config` uses (ADR 0012): override patterns in
+the resource arrays for top-level resources, and the packages-array
+filter for package-bundled resources (ADR 0029). So the two tools are
+interchangeable and a change made in one shows up in the other.
 
 ## Commands
 
@@ -46,8 +47,7 @@ Every successful change writes the settings and then reloads the session,
 so the effect is immediate. A reload rebinds every extension, so the
 in-session state of other extensions resets (their persisted state, like
 session settings, survives). The extension refuses to disable itself:
-removing it would remove the toggle commands and the tool. Package
-resources are shown dimmed and read-only in the list.
+removing it would remove the toggle commands and the tool.
 
 ## resource_toggle (agent tool)
 
@@ -75,6 +75,45 @@ override state: `[x]` / `[ ]` inherited, `[+]` project load, `[-]`
 project unload. Every toggle writes the settings at once; if anything
 changed, one reload runs on close.
 
+## Package resources
+
+Package-bundled resources are listed with a `(package)` label and toggle
+like any row. Their state does not live in a resource array - pi ignores
+package-relative patterns there. It lives in the packages array of the
+settings, where the package's entry becomes object form carrying a
+per-resource-type filter, with patterns relative to the package root:
+
+```json
+{ "source": "git:github.com/acme/pkg", "extensions": ["-extensions/quota/index.ts"] }
+```
+
+- **Global mode** writes the filter into the packages entry of the
+  settings file the resource resolves from.
+- **Project mode** writes it into the project packages entry, which
+  replaces the global entry for the same package - pi dedupes by source
+  and does not merge. A local source is rewritten relative to the
+  project directory so the project file stays portable.
+- **Inherit** removes the resource's filter patterns from the project
+  entry; an entry that loses its last filter collapses back to the plain
+  source string.
+
+Local package sources resolve with pi's rules: a leading `~` expands to
+the home directory and a `file:` URL to its path, before the source
+resolves against the settings directory of its scope. Two local sources
+that resolve to the same path name the same package.
+
+An empty per-type array is never written, because in pi it disables the
+whole type. When a transition touches a package resource, it also removes
+the old no-op package-relative pattern the previous code wrote into the
+resource arrays, so a harmed settings file heals itself on first use. The
+self-heal removes a pattern only when no top-level resource relies on it:
+the same string can also be the own-scope pattern of a top-level resource
+at the same relative path, and that one is real.
+
+A toggle of a resource from a single-file package source is refused with
+a clear message: pi loads a single-file source unconditionally and never
+applies a packages-array filter to it, so its state cannot be toggled.
+
 ## Tests
 
 - `npm test` runs the unit suite: the state machine, the resolver, the
@@ -82,4 +121,5 @@ changed, one reload runs on close.
 - `npm run e2e:resource-toggle` drives a real pi process in RPC mode in a
   sandboxed home and asserts on the settings files and the live command
   and tool lists through a full disable/enable, shadow, and inherit
-  cycle.
+  cycle, plus a package cycle that starts from the harmed settings shape
+  (an old no-op pattern) and asserts the self-heal.

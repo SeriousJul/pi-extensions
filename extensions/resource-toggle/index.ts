@@ -10,8 +10,10 @@
  * - The resource_toggle tool lets the agent list resources and apply
  *   changes on request; with no arguments it opens the interactive list.
  *
- * State lives in pi's native settings override patterns, the same files and
- * format `pi config` uses (ADR 0012), so the two tools are interchangeable.
+ * State lives in pi's native settings, the same files and format `pi
+ * config` uses (ADR 0012): override patterns in the resource arrays for
+ * top-level resources, and the packages-array filter for package resources
+ * (ADR 0029). So the two tools are interchangeable.
  * Every change flushes the settings and then reloads the session, so the
  * effect is immediate and survives a restart.
  */
@@ -27,7 +29,7 @@ import {
 import { machineContextFor, resolveResources } from "./lib/resolver.ts";
 import { matchResource } from "./lib/matcher.ts";
 import { writeSettings } from "./lib/writer.ts";
-import { projectOverrideState, resourceLabel, transition } from "./lib/state-machine.ts";
+import { SelfRefusalError, projectOverrideState, resourceLabel, topLevelRefsOf, transition } from "./lib/state-machine.ts";
 import { globalViewRows, projectViewRows, renderResourceTable, shortPath } from "./lib/table.ts";
 import type {
   MachineContext,
@@ -59,7 +61,18 @@ export default function (pi: ExtensionAPI): void {
     state.projectTrusted = ctx.isProjectTrusted();
   });
 
-  const machine = (): MachineContext => machineContextFor(state.cwd, getAgentDir());
+  const machine = (): MachineContext => ({
+    ...machineContextFor(state.cwd, getAgentDir()),
+    selfPath: SELF_PATH,
+  });
+
+  /**
+   * The single-file refusal, shared by the command and tool paths: pi
+   * loads a single-file package source unconditionally, so a packages-
+   * array filter cannot change its state.
+   */
+  const singleFileRefusal = (resource: ResourceInfo): string =>
+    `Refused: "${resource.displayName}" comes from a single-file package. pi loads a single-file source unconditionally, so its state cannot be toggled; remove the package entry from the settings instead.`;
 
   const isSelf = (path: string): boolean => {
     const self = safeRealpath(SELF_PATH);
@@ -104,6 +117,9 @@ export default function (pi: ExtensionAPI): void {
       return { ok: false, text: `Ambiguous name "${name}". Candidates:\n${list}`, needsReload: false };
     }
     const resource = match.resource;
+    if (resource.singleFilePackage) {
+      return { ok: false, text: singleFileRefusal(resource), needsReload: false };
+    }
     if (op.op !== "enable" && isSelf(resource.path)) {
       return {
         ok: false,
@@ -111,8 +127,22 @@ export default function (pi: ExtensionAPI): void {
         needsReload: false,
       };
     }
-    const ref: ResourceRef = { type: resource.type, path: resource.path, scope: resource.scope, baseDir: resource.baseDir };
-    const next: SettingsState = transition(resolved.settings, ref, op, machine());
+    const ref: ResourceRef = {
+      type: resource.type,
+      path: resource.path,
+      scope: resource.scope,
+      baseDir: resource.baseDir,
+      packageSource: resource.origin === "package" ? resource.source : undefined,
+    };
+    let next: SettingsState;
+    try {
+      next = transition(resolved.settings, ref, op, { ...machine(), topLevelRefs: topLevelRefsOf(resolved.resources) });
+    } catch (error) {
+      if (error instanceof SelfRefusalError) {
+        return { ok: false, text: error.message, needsReload: false };
+      }
+      throw error;
+    }
     const outcome = await writeSettings(
       { cwd: state.cwd, agentDir: getAgentDir(), projectTrusted: state.projectTrusted },
       resolved.settings,
@@ -149,7 +179,13 @@ export default function (pi: ExtensionAPI): void {
     }
     const overrides = new Map<ResourceInfo, OverrideState>();
     for (const resource of resolved.resources) {
-      const ref: ResourceRef = { type: resource.type, path: resource.path, scope: resource.scope, baseDir: resource.baseDir };
+      const ref: ResourceRef = {
+        type: resource.type,
+        path: resource.path,
+        scope: resource.scope,
+        baseDir: resource.baseDir,
+        packageSource: resource.origin === "package" ? resource.source : undefined,
+      };
       overrides.set(resource, projectOverrideState(resolved.settings, ref, machineCtx));
     }
     return renderResourceTable(projectViewRows(resolved.resources, overrides));
@@ -173,7 +209,7 @@ export default function (pi: ExtensionAPI): void {
             theme,
             resources: resolved.resources,
             settings: resolved.settings,
-            machine: machine(),
+            machine: { ...machine(), topLevelRefs: topLevelRefsOf(resolved.resources) },
             projectTrusted: ctx.isProjectTrusted(),
             apply: (prev, next) =>
               writeSettings({ cwd: ctx.cwd, agentDir: getAgentDir(), projectTrusted: ctx.isProjectTrusted() }, prev, next),

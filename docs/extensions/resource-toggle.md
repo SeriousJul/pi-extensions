@@ -42,6 +42,14 @@ disabled by a settings pattern, so its box is empty.
   or a path fragment. A name that matches several resources is reported
   as ambiguous with the candidates listed; a name that matches none is
   reported as not found.
+- **Package resources.** A resource bundled in a package is toggled by a
+  filter in the packages array of the settings
+  ([ADR 0029](/adr/0029-package-toggles-write-packages-array-filters)), not
+  by a resource-array pattern. A local source is rewritten relative to the
+  project directory so the project file stays portable. Toggling a resource
+  from a single-file package source is refused with a clear message: pi
+  loads a single-file source unconditionally, so its state cannot be
+  toggled.
 - **Trusted projects only.** Project mode requires a trusted project; in
   an untrusted project the TUI shows the restriction and project commands
   are refused.
@@ -66,4 +74,5 @@ disabled by a settings pattern, so its box is empty.
   for enable, disable, and inherit in both write modes.
 - `tests/resource-toggle/tui.test.ts` - the interactive list rendering.
 - `npm run e2e:resource-toggle` - a real pi RPC session: list, toggle,
-  reload, and the self-guard.
+  reload, the self-guard, the packages-array filter cycle (including the
+  self-heal and a tilde-spelled local source), and the single-file refusal.

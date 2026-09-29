@@ -8,7 +8,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import { createResourceToggleTui } from "../../extensions/resource-toggle/tui.ts";
 import type { MachineContext, ResourceInfo, SettingsState } from "../../extensions/resource-toggle/lib/types.ts";
-import { emptyScopeArrays } from "../../extensions/resource-toggle/lib/types.ts";
+import { emptyScopeState } from "../../extensions/resource-toggle/lib/types.ts";
 import type { WriteOutcome } from "../../extensions/resource-toggle/lib/writer.ts";
 
 const fakeTheme = {
@@ -36,8 +36,9 @@ const res = (partial: Partial<ResourceInfo> & { path: string; displayName: strin
   displayName: partial.displayName,
   scope: partial.scope ?? "user",
   origin: partial.origin ?? "top-level",
-  source: "auto",
+  source: partial.source ?? "auto",
   baseDir: partial.baseDir,
+  singleFilePackage: partial.singleFilePackage,
   enabled: partial.enabled ?? true,
   ownEnabled: partial.ownEnabled ?? true,
 });
@@ -46,7 +47,7 @@ const resources: ResourceInfo[] = [
   res({ path: "/home/u/.pi/agent/extensions/dummy.ts", displayName: "dummy.ts" }),
   res({ path: "/proj/.pi/extensions/proj.ts", displayName: "proj.ts", scope: "project" }),
   res({ path: "/home/u/.pi/agent/skills/my-skill/SKILL.md", displayName: "my-skill", type: "skills" }),
-  res({ path: "/pkg/ext/tool.ts", displayName: "tool.ts", origin: "package", source: "acme/pkg" }),
+  res({ path: "/pkg/extensions/tool.ts", displayName: "tool.ts", origin: "package", source: "git:github.com/acme/pkg", baseDir: "/pkg" }),
 ];
 
 interface Rig {
@@ -62,14 +63,15 @@ function makeRig(
   settings?: SettingsState,
   applyImpl?: (next: SettingsState) => Promise<WriteOutcome>,
   theme: Theme = fakeTheme,
+  rigResources: ResourceInfo[] = resources,
 ): Rig {
   const applyCalls: SettingsState[] = [];
   const closed = { called: false } as { called: boolean; changed?: boolean };
   const component = createResourceToggleTui({
     tui: fakeTui,
     theme,
-    resources,
-    settings: settings ?? { global: emptyScopeArrays(), project: emptyScopeArrays() },
+    resources: rigResources,
+    settings: settings ?? { global: emptyScopeState(), project: emptyScopeState() },
     machine,
     projectTrusted: true,
     apply: (_prev, next) => {
@@ -161,15 +163,75 @@ describe("resource list TUI", () => {
     expect(rig.applyCalls[0].global.extensions).toEqual([]);
   });
 
-  it("package rows are read-only", async () => {
+  it("package rows toggle like any row and write the packages filter", async () => {
     const rig = makeRig();
-    rig.press(" ");
-    await rig.tick(); // dummy.ts
     rig.press("\x1b[B");
     expect(cursorLine(rig.render())).toContain("tool.ts");
     rig.press(" ");
     await rig.tick();
-    expect(rig.applyCalls.length).toBe(1); // the package row was skipped
+    expect(rig.applyCalls[0].global.packages).toEqual([
+      { source: "git:github.com/acme/pkg", extensions: ["-extensions/tool.ts"] },
+    ]);
+    expect(rig.applyCalls[0].global.extensions).toEqual([]); // never a resource-array pattern
+    expect(lineFor(rig.render(), "tool.ts")).toContain("[ ]");
+    expect(lineFor(rig.render(), "tool.ts")).toContain("(package)");
+    rig.press(" ");
+    await rig.tick();
+    expect(rig.applyCalls[1].global.packages).toEqual([
+      { source: "git:github.com/acme/pkg", extensions: ["+extensions/tool.ts"] },
+    ]);
+    expect(lineFor(rig.render(), "tool.ts")).toContain("[x]");
+  });
+
+  it("refuses to toggle a single-file package row and says why", async () => {
+    const single = res({
+      path: "/home/u/single.ts",
+      displayName: "single/single.ts",
+      origin: "package",
+      source: "/home/u/single.ts",
+      baseDir: "/home/u",
+      singleFilePackage: true,
+    });
+    const rig = makeRig(undefined, undefined, fakeTheme, [...resources, single]);
+    // Item order: dummy.ts, single/single.ts, tool.ts (package), proj.ts.
+    rig.press("\x1b[B");
+    expect(cursorLine(rig.render())).toContain("single/single.ts");
+    rig.press(" ");
+    await rig.tick();
+    expect(rig.applyCalls.length).toBe(0);
+    expect(rig.render().join("\n")).toContain("single-file package");
+    rig.press("\x1b");
+    expect(rig.closed.changed).toBe(false);
+  });
+
+  it("a disabled package row shows its state from the packages filter", () => {
+    const settings = {
+      global: { ...emptyScopeState(), packages: [{ source: "git:github.com/acme/pkg", extensions: ["-extensions/tool.ts"] }] },
+      project: emptyScopeState(),
+    };
+    const rig = makeRig(settings);
+    expect(lineFor(rig.render(), "tool.ts")).toContain("[ ]");
+  });
+
+  it("project mode cycles a package row through the project packages entry", async () => {
+    const rig = makeRig();
+    rig.press("\t");
+    rig.press("\x1b[B");
+    expect(cursorLine(rig.render())).toContain("tool.ts");
+    rig.press(" ");
+    await rig.tick(); // inherit -> unload
+    expect(rig.applyCalls[0].project.packages).toEqual([
+      { source: "git:github.com/acme/pkg", extensions: ["-extensions/tool.ts"] },
+    ]);
+    expect(lineFor(rig.render(), "tool.ts")).toContain("[-]");
+    rig.press(" ");
+    await rig.tick(); // unload -> load
+    expect(rig.applyCalls[1].project.packages).toEqual([
+      { source: "git:github.com/acme/pkg", extensions: ["+extensions/tool.ts"] },
+    ]);
+    rig.press(" ");
+    await rig.tick(); // load -> inherit: the emptied entry collapses to the plain string
+    expect(rig.applyCalls[2].project.packages).toEqual(["git:github.com/acme/pkg"]);
   });
 
   it("search filters rows and backspace clears", () => {
@@ -215,7 +277,7 @@ describe("resource list TUI", () => {
       tui: fakeTui,
       theme: fakeTheme,
       resources,
-      settings: { global: emptyScopeArrays(), project: emptyScopeArrays() },
+      settings: { global: emptyScopeState(), project: emptyScopeState() },
       machine,
       projectTrusted: false,
       apply: async (_prev, _next) => ({ ok: true }),
