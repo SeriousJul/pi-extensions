@@ -6,13 +6,19 @@ import { afterAll, describe, expect, it } from "vitest";
 
 import {
 	aggregateEditResults,
+	aggregatePythonHeredocs,
 	classifyEditFailure,
 	defaultSessionsRoot,
+	extractBashPythonHeredocs,
 	extractEditResult,
 	filterWindow,
+	isPatchScript,
+	isPythonHeredocCommand,
 	listSessionFiles,
 	parseLastWindow,
+	scanPythonHeredocs,
 	scanSessions,
+	scanTree,
 } from "../../scripts/edit-health.mjs";
 
 const DAY = 86_400_000;
@@ -121,6 +127,95 @@ describe("extractEditResult", () => {
 	});
 });
 
+describe("isPythonHeredocCommand and isPatchScript (ticket #113)", () => {
+	const PATCH = [
+		"cd proj && python3 - <<'EOF'",
+		"p = 'crates/app/tests/e2e/mod.rs'",
+		"s = open(p).read()",
+		"s = s.replace('old', 'new')",
+		"open(p, 'w').write(s)",
+		"EOF",
+	].join("\n");
+	const READ_ONLY = [
+		"python3 - <<'EOF'",
+		"import json",
+		"print(json.load(open('config.json')))",
+		"EOF",
+	].join("\n");
+
+	it("recognizes a python3 heredoc, with or without a cd prefix", () => {
+		expect(isPythonHeredocCommand("python3 - <<'EOF'\nx\nEOF")).toBe(true);
+		expect(isPythonHeredocCommand("cd proj && python3 - << 'PYEOF'\nx\nPYEOF")).toBe(true);
+	});
+
+	it("rejects a python3 -c whose multi-line body merely contains <<", () => {
+		expect(isPythonHeredocCommand('python3 -c "\nshift = 1 << 5\nprint(shift)"')).toBe(false);
+	});
+
+	it("rejects commands that do not invoke python3 or open a heredoc", () => {
+		expect(isPythonHeredocCommand("ls -la")).toBe(false);
+		expect(isPythonHeredocCommand('python3 -c "print(1)"')).toBe(false);
+		expect(isPythonHeredocCommand(undefined)).toBe(false);
+	});
+
+	it("counts a read/replace write-back as a patch script", () => {
+		expect(isPatchScript(PATCH)).toBe(true);
+	});
+
+	it("does not count a read-only or print-only script as a patch", () => {
+		expect(isPatchScript(READ_ONLY)).toBe(false);
+	});
+});
+
+describe("extractBashPythonHeredocs (ticket #113)", () => {
+	function assistantRecord(content: unknown, tsMs?: number) {
+		const message: Record<string, unknown> = { role: "assistant", content };
+		const record: Record<string, unknown> = { type: "message", id: "r", parentId: null, message };
+		if (tsMs !== undefined) message.timestamp = tsMs;
+		return record;
+	}
+
+	it("keeps the bash calls that pass a heredoc to python3, with the timestamp", () => {
+		const record = assistantRecord(
+			[
+				{ type: "toolCall", id: "c1", name: "bash", arguments: { command: "python3 - <<'EOF'\ns = open('a').read(); s = s.replace('x','y'); open('a','w').write(s)\nEOF" } },
+				{ type: "toolCall", id: "c2", name: "bash", arguments: { command: "ls -la" } },
+			],
+			1234
+		);
+		const calls = extractBashPythonHeredocs(record);
+		expect(calls.length).toBe(1);
+		expect(calls[0].tsMs).toBe(1234);
+		expect(calls[0].command).toContain("python3 - <<'EOF'");
+	});
+
+	it("falls back to the record ISO timestamp", () => {
+		const record = assistantRecord([{ type: "toolCall", id: "c1", name: "bash", arguments: { command: "python3 <<'EOF'\nEOF" } }]);
+		record.timestamp = "2026-09-22T12:00:00.000Z";
+		expect(extractBashPythonHeredocs(record)[0]?.tsMs).toBe(Date.parse("2026-09-22T12:00:00.000Z"));
+	});
+
+	it("drops records that are not assistant messages", () => {
+		expect(extractBashPythonHeredocs({ type: "session", version: 3 })).toEqual([]);
+		expect(extractBashPythonHeredocs(assistantRecord([{ type: "text", text: "hi" }]))).toEqual([]);
+	});
+});
+
+describe("aggregatePythonHeredocs (ticket #113)", () => {
+	it("counts heredoc calls and the patch scripts among them", () => {
+		const stats = aggregatePythonHeredocs([
+			{ tsMs: 1, command: "python3 - <<'EOF'\ns.replace('a','b')\nopen('p','w').write(s)\nEOF" },
+			{ tsMs: 2, command: "python3 - <<'EOF'\nprint('hi')\nEOF" },
+			undefined,
+		]);
+		expect(stats).toEqual({ total: 2, patchScripts: 1 });
+	});
+
+	it("reports zero for an empty stream", () => {
+		expect(aggregatePythonHeredocs([])).toEqual({ total: 0, patchScripts: 0 });
+	});
+});
+
 describe("aggregateEditResults and filterWindow", () => {
 	it("counts calls, failures, and per-class totals", () => {
 		const stats = aggregateEditResults([
@@ -196,16 +291,47 @@ describe("session tree scan", () => {
 			editLine({ isError: true, text: AMBIGUOUS, tsMs: now - 3_600_000 }),
 			editLine({ isError: true, text: VALIDATION_SCHEMA, tsMs: now - 3_600_000 }),
 			editLine({ isError: true, text: OTHER_ENOENT, tsMs: now - 3_600_000 }),
-			// A failed bash result must not count as an edit call.
-			JSON.stringify({
-				type: "message",
-				message: {
-					role: "toolResult",
-					toolName: "bash",
-					content: [{ type: "text", text: "boom" }],
-					isError: true,
-				},
-			}),
+				// A failed bash result must not count as an edit call.
+				JSON.stringify({
+					type: "message",
+					message: {
+						role: "toolResult",
+						toolName: "bash",
+						content: [{ type: "text", text: "boom" }],
+						isError: true,
+					},
+				}),
+				// A python-heredoc patch script and a print-only heredoc, one per
+				// turn, next to the edit calls (ticket #113).
+				JSON.stringify({
+					type: "message",
+					timestamp: new Date(now - 3_600_000).toISOString(),
+					message: {
+						role: "assistant",
+						content: [
+							{
+								type: "toolCall",
+								id: "c1",
+								name: "bash",
+								arguments: { command: "python3 - <<'EOF'\ns = open('a.rs').read()\ns = s.replace('x', 'y')\nopen('a.rs', 'w').write(s)\nEOF" },
+							},
+						],
+					},
+				}),
+				JSON.stringify({
+					type: "message",
+					message: {
+						role: "assistant",
+						content: [
+							{
+								type: "toolCall",
+								id: "c2",
+								name: "bash",
+								arguments: { command: "python3 - <<'EOF'\nprint('hi')\nEOF" },
+							},
+						],
+					},
+				}),
 			// A half-written line must be skipped, not fatal.
 			'{"type":"message","message":{"role":"toolResult","toolName":"edi',
 		];
@@ -254,6 +380,17 @@ describe("session tree scan", () => {
 		expect(all.failures.total).toBe(5);
 	});
 
+	it("scans the python heredocs in the same pass as the edit calls (ticket #113)", () => {
+		const root = fixtureRoot();
+		const { editResults, pythonHeredocs } = scanTree(root);
+		// The edit counts are untouched by the heredoc lines in s1.
+		expect(aggregateEditResults(editResults).total).toBe(6);
+		// s1 carries one patch script and one print-only heredoc; s2 none.
+		expect(pythonHeredocs).toHaveLength(2);
+		expect(aggregatePythonHeredocs(pythonHeredocs)).toEqual({ total: 2, patchScripts: 1 });
+		expect(scanPythonHeredocs(root)).toHaveLength(2);
+	});
+
 	it("defaultSessionsRoot honors PI_SESSIONS_DIR", () => {
 		expect(defaultSessionsRoot({ PI_SESSIONS_DIR: "/tmp/x" })).toBe("/tmp/x");
 		expect(defaultSessionsRoot({})).toBe(join(homedir(), ".pi", "agent", "sessions"));
@@ -272,6 +409,38 @@ describe("CLI", () => {
 			editLine({ isError: true, text: NO_MATCH, tsMs: now - 3_600_000 }),
 			editLine({ isError: true, text: AMBIGUOUS, tsMs: now - 3_600_000 }),
 			editLine({ isError: true, text: VALIDATION_OVERLAP, tsMs: now - 3_600_000 }),
+			// A dated python-heredoc patch script and an undated print-only
+			// heredoc (ticket #113); both count in all time, only the first in
+			// windows.
+			JSON.stringify({
+				type: "message",
+				timestamp: new Date(now - 3_600_000).toISOString(),
+				message: {
+					role: "assistant",
+					content: [
+						{
+							type: "toolCall",
+							id: "c1",
+							name: "bash",
+							arguments: { command: "python3 - <<'EOF'\ns = open('a.rs').read()\ns = s.replace('x', 'y')\nopen('a.rs', 'w').write(s)\nEOF" },
+						},
+					],
+				},
+			}),
+			JSON.stringify({
+				type: "message",
+				message: {
+					role: "assistant",
+					content: [
+						{
+							type: "toolCall",
+							id: "c2",
+							name: "bash",
+							arguments: { command: "python3 - <<'EOF'\nprint('hi')\nEOF" },
+						},
+					],
+				},
+			}),
 		];
 		writeFileSync(join(root, "wd", "s1.jsonl"), lines.join("\n") + "\n");
 		return root;
@@ -294,15 +463,21 @@ describe("CLI", () => {
 		expect(res.stdout).toContain("no-match        1 (33.33% of failures)");
 		expect(res.stdout).toContain("ambiguous       1 (33.33% of failures)");
 		expect(res.stdout).toContain("validation      1 (33.33% of failures)");
+		expect(res.stdout).toContain("py heredocs: 2 (patch scripts: 1)");
 	});
 
-	it("adds a window block for --last", () => {
+	it("adds a window block for --last and windows the python heredoc count", () => {
 		const res = run([fixtureRoot(), "--last", "7d"]);
 		expect(res.status).toBe(0);
 		const idxAll = res.stdout.indexOf("all time");
 		const idxWin = res.stdout.indexOf("last 7d");
 		expect(idxAll).toBeGreaterThan(-1);
 		expect(idxWin).toBeGreaterThan(idxAll);
+		// All time sees both heredocs; the window drops the undated one.
+		const allBlock = res.stdout.slice(idxAll, idxWin);
+		const windowBlock = res.stdout.slice(idxWin);
+		expect(allBlock).toContain("py heredocs: 2 (patch scripts: 1)");
+		expect(windowBlock).toContain("py heredocs: 1 (patch scripts: 1)");
 	});
 
 	it("handles an empty or missing tree as zero calls, not an error", () => {
@@ -310,7 +485,7 @@ describe("CLI", () => {
 		dirs.push(empty);
 		const res = run([join(empty, "absent")]);
 		expect(res.status).toBe(0);
-		expect(res.stdout).toContain("(no edit calls)");
+		expect(res.stdout).toContain("(no edit calls, no python heredocs)");
 	});
 
 	it("rejects bad option values with exit code 2", () => {

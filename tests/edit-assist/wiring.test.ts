@@ -2,10 +2,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type { ExtensionContext, ToolResultEvent } from "@earendil-works/pi-coding-agent";
+import type { BeforeAgentStartEvent, ExtensionContext, ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import type { TextContent } from "@earendil-works/pi-ai";
 import editAssistExtension, { diagnoseEditResult } from "../../extensions/edit-assist/index";
-import { MAX_FILE_LINES } from "../../extensions/edit-assist/core";
+import { EDIT_TOOL_RULE, MAX_FILE_LINES } from "../../extensions/edit-assist/core";
 
 const STOCK_ERROR =
 	"Could not find the exact text in src/app.ts. The old text must match exactly including all whitespace and newlines.";
@@ -199,6 +199,48 @@ describe("diagnoseEditResult", () => {
 		expect(notifications).toEqual([
 			{ message: "edit-assist: edit-assist.enabled must be a boolean, got: \"yes\"", type: "error" },
 		]);
+	});
+
+	it("injects the prompt rule into the system prompt while the edit tool is active (ticket #113)", async () => {
+		const captured: { handler?: (event: BeforeAgentStartEvent, ctx: ExtensionContext) => unknown } = {};
+		editAssistExtension({
+			on: (event: string, handler: unknown) => {
+				if (event === "before_agent_start") captured.handler = handler as typeof captured.handler;
+			},
+			getActiveTools: () => ["read", "bash", "edit", "write"],
+		} as never);
+		expect(captured.handler).toBeDefined();
+		const event = { type: "before_agent_start", prompt: "p", systemPrompt: "base prompt" } as BeforeAgentStartEvent;
+		expect(await captured.handler!(event, ctx(cwd))).toEqual({
+			systemPrompt: `base prompt\n\n${EDIT_TOOL_RULE}`,
+		});
+	});
+
+	it("omits the prompt rule when the edit tool is not active", async () => {
+		const captured: { handler?: (event: BeforeAgentStartEvent, ctx: ExtensionContext) => unknown } = {};
+		editAssistExtension({
+			on: (event: string, handler: unknown) => {
+				if (event === "before_agent_start") captured.handler = handler as typeof captured.handler;
+			},
+			getActiveTools: () => ["read", "bash", "write"],
+		} as never);
+		expect(captured.handler).toBeDefined();
+		const event = { type: "before_agent_start", prompt: "p", systemPrompt: "base prompt" } as BeforeAgentStartEvent;
+		expect(await captured.handler!(event, ctx(cwd))).toBeUndefined();
+	});
+
+	it("omits the prompt rule when the extension is disabled", async () => {
+		projectSettings({ "edit-assist": { enabled: false } });
+		const captured: { handler?: (event: BeforeAgentStartEvent, ctx: ExtensionContext) => unknown } = {};
+		editAssistExtension({
+			on: (event: string, handler: unknown) => {
+				if (event === "before_agent_start") captured.handler = handler as typeof captured.handler;
+			},
+			getActiveTools: () => ["edit"],
+		} as never);
+		expect(captured.handler).toBeDefined();
+		const event = { type: "before_agent_start", prompt: "p", systemPrompt: "base prompt" } as BeforeAgentStartEvent;
+		expect(await captured.handler!(event, ctx(cwd))).toBeUndefined();
 	});
 
 	it("ignores tools other than edit", async () => {

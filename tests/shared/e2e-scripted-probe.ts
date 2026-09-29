@@ -1,7 +1,8 @@
 /**
- * E2E probe for the edit assist extension (ticket #84). Runs inside the
- * real pi process and registers a scripted provider ("e2efa") so the e2e
- * can drive real edit tool calls without a live LLM.
+ * E2E probe for the scripted tool-call e2es (shared by edit assist, ticket
+ * #84, and bash no-match, ticket #113). Runs inside the real pi process and
+ * registers a scripted provider ("e2efa") so the e2e can drive real tool
+ * calls without a live LLM.
  *
  * The driver script is a file on disk (path in the E2E_CASE_FILE env var):
  * { runId, toolCall: { id, name, arguments } }. The first model call of a
