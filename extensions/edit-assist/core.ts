@@ -26,6 +26,17 @@
  * neither derivation reproduces the stock count.
  */
 
+/**
+ * The standing edit-tool rule injected into the system prompt (ticket
+ * #113): one block of text, scoped instead of banning - the bulk multi-
+ * file script stays the sanctioned escape hatch, and the rule says the
+ * re-read-and-retry path after a no-match failure, which the Diagnosis
+ * already makes cheap. Injected by the before_agent_start wiring only
+ * while the edit tool is active.
+ */
+export const EDIT_TOOL_RULE =
+	"When an edit fails, re-read the exact file region and retry the edit. Prefer the edit tool for single-file text changes. Use a shell script patch only for bulk multi-file changes the edit tool cannot express.";
+
 /** Max occurrence lines shown in an ambiguous Diagnosis (ticket #84). */
 export const MAX_OCCURRENCES = 10;
 

@@ -48,5 +48,6 @@ list with `pi list`.
 | [usage](/extensions/usage) | The `pi-usage` CLI and the usage report: token and cost usage across all pi sessions. |
 | [compress](/extensions/compress) | Replaces finished turns in outgoing requests with one short standing-in message; the session file stays intact. |
 | [edit-assist](/extensions/edit-assist) | Corrects and diagnoses built-in edit calls: leading-whitespace drift corrected before execution, a Nearest region diff on no-match, occurrence lines on ambiguous matches, one targeted hint on malformed calls; the stock error text is always kept. |
+| [bash-no-match](/extensions/bash-no-match) | Returns a no-match search (`rg`/`grep` exit 1 with an empty stream) to the agent as a normal result with a "(no matches)" note, instead of an error. |
 | [background-jobs](/extensions/background-jobs) | `bash_bg`, `job_wait`, `job_status`: run long commands in the background and wait on them once, instead of sleep-and-tail loops. |
 | [safe-branch-summary](/extensions/safe-branch-summary) | Writes the `/tree` branch summary against a safe budget (Effective window over the Inflation factor) so code-heavy branches no longer die with `exceed_context_size_error`. |

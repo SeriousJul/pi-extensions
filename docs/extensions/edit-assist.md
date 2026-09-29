@@ -58,9 +58,17 @@ replaces it.
   built-in's behavior stands alone. A file exactly at either limit still
   gets the Diagnosis; the trailing newline of a normal file does not count
   as a line.
+- **Prompt rule (ticket #113).** The `before_agent_start` system-prompt
+  hook appends the standing edit-tool rule to the prompt while the edit
+  tool is active: "When an edit fails, re-read the exact file region and
+  retry the edit. Prefer the edit tool for single-file text changes. Use a
+  shell script patch only for bulk multi-file changes the edit tool cannot
+  express." The rule is scoped, not a ban: the bulk multi-file script stays
+  the sanctioned escape hatch. It is one block of text, gated on the edit
+  tool being active and on the enabled switch.
 - **Off switch.** The extension is on by default; disabled, the built-in
   edit tool runs stock: no correction, no honesty note, no Diagnosis, no
-  hint.
+  hint, no prompt rule.
 
 ## Settings
 
@@ -90,7 +98,15 @@ notification per error.
   (matching, region search, diffing, formatting) and fully unit-tested
   against fixtures extracted from real pi sessions. `settings.ts` reads
   the settings section. `index.ts` is the thin pi wiring around the
-  `tool_call`, `tool_result`, and `message_end` hooks.
+  `tool_call`, `tool_result`, `message_end`, and `before_agent_start`
+  hooks.
+- **Measurement (ticket #113).** The before/after instrument for the
+  prompt rule is the python-heredoc count in the edit health report
+  (`node scripts/edit-health.mjs`): the report carries, next to the edit
+  failure counts and per date window, the number of bash calls that pass a
+  heredoc to python3 and how many of them are read/replace patch scripts
+  (a `.replace(` and a write-back `.write(`). Run the same window before
+  and after the rule to see whether the standing shell-patch habit fell.
 - **Out of scope.** Extending the input correction beyond the
   Whitespace-only diff class: the model composes its newText against the
   text it believed to exist, so a character drift risks replacing the

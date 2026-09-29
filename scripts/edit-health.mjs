@@ -26,6 +26,16 @@
  *               blocked before execution (output-token-limit truncation,
  *               tool-call-loop guard)
  *
+ * Next to the edit failure counts the report carries the python-heredoc
+ * measurement (ticket #113): the standing shell-patch habit that bypasses
+ * the edit tool. A python-heredoc call is one bash tool call whose command
+ * passes a heredoc to python3 (a line that invokes python3 and opens a
+ * `<<` heredoc); a patch script is one of those whose script rewrites a
+ * file through a `.replace(` and writes the result back with a `.write(`.
+ * The count is the before/after instrument for the edit-assist prompt
+ * rule: run the same window before and after the rule to see whether the
+ * habit fell.
+ *
  * Usage:
  *
  *   node scripts/edit-health.mjs [SESSIONS_DIR] [options]
@@ -58,6 +68,27 @@ import { pathToFileURL } from "node:url";
 export const FAILURE_CLASSES = ["no-match", "ambiguous", "validation", "other"];
 
 /**
+ * True when a bash command passes a heredoc to python3: some line invokes
+ * python3 and opens a `<<` heredoc. The check is per line, so a `python3
+ * -c "..."` whose multi-line body merely contains the two characters `<<`
+ * is not a heredoc call.
+ */
+export function isPythonHeredocCommand(command) {
+	if (typeof command !== "string") return false;
+	return command.split("\n").some((line) => /\bpython3\b/.test(line) && line.includes("<<"));
+}
+
+/**
+ * True when a python-heredoc command is a read/replace patch script: the
+ * script rewrites a file through a `.replace(` and writes the result back
+ * with a `.write(`. Both markers are required, so a read-only analysis
+ * script and a print-only script do not count as patches.
+ */
+export function isPatchScript(command) {
+	return typeof command === "string" && command.includes(".replace(") && command.includes(".write(");
+}
+
+/**
  * Classify an edit tool failure by its result text. The observed message
  * patterns are mutually exclusive, so order only matters in that the three
  * named classes get their patterns before the "other" catch-all.
@@ -73,6 +104,17 @@ export function classifyEditFailure(text) {
 		return "validation";
 	}
 	return "other";
+}
+
+/**
+ * The timestamp of a parsed session record, in milliseconds, or undefined
+ * when neither the message's numeric `timestamp` field nor the record's ISO
+ * `timestamp` parses.
+ */
+function recordTimestampMs(record, message) {
+	const tsMs =
+		typeof message?.timestamp === "number" ? message.timestamp : record.timestamp ? Date.parse(record.timestamp) : NaN;
+	return Number.isFinite(tsMs) ? tsMs : undefined;
 }
 
 /**
@@ -92,14 +134,31 @@ export function extractEditResult(record) {
 		return undefined;
 	}
 	const text = resultText(message.content);
-	let tsMs =
-		typeof message.timestamp === "number"
-			? message.timestamp
-			: record.timestamp
-				? Date.parse(record.timestamp)
-				: NaN;
-	if (!Number.isFinite(tsMs)) tsMs = undefined;
-	return { tsMs, isError: message.isError === true, text };
+	return { tsMs: recordTimestampMs(record, message), isError: message.isError === true, text };
+}
+
+/**
+ * Extract the python-heredoc bash calls from a parsed session record, or an
+ * empty array when the record has none. Tool calls live in assistant
+ * message records, one record per assistant turn with several `toolCall`
+ * blocks; every block that is a bash call whose command passes a heredoc
+ * to python3 comes back as:
+ *
+ *   { tsMs: number | undefined, command: string }
+ */
+export function extractBashPythonHeredocs(record) {
+	if (!record || record.type !== "message") return [];
+	const message = record.message;
+	if (!message || message.role !== "assistant" || !Array.isArray(message.content)) return [];
+	const tsMs = recordTimestampMs(record, message);
+	const calls = [];
+	for (const block of message.content) {
+		if (!block || block.type !== "toolCall" || block.name !== "bash") continue;
+		const callArguments = block.arguments;
+		const command = callArguments && typeof callArguments === "object" ? callArguments.command : undefined;
+		if (isPythonHeredocCommand(command)) calls.push({ tsMs, command });
+	}
+	return calls;
 }
 
 /** The error/success text of a tool result, whatever shape content has. */
@@ -132,6 +191,23 @@ export function aggregateEditResults(results) {
 		}
 	}
 	return { total, failures: { total: failures, byClass } };
+}
+
+/**
+ * Aggregate a stream of extractBashPythonHeredocs() values into the
+ * python-heredoc block of a report:
+ *
+ *   { total, patchScripts }
+ */
+export function aggregatePythonHeredocs(calls) {
+	let total = 0;
+	let patchScripts = 0;
+	for (const c of calls) {
+		if (!c) continue;
+		total += 1;
+		if (isPatchScript(c.command)) patchScripts += 1;
+	}
+	return { total, patchScripts };
 }
 
 /** Environment variable that points the scan at another sessions tree. */
@@ -179,12 +255,15 @@ export function listSessionFiles(root) {
 }
 
 /**
- * Every edit call in every session file under `root`. Malformed lines are
- * skipped, so a half-written session file degrades to the lines already
- * complete.
+ * Every edit call and every python-heredoc bash call in every session file
+ * under `root`. Malformed lines are skipped, so a half-written session file
+ * degrades to the lines already complete. One pass serves both streams:
+ * a line keeps going when it names an edit tool result or a bash tool
+ * call; the extractors drop the lines that are not theirs.
  */
-export function scanSessions(root) {
-	const out = [];
+export function scanTree(root) {
+	const editResults = [];
+	const pythonHeredocs = [];
 	for (const file of listSessionFiles(root)) {
 		let text;
 		try {
@@ -193,7 +272,10 @@ export function scanSessions(root) {
 			continue;
 		}
 		for (const line of text.split("\n")) {
-			if (!line || line.indexOf('"toolName":"edit"') === -1) continue;
+			if (!line) continue;
+			const isEditLine = line.indexOf('"toolName":"edit"') !== -1;
+			const isBashCallLine = line.indexOf('"name":"bash"') !== -1;
+			if (!isEditLine && !isBashCallLine) continue;
 			let record;
 			try {
 				record = JSON.parse(line);
@@ -201,10 +283,25 @@ export function scanSessions(root) {
 				continue;
 			}
 			const result = extractEditResult(record);
-			if (result) out.push(result);
+			if (result) editResults.push(result);
+			for (const call of extractBashPythonHeredocs(record)) pythonHeredocs.push(call);
 		}
 	}
-	return out;
+	return { editResults, pythonHeredocs };
+}
+
+/**
+ * Every edit call in every session file under `root`.
+ */
+export function scanSessions(root) {
+	return scanTree(root).editResults;
+}
+
+/**
+ * Every python-heredoc bash call in every session file under `root`.
+ */
+export function scanPythonHeredocs(root) {
+	return scanTree(root).pythonHeredocs;
 }
 
 /** The calls in `[fromMs, toMs]`; calls with no timestamp are dropped. */
@@ -221,20 +318,34 @@ export function parseLastWindow(spec) {
 	return n * unit;
 }
 
+/**
+ * Merge one window's edit results and python-heredoc calls into the report
+ * block shape the renderer consumes.
+ */
+function reportBlock(editResults, pythonHeredocs) {
+	return {
+		...aggregateEditResults(editResults),
+		python: aggregatePythonHeredocs(pythonHeredocs),
+	};
+}
+
 /** Render one report block (header line plus indented stats). */
 function renderBlock(label, stats) {
 	const lines = [label];
-	if (stats.total === 0) {
-		lines.push("  (no edit calls)");
+	if (stats.total === 0 && stats.python.total === 0) {
+		lines.push("  (no edit calls, no python heredocs)");
 		return lines;
 	}
-	lines.push(`  calls:    ${stats.total}`);
-	lines.push(`  failures: ${stats.failures.total} (${pct(stats.failures.total / stats.total)})`);
-	for (const cls of FAILURE_CLASSES) {
-		const n = stats.failures.byClass[cls];
-		const share = stats.failures.total > 0 ? ` (${pct(n / stats.failures.total)} of failures)` : "";
-		lines.push(`  ${cls.padEnd(11)} ${String(n).padStart(5)}${share}`);
+	if (stats.total > 0) {
+		lines.push(`  calls:    ${stats.total}`);
+		lines.push(`  failures: ${stats.failures.total} (${pct(stats.failures.total / stats.total)})`);
+		for (const cls of FAILURE_CLASSES) {
+			const n = stats.failures.byClass[cls];
+			const share = stats.failures.total > 0 ? ` (${pct(n / stats.failures.total)} of failures)` : "";
+			lines.push(`  ${cls.padEnd(11)} ${String(n).padStart(5)}${share}`);
+		}
 	}
+	lines.push(`  py heredocs: ${stats.python.total} (patch scripts: ${stats.python.patchScripts})`);
 	return lines;
 }
 
@@ -298,12 +409,18 @@ export async function main(argv) {
 	}
 	if (root === undefined) root = defaultSessionsRoot();
 
-	const results = scanSessions(root);
+	const { editResults, pythonHeredocs } = scanTree(root);
 	const lines = [`Edit tool health`, `sessions: ${root}`, ""];
-	lines.push(...renderBlock("all time", aggregateEditResults(results)));
+	lines.push(...renderBlock("all time", reportBlock(editResults, pythonHeredocs)));
 	for (const w of windows) {
 		lines.push("");
-		lines.push(...renderBlock(`${w.label} (${isoDay(w.fromMs)} .. ${isoDay(w.toMs)})`, aggregateEditResults(filterWindow(results, w.fromMs, w.toMs))));
+		lines.push(
+			...
+			renderBlock(
+				`${w.label} (${isoDay(w.fromMs)} .. ${isoDay(w.toMs)})`,
+				reportBlock(filterWindow(editResults, w.fromMs, w.toMs), filterWindow(pythonHeredocs, w.fromMs, w.toMs))
+			)
+		);
 	}
 	process.stdout.write(`${lines.join("\n")}\n`);
 	return 0;

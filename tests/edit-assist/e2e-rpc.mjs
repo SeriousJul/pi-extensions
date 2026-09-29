@@ -44,7 +44,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const piCli = join(repoRoot, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "bundle", "cli.js");
 const extensionPath = join(repoRoot, "extensions", "edit-assist", "index.ts");
-const probePath = join(repoRoot, "tests", "edit-assist", "e2e-probe.ts");
+const probePath = join(repoRoot, "tests", "shared", "e2e-scripted-probe.ts");
 const TIMEOUT_MS = 60_000;
 
 // The target file. Line 4 is the corrected edit's target, line 5 the

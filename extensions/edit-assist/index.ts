@@ -38,6 +38,13 @@
  * difference, and a unified diff between the model's oldText and the
  * file's real text.
  *
+ * Prompt rule (ticket #113): the before_agent_start system-prompt hook
+ * appends the standing edit-tool rule to the prompt while the edit tool
+ * is active: re-read and retry after a failure, stay on the edit tool for
+ * single-file changes, keep the shell script for the bulk work the edit
+ * tool cannot express. It is one block of text, gated on the edit tool
+ * being active and on the extension's enabled switch.
+ *
  * Every Diagnosis is appended to, never replaces, the stock error text,
  * and the result stays marked as an error. The extension is on by
  * default; `edit-assist.enabled: false` in the settings leaves every
@@ -54,6 +61,7 @@ import {
 	appendDiagnosis,
 	correctionForEdit,
 	diagnoseNoMatch,
+	EDIT_TOOL_RULE,
 	honestyNotes,
 	isAmbiguousEditError,
 	isEditValidationError,
@@ -161,6 +169,16 @@ export default function editAssistExtension(pi: ExtensionAPI): void {
 	// hook records them, the tool_result hook consumes them once, so a call
 	// that never produces a result leaves no state behind past its id.
 	const correctedCalls = new Map<string, Correction[]>();
+
+	// Prompt rule (ticket #113): append the standing edit-tool rule to the
+	// system prompt while the edit tool is active. Scoped, not a ban: the
+	// bulk multi-file script stays allowed, and the re-read-and-retry path
+	// rides on the Diagnosis every no-match failure already carries.
+	pi.on("before_agent_start", (event, ctx: ExtensionContext) => {
+		if (!readEditAssistSettings(ctx.cwd).settings.enabled) return undefined;
+		if (!pi.getActiveTools().includes("edit")) return undefined;
+		return { systemPrompt: `${event.systemPrompt}\n\n${EDIT_TOOL_RULE}` };
+	});
 
 	// A malformed settings value fell back to its default; report it once at
 	// session start, the same way every other extension reports settings
