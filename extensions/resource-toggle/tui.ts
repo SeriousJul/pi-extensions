@@ -7,6 +7,10 @@
  * global resources dimmed, and space cycles inherit, load, unload. Every
  * toggle writes the settings at once; one reload runs on close if anything
  * changed. Package resources appear dimmed and read-only.
+ *
+ * The list and the resource picker (picker.ts) share the row building and
+ * row rendering: every row has the state mark, display name, scope, and
+ * path, and the dimmed Resource description line beneath.
  */
 import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { TUI } from "@earendil-works/pi-tui";
@@ -20,9 +24,18 @@ import {
   scopeEnabled,
   transition,
 } from "./lib/state-machine.ts";
-import type { ResourceInfo, ResourceRef, ResourceType, SettingsState, ToggleOp } from "./lib/types.ts";
-import type { WriteOutcome } from "./lib/writer.ts";
+import type {
+  MachineContext,
+  OverrideState,
+  ResourceInfo,
+  ResourceRef,
+  ResourceType,
+  SettingsState,
+  ToggleOp,
+  WriteMode,
+} from "./lib/types.ts";
 import { RESOURCE_TYPES } from "./lib/types.ts";
+import type { WriteOutcome } from "./lib/writer.ts";
 
 const TYPE_LABELS: Record<ResourceType, string> = {
   extensions: "Extensions",
@@ -30,6 +43,111 @@ const TYPE_LABELS: Record<ResourceType, string> = {
   prompts: "Prompts",
   themes: "Themes",
 };
+
+/**
+ * One list row with its display state, shared by the interactive list and
+ * the resource picker.
+ */
+export interface ResourceRow {
+  resource: ResourceInfo;
+  /** The state the active mode's view shows. */
+  enabled: boolean;
+  /** The project override, "inherit" in the global view. */
+  override: OverrideState;
+  /** Project mode: the row is a global resource without an override. */
+  inherited: boolean;
+  packageRow: boolean;
+}
+
+export const refOf = (r: ResourceInfo): ResourceRef => ({
+  type: r.type,
+  path: r.path,
+  scope: r.scope,
+  baseDir: r.baseDir,
+});
+
+/**
+ * The rows of one view: grouped by kind, user scope first, display state
+ * derived from the settings arrays for the active mode.
+ */
+export function buildResourceRows(
+  resources: ResourceInfo[],
+  settings: SettingsState,
+  machine: MachineContext,
+  mode: WriteMode,
+): ResourceRow[] {
+  const rows: ResourceRow[] = [];
+  for (const type of RESOURCE_TYPES) {
+    const group = resources
+      .filter((r) => r.type === type)
+      .sort((a, b) => (a.scope === b.scope ? a.displayName.localeCompare(b.displayName) : a.scope === "user" ? -1 : 1));
+    for (const resource of group) {
+      const ref = refOf(resource);
+      const own = scopeEnabled(settings, ref, machine);
+      const override = projectOverrideState(settings, ref, machine);
+      rows.push({
+        resource,
+        enabled: mode === "global" ? own : effectiveEnabled(override, own),
+        override: mode === "global" ? "inherit" : override,
+        inherited: mode === "project" && resource.scope === "user" && override === "inherit",
+        packageRow: resource.origin === "package",
+      });
+    }
+  }
+  return rows;
+}
+
+/** The state mark of a row: two-state in global mode, three-state in project mode. */
+export function rowCheckbox(row: ResourceRow, mode: WriteMode, theme: Theme): string {
+  if (mode === "project") {
+    if (row.override === "load") return theme.fg("success", "[+]");
+    if (row.override === "unload") return theme.fg("warning", "[-]");
+    return theme.fg("dim", row.enabled ? "[x]" : "[ ]");
+  }
+  return theme.fg(row.enabled ? "success" : "dim", row.enabled ? "[x]" : "[ ]");
+}
+
+/** The mode suffix of a row: the override state in project mode. */
+export function rowSuffix(row: ResourceRow, mode: WriteMode, theme: Theme): string {
+  if (mode !== "project") return "";
+  if (row.override === "load") return theme.fg("muted", "  project load");
+  if (row.override === "unload") return theme.fg("muted", "  project unload");
+  if (row.inherited) return theme.fg("dim", "  inherited global");
+  return "";
+}
+
+/**
+ * The shared row renderer: the first line - state mark, display name,
+ * scope, path - and the dimmed description line beneath. Rows without an
+ * override are dimmed (inherited global rows and package rows), plus any
+ * row the caller marks dim (the picker's no-op rows).
+ */
+export function renderResourceRow(
+  row: ResourceRow,
+  opts: {
+    cursor: boolean;
+    width: number;
+    theme: Theme;
+    mode: WriteMode;
+    /** Dims the row beyond the inherited and package rules. */
+    dim?: boolean;
+  },
+): string[] {
+  const { theme } = opts;
+  const name = row.resource.displayName + (row.packageRow ? " (package)" : "");
+  const nameText = opts.cursor ? theme.bold(name) : name;
+  const cursorMark = opts.cursor ? "> " : "  ";
+  const body = `${cursorMark} ${rowCheckbox(row, opts.mode, theme)} ${nameText}  ${
+    row.resource.scope === "user" ? "global" : "project"
+  }  ${row.resource.path}${rowSuffix(row, opts.mode, theme)}`;
+  // The styled rows carry ANSI codes, so a raw slice would clip by
+  // byte length and eat visible characters on narrow terminals.
+  const lines = [truncateToWidth(body, opts.width)];
+  if (row.resource.description) {
+    lines.push(truncateToWidth(theme.fg("dim", `  ${row.resource.description}`), opts.width));
+  }
+  return row.inherited || row.packageRow || opts.dim ? lines.map((line) => theme.fg("dim", line)) : lines;
+}
 
 export interface ResourceTuiDeps {
   tui: TUI;
@@ -49,25 +167,10 @@ export interface ResourceTuiDeps {
   close: (changed: boolean) => void;
 }
 
-interface Row {
-  resource: ResourceInfo;
-  enabled: boolean;
-  override: "inherit" | "load" | "unload";
-  inherited: boolean;
-  packageRow: boolean;
-}
-
-const refOf = (r: ResourceInfo): ResourceRef => ({
-  type: r.type,
-  path: r.path,
-  scope: r.scope,
-  baseDir: r.baseDir,
-});
-
 export function createResourceToggleTui(deps: ResourceTuiDeps) {
   const { theme, tui } = deps;
 
-  let mode: "global" | "project" = "global";
+  let mode: WriteMode = "global";
   let settings: SettingsState = deps.settings;
   let search = "";
   let cursor = 0;
@@ -76,28 +179,13 @@ export function createResourceToggleTui(deps: ResourceTuiDeps) {
   let busy = false;
   let writeError: string | undefined;
 
-  const rows: Row[] = [];
-  let visible: Row[] = [];
+  const rows: ResourceRow[] = [];
+  let visible: ResourceRow[] = [];
 
   const rebuild = (): void => {
     rows.length = 0;
-    for (const type of RESOURCE_TYPES) {
-      const group = deps.resources
-        .filter((r) => r.type === type)
-        .sort((a, b) => (a.scope === b.scope ? a.displayName.localeCompare(b.displayName) : a.scope === "user" ? -1 : 1));
-      for (const resource of group) {
-        const ref = refOf(resource);
-        const own = scopeEnabled(settings, ref, deps.machine);
-        const override = projectOverrideState(settings, ref, deps.machine);
-        const enabled = mode === "global" ? own : effectiveEnabled(override, own);
-        rows.push({
-          resource,
-          enabled,
-          override: mode === "global" ? "inherit" : override,
-          inherited: mode === "project" && resource.scope === "user" && override === "inherit",
-          packageRow: resource.origin === "package",
-        });
-      }
+    for (const row of buildResourceRows(deps.resources, settings, deps.machine, mode)) {
+      rows.push(row);
     }
     applyFilter();
   };
@@ -173,23 +261,6 @@ export function createResourceToggleTui(deps: ResourceTuiDeps) {
     cursor = Math.max(0, Math.min(visible.length - 1, cursor + delta));
   };
 
-  const renderCheckbox = (row: Row): string => {
-    if (mode === "project") {
-      if (row.override === "load") return theme.fg("success", "[+]");
-      if (row.override === "unload") return theme.fg("warning", "[-]");
-      return theme.fg("dim", row.enabled ? "[x]" : "[ ]");
-    }
-    return theme.fg(row.enabled ? "success" : "dim", row.enabled ? "[x]" : "[ ]");
-  };
-
-  const suffix = (row: Row): string => {
-    if (mode !== "project") return "";
-    if (row.override === "load") return theme.fg("muted", "  project load");
-    if (row.override === "unload") return theme.fg("muted", "  project unload");
-    if (row.inherited) return theme.fg("dim", "  inherited global");
-    return "";
-  };
-
   const clampScroll = (): void => {
     const h = Math.max(1, deps.viewport());
     if (cursor < top) top = cursor;
@@ -216,7 +287,7 @@ export function createResourceToggleTui(deps: ResourceTuiDeps) {
       lines.push(theme.fg("dim", "  No resources found"));
     } else {
       const h = Math.max(1, deps.viewport());
-      // Count item rows and group headers both against the viewport.
+      // Count item lines and group headers both against the viewport.
       let budget = h;
       let inGroup: ResourceType | undefined;
       let rendered = 0;
@@ -226,17 +297,11 @@ export function createResourceToggleTui(deps: ResourceTuiDeps) {
           inGroup = row.resource.type;
           lines.push(theme.fg("accent", TYPE_LABELS[inGroup]));
           budget--;
+          if (budget === 0) break;
         }
-        if (budget === 0) break;
-        budget--;
-        const cursorMark = i === cursor ? "> " : "  ";
-        const name = row.resource.displayName + (row.packageRow ? " (package)" : "");
-        const nameText = i === cursor ? theme.bold(name) : name;
-        const body = `${cursorMark} ${renderCheckbox(row)} ${nameText}  ${row.resource.scope === "user" ? "global" : "project"}  ${row.resource.path}${suffix(row)}`;
-        // The styled rows carry ANSI codes, so a raw slice would clip by
-        // byte length and eat visible characters on narrow terminals.
-        const clipped = truncateToWidth(body, width);
-        lines.push(row.inherited || row.packageRow ? theme.fg("dim", clipped) : clipped);
+        const rowLines = renderResourceRow(row, { cursor: i === cursor, width, theme, mode });
+        lines.push(...rowLines);
+        budget -= rowLines.length;
       }
       if (top + rendered < visible.length || top > 0) {
         lines.push(theme.fg("dim", `  (${cursor + 1}/${visible.length})`));

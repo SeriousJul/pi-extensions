@@ -238,6 +238,7 @@ export function resourceInfos() {
 			source: "local",
 			enabled: false,
 			ownEnabled: false,
+			description: "Report token and cost usage across pi sessions.",
 		},
 		{
 			type: "extensions",
@@ -248,6 +249,7 @@ export function resourceInfos() {
 			source: "local",
 			enabled: true,
 			ownEnabled: true,
+			description: "Semantic code search and code map for the current project.",
 		},
 		{
 			type: "extensions",
@@ -258,6 +260,7 @@ export function resourceInfos() {
 			source: "local",
 			enabled: true,
 			ownEnabled: true,
+			description: "Refuse commits that fail the project lint rules.",
 		},
 		{
 			type: "skills",
@@ -268,6 +271,7 @@ export function resourceInfos() {
 			source: "local",
 			enabled: true,
 			ownEnabled: true,
+			description: "Configure the Omarchy Linux desktop and system.",
 		},
 		{
 			type: "skills",
@@ -276,6 +280,7 @@ export function resourceInfos() {
 			scope: "project",
 			origin: "local",
 			source: "local",
+			description: "Cut an Acme release build with the internal toolchain.",
 			enabled: true,
 			ownEnabled: true,
 		},

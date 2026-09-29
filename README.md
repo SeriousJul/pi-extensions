@@ -10,7 +10,7 @@ VitePress from the [`docs/`](docs/) folder.
 - **model-router** - recovers a session from a provider usage-limit halt (switch to a fallback or wait for the reset, then resume).
 - **llama-refresh** - self-heals the context window of a session that resolved a local llama.cpp model while it was asleep.
 - **quota** - monitors the OpenAI ChatGPT plan quota: a footer line with the used windows, and a `/quota` detail view.
-- **resource-toggle** - `/resources`, `/enable`, `/disable`, `/inherit`: enable and disable extensions, skills, prompt templates, and themes from inside a running session.
+- **resource-toggle** - `/resources`, `/enable`, `/disable`, `/inherit`: enable and disable extensions, skills, prompt templates, and themes from inside a running session. A state command with no name opens the resource picker in TUI mode (a resource table in the headless modes), and every surface shows the one-line description derived from the resource's source file.
 - **usage** - token and cost reporting across all pi sessions: the `/usage` TUI view, the `usage_report` agent tool, and the `pi-usage` CLI.
 - **sync** - cross-device pi config sync: `/sync` plus the `pi-sync` CLI, three-way merge, v1 backend a secret GitHub Gist.
 - **compress** - replaces finished turns in outgoing requests with one short standing-in message; the session file stays intact.

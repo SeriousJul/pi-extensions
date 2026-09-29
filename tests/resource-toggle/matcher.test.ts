@@ -3,7 +3,7 @@
  * then path substring; a match must be unique.
  */
 import { describe, expect, it } from "vitest";
-import { matchResource } from "../../extensions/resource-toggle/lib/matcher.ts";
+import { completionItems, matchResource } from "../../extensions/resource-toggle/lib/matcher.ts";
 import type { ResourceInfo } from "../../extensions/resource-toggle/lib/types.ts";
 
 const res = (partial: Partial<ResourceInfo> & { path: string; displayName: string }): ResourceInfo => ({
@@ -22,6 +22,17 @@ const resources = [
   res({ path: "/home/u/.pi/agent/extensions/dummy.ts", displayName: "dummy.ts" }),
   res({ path: "/proj/.pi/extensions/dummy2.ts", displayName: "dummy2.ts", scope: "project" }),
   res({ path: "/home/u/.pi/agent/skills/my-skill/SKILL.md", displayName: "my-skill", type: "skills" }),
+  res({ path: "/home/u/.pi/agent/themes/dark.json", displayName: "dark.json", type: "themes" }),
+];
+
+const described = (
+  partial: Partial<ResourceInfo> & { path: string; displayName: string; description: string },
+): ResourceInfo => ({ ...res(partial), description: partial.description });
+
+const describedResources = [
+  described({ path: "/home/u/.pi/agent/extensions/dummy.ts", displayName: "dummy.ts", description: "Dummy extension." }),
+  described({ path: "/proj/.pi/extensions/dummy2.ts", displayName: "dummy2.ts", scope: "project", description: "Second dummy extension." }),
+  described({ path: "/home/u/.pi/agent/skills/my-skill/SKILL.md", displayName: "my-skill", type: "skills", description: "My skill." }),
   res({ path: "/home/u/.pi/agent/themes/dark.json", displayName: "dark.json", type: "themes" }),
 ];
 
@@ -71,5 +82,30 @@ describe("matchResource", () => {
   it("no match says none", () => {
     expect(matchResource(resources, "nope")).toEqual({ status: "none" });
     expect(matchResource(resources, "   ")).toEqual({ status: "none" });
+  });
+});
+
+describe("completionItems", () => {
+  it("an empty prefix yields every resource with its description", () => {
+    const items = completionItems(describedResources, "");
+    expect(items.map((i) => i.value)).toEqual(["dummy.ts", "dummy2.ts", "my-skill", "dark.json"]);
+    expect(items[0].label).toBe("dummy.ts");
+    expect(items[0].description).toBe("Dummy extension.");
+  });
+
+  it("a case-insensitive name prefix yields the matching names with descriptions", () => {
+    const items = completionItems(describedResources, "Dum");
+    expect(items.map((i) => i.value)).toEqual(["dummy.ts", "dummy2.ts"]);
+    expect(items.map((i) => i.description)).toEqual(["Dummy extension.", "Second dummy extension."]);
+  });
+
+  it("a path fragment yields the matching resources", () => {
+    const items = completionItems(describedResources, ".pi/agent/themes");
+    expect(items.map((i) => i.value)).toEqual(["dark.json"]);
+    expect(items[0].description).toBeUndefined();
+  });
+
+  it("a prefix that matches nothing yields nothing", () => {
+    expect(completionItems(describedResources, "nope")).toEqual([]);
   });
 });
