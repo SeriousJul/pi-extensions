@@ -330,15 +330,19 @@ One unit pi loads from disk: an extension, a skill, a prompt template, or a them
 _Avoid_: plugin (pi's word is extension), feature, component
 
 **Top-level resource**:
-A resource loaded from an auto-discovered location or a settings array entry, instead of one bundled in a package. The toggle writes the state of a top-level resource; a package resource is display-only in v1.
+A resource loaded from an auto-discovered location or a settings array entry, instead of one bundled in a package. A package resource's state lives in its Package filter, not in a settings resource array.
 _Avoid_: local resource, installed resource
 
 **Override pattern**:
-An entry in a settings resource array that starts with `+`, `-`, or `!`. `+path` force-includes a resource, `-path` force-excludes it, and `!pattern` excludes by glob. Pi applies them during resource resolution, so a disabled resource is fully unloaded: no factory run, no tools, no commands, no prompt entry.
+An entry in a settings resource array that starts with `+`, `-`, or `!`. `+path` force-includes a resource, `-path` force-excludes it, and `!pattern` excludes by glob. Pi applies them during resource resolution, so a disabled top-level resource is fully unloaded: no factory run, no tools, no commands, no prompt entry. The toggle never writes a package-relative pattern into a resource array: pi applies resource-array patterns to top-level resources only.
 _Avoid_: flag (a flag is a boolean setting), toggle bit, exclude rule
 
+**Package filter**:
+The per-resource-type pattern array of an object-form packages entry, applied to that package's resources relative to the package root. The toggle writes it for a package resource, mirroring `pi config` (ADR 0029). An absent key means the package manifest default; an empty array disables the whole type.
+_Avoid_: resource array pattern (the top-level spelling), shadow entry (that re-registers at project scope)
+
 **Toggle state**:
-The effective state of one resource: enabled, disabled, or a project override of inherit, load, or unload over the global state. Derived from the override patterns in the settings files, never stored as a separate field.
+The effective state of one resource: enabled, disabled, or a project override of inherit, load, or unload over the global state. Derived from the settings files: the override patterns for a top-level resource, the Package filter for a package resource. Never stored as a separate field.
 _Avoid_: enabled flag (only two of the states), on/off (hides the override layer)
 
 **Shadow entry**:
