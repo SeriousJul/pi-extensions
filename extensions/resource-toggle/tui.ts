@@ -41,7 +41,7 @@ export interface ResourceTuiDeps {
   resources: ResourceInfo[];
   /** The settings arrays; the component keeps its own copy. */
   settings: SettingsState;
-  machine: { cwd: string; agentDir: string; configDir: string };
+  machine: MachineContext;
   /** Whether the project view is available (project trusted). */
   projectTrusted: boolean;
   /** Writes the prev-to-next diff into the settings files; resolves with the outcome. */
@@ -150,6 +150,13 @@ export function createResourceToggleTui(deps: ResourceTuiDeps) {
   const toggle = (): void => {
     const row = visible[cursor];
     if (!row || busy) return;
+    if (row.resource.singleFilePackage) {
+      writeError =
+        `Refused: "${row.resource.displayName}" comes from a single-file package. ` +
+        "pi loads a single-file source unconditionally, so its state cannot be toggled.";
+      tui.requestRender();
+      return;
+    }
     busy = true;
     writeError = undefined;
     const ref = refOf(row.resource);

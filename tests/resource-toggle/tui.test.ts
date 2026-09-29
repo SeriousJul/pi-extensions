@@ -38,6 +38,7 @@ const res = (partial: Partial<ResourceInfo> & { path: string; displayName: strin
   origin: partial.origin ?? "top-level",
   source: partial.source ?? "auto",
   baseDir: partial.baseDir,
+  singleFilePackage: partial.singleFilePackage,
   enabled: partial.enabled ?? true,
   ownEnabled: partial.ownEnabled ?? true,
 });
@@ -62,13 +63,14 @@ function makeRig(
   settings?: SettingsState,
   applyImpl?: (next: SettingsState) => Promise<WriteOutcome>,
   theme: Theme = fakeTheme,
+  rigResources: ResourceInfo[] = resources,
 ): Rig {
   const applyCalls: SettingsState[] = [];
   const closed = { called: false } as { called: boolean; changed?: boolean };
   const component = createResourceToggleTui({
     tui: fakeTui,
     theme,
-    resources,
+    resources: rigResources,
     settings: settings ?? { global: emptyScopeState(), project: emptyScopeState() },
     machine,
     projectTrusted: true,
@@ -179,6 +181,27 @@ describe("resource list TUI", () => {
       { source: "git:github.com/acme/pkg", extensions: ["+extensions/tool.ts"] },
     ]);
     expect(lineFor(rig.render(), "tool.ts")).toContain("[x]");
+  });
+
+  it("refuses to toggle a single-file package row and says why", async () => {
+    const single = res({
+      path: "/home/u/single.ts",
+      displayName: "single/single.ts",
+      origin: "package",
+      source: "/home/u/single.ts",
+      baseDir: "/home/u",
+      singleFilePackage: true,
+    });
+    const rig = makeRig(undefined, undefined, fakeTheme, [...resources, single]);
+    // Item order: dummy.ts, single/single.ts, tool.ts (package), proj.ts.
+    rig.press("\x1b[B");
+    expect(cursorLine(rig.render())).toContain("single/single.ts");
+    rig.press(" ");
+    await rig.tick();
+    expect(rig.applyCalls.length).toBe(0);
+    expect(rig.render().join("\n")).toContain("single-file package");
+    rig.press("\x1b");
+    expect(rig.closed.changed).toBe(false);
   });
 
   it("a disabled package row shows its state from the packages filter", () => {

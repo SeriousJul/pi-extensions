@@ -27,6 +27,20 @@
  *      and self-heals the no-op pattern; /enable swaps the filter and the
  *      command returns; project mode writes the filter into the project
  *      file and /inherit collapses the entry back to the plain string.
+ *      The package entry is spelled "~/pkg": pi and the toggle both
+ *      expand the leading tilde, and the project-mode rewrite lands the
+ *      real relative path.
+ *   7. a single-file local package is loaded unconditionally by pi, so
+ *      the toggle is refused with a clear message and nothing is written.
+ *
+ *   Deliberate deviation from the spec's Seam 2: the spec pins a local
+ *   install of this repository with the real quota extension and an
+ *   assertion on its footer status piece. The quota piece depends on a
+ *   live quota read and stays invisible without a login, so it cannot be
+ *   observed in a sandboxed home. The package cycle asserts on command
+ *   and tool liveness instead: the dummy command reports the live tool
+ *   registry from the session, so a still-live command and tool are direct
+ *   evidence the package factory did not run the filter.
  *
  *   node tests/resource-toggle/e2e-rpc.mjs
  */
@@ -93,9 +107,15 @@ writeFileSync(
 );
 writeFileSync(join(pkgDir, "extensions", "quota.ts"), dummyBody("quota", "quota_tool"));
 writeFileSync(join(pkgDir, "extensions", "pkgother.ts"), dummyBody("pkgother", "pkgother_tool"));
+// A single-file local package source: pi loads the file unconditionally and
+// never applies a packages-array filter to it, so its state cannot be
+// toggled. HOME is the sandbox, so ~/single.ts is a sandbox path.
+writeFileSync(join(sandbox, "single.ts"), dummyBody("single", "single_tool"));
 const globalSeed = {
 	defaultProjectTrust: "always",
-	packages: [pkgDir],
+	// "~/pkg": HOME is the sandbox, so the entry names the local package with
+	// a tilde, exactly as a user would write it.
+	packages: ["~/pkg", "~/single.ts"],
 	extensions: ["-extensions/quota.ts"],
 };
 writeFileSync(globalSettingsPath, JSON.stringify(globalSeed, null, 2) + "\n");
@@ -389,7 +409,7 @@ try {
 	await waitFor(
 		() => {
 			const g = readGlobal();
-			const entry = (g.packages ?? []).find((p) => typeof p === "object" && p.source === pkgDir);
+			const entry = (g.packages ?? []).find((p) => typeof p === "object" && p.source === "~/pkg");
 			return entry && JSON.stringify(entry.extensions) === JSON.stringify(["-extensions/quota.ts"]);
 		},
 		"packages filter in global settings",
@@ -413,7 +433,7 @@ try {
 	await waitFor(
 		() => {
 			const g = readGlobal();
-			const entry = (g.packages ?? []).find((p) => typeof p === "object" && p.source === pkgDir);
+			const entry = (g.packages ?? []).find((p) => typeof p === "object" && p.source === "~/pkg");
 			return entry && JSON.stringify(entry.extensions) === JSON.stringify(["+extensions/quota.ts"]);
 		},
 		"enable filter in global settings",
@@ -458,6 +478,26 @@ try {
 	);
 	await waitForCommands(["quota"], true);
 	console.log("ok: inherit collapses the project entry to the plain string and the command returns");
+
+	// --- Phase 8: single-file package refusal ---------------------------------
+
+	// The single-file source is loaded unconditionally: its command is live
+	// from the start, and a toggle of it is refused without a settings write.
+	await waitForCommands(["single"], true);
+	const globalBeforeRefusal = readGlobal();
+	seen = rpc.notifies.length;
+	await rpc.request("prompt", { message: "/disable single" });
+	note = await waitFor(
+		() => rpc.notifies.slice(seen).find((n) => (n.message ?? "").startsWith("Refused")),
+		"single-file refusal",
+		rpc.getStderr,
+	);
+	if (!note.message.includes("single-file")) fail(`single-file refusal is unclear:\n${note.message}`);
+	if (JSON.stringify(readGlobal()) !== JSON.stringify(globalBeforeRefusal)) {
+		fail(`single-file refusal wrote settings: ${JSON.stringify(readGlobal())}`);
+	}
+	await waitForCommands(["single"], true);
+	console.log("ok: a single-file package toggle is refused with a clear message and nothing is written");
 
 	// The headless table agrees with the live session state.
 	seen = rpc.notifies.length;

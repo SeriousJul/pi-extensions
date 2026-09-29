@@ -30,16 +30,22 @@
  * the whole type. A transition that touches a package resource also
  * removes the old no-op package-relative pattern the previous code wrote
  * into the settings resource arrays, so a harmed settings file heals
- * itself.
+ * itself. The self-heal removes a pattern only when no known top-level
+ * resource relies on it (ctx.topLevelRefs): the same string can also be
+ * the own-scope pattern of a top-level resource at the same relative
+ * path, and that one is real. Without the list it removes nothing.
  *
  * No I/O. No pi imports.
  */
+import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
   MachineContext,
   OverrideState,
   PackageEntry,
   PackageFilter,
+  ResourceInfo,
   ResourceRef,
   ResourceType,
   Scope,
@@ -176,9 +182,25 @@ export function packagePattern(ref: ResourceRef): string {
   return rel === "" ? "." : rel;
 }
 
-/** The absolute path a local package source resolves to, for comparison. */
-function resolvedLocalSource(source: string, scope: Scope, ctx: MachineContext): string {
-  return toPosix(resolve(defaultBaseDir(scope, ctx), source));
+/**
+ * The absolute path a local package source resolves to, for comparison.
+ * Mirrors pi's `resolvePath`: a leading `~` expands to the home directory
+ * and a file: URL translates to its path, before the source resolves
+ * against the scope's base directory.
+ */
+export function resolvedLocalSource(source: string, scope: Scope, ctx: MachineContext): string {
+  let path = source.trim();
+  const home = homedir();
+  if (path === "~") path = home;
+  else if (path.startsWith("~/") || (sep === "\\" && path.startsWith("~\\"))) path = join(home, path.slice(2));
+  else if (path.startsWith("file://")) {
+    try {
+      path = fileURLToPath(path);
+    } catch {
+      // A malformed URL: fall through with the raw value.
+    }
+  }
+  return toPosix(resolve(defaultBaseDir(scope, ctx), path));
 }
 
 /** Mirrors pi: a source is local when it carries no npm/git/remote prefix. */
@@ -325,22 +347,45 @@ function inheritPackage(state: SettingsState, ref: ResourceRef, ctx: MachineCont
   return state;
 }
 
+/** Whether a resource-array entry decides a top-level resource's state. */
+function entryDecidesState(entry: string, ref: ResourceRef, ctx: MachineContext): boolean {
+  if (entry.startsWith("+") || entry.startsWith("-")) return exactMatches(entry.slice(1), ref, ctx);
+  if (!isPatternEntry(entry)) return false;
+  return globPatternMatches(entry.slice(1), ref, ctx);
+}
+
 /**
  * Self-heal: remove the old no-op package-relative pattern for this
  * resource from the settings resource arrays. The previous toggle code
  * wrote such patterns for package resources and pi ignores them there; the
  * project file may also carry an old shadow pair for the resource's
  * absolute path.
+ *
+ * A pattern is removed only when no known top-level resource relies on it
+ * (ctx.topLevelRefs): the same string can be the own-scope pattern of a
+ * top-level resource at the same relative path, and that one is real. The
+ * plain absolute path of an old shadow pair never decides any state and is
+ * removed unconditionally. Without the list, nothing is removed.
  */
 function selfHealPackagePatterns(state: SettingsState, ref: ResourceRef, ctx: MachineContext): void {
+  if (ctx.topLevelRefs === undefined) return;
   const pattern = packagePattern(ref);
-  const removeGlobal = (entry: string): boolean =>
-    !(isPatternEntry(entry) && entryTarget(entry) === pattern);
-  state.global[ref.type] = state.global[ref.type].filter(removeGlobal);
+  const relied = (scope: Scope, entry: string): boolean =>
+    ctx.topLevelRefs!.some((r) => r.scope === scope && r.type === ref.type && entryDecidesState(entry, r, ctx));
+  state.global[ref.type] = state.global[ref.type].filter(
+    (entry) => !(isPatternEntry(entry) && entryTarget(entry) === pattern && !relied("user", entry)),
+  );
   const targets = projectTargets(ref, ctx);
-  const removeProject = (entry: string): boolean =>
-    entry !== ref.path && !(isPatternEntry(entry) && targets.has(entryTarget(entry)));
-  state.project[ref.type] = state.project[ref.type].filter(removeProject);
+  state.project[ref.type] = state.project[ref.type].filter(
+    (entry) => entry !== ref.path && !(isPatternEntry(entry) && targets.has(entryTarget(entry)) && !relied("project", entry)),
+  );
+}
+
+/** The refs of the non-package resources, as the self-heal guard needs them. */
+export function topLevelRefsOf(resources: readonly ResourceInfo[]): ResourceRef[] {
+  return resources
+    .filter((r) => r.origin === "top-level")
+    .map((r) => ({ type: r.type, path: r.path, scope: r.scope, baseDir: r.baseDir }));
 }
 
 /**

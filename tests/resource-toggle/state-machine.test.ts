@@ -3,6 +3,8 @@
  * arrays it produces and on the derived Toggle state, not on the steps it
  * takes.
  */
+import { homedir } from "node:os";
+import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   effectiveEnabled,
@@ -14,6 +16,7 @@ import {
   packagePattern,
   packageSourceMatches,
   projectOverrideState,
+  resolvedLocalSource,
   scopeEnabled,
   sameScopePattern,
   SelfRefusalError,
@@ -384,11 +387,40 @@ describe("transition: package resources (packages-array filter)", () => {
     ]);
   });
 
+  it("resolves local sources with pi's rules: ~ expands to the home directory", () => {
+    const home = homedir();
+    expect(resolvedLocalSource("~/src/pi-extensions", "user", ctx)).toBe(`${home}/src/pi-extensions`);
+    expect(resolvedLocalSource("~", "user", ctx)).toBe(home);
+    expect(resolvedLocalSource("src/pi-extensions", "user", ctx)).toBe(`${ctx.agentDir}/src/pi-extensions`);
+    expect(resolvedLocalSource("file:///opt/pkgs/my-pkg", "user", ctx)).toBe("/opt/pkgs/my-pkg");
+  });
+
+  it("matches a ~-spelled local source against its expanded absolute path", () => {
+    expect(packageSourceMatches(`~/pkgs/my-pkg`, "user", `${homedir()}/pkgs/my-pkg`, "user", ctx)).toBe(true);
+  });
+
+  it("rewrites a ~-spelled local source relative to the project base in a created project entry", () => {
+    const home = homedir();
+    const prev = empty();
+    prev.global.packages.push("~/src/pi-extensions");
+    const ref: ResourceRef = {
+      type: "extensions",
+      path: `${home}/src/pi-extensions/extensions/quota/index.ts`,
+      scope: "user",
+      baseDir: `${home}/src/pi-extensions`,
+      packageSource: "~/src/pi-extensions",
+    };
+    const next = transition(prev, ref, { op: "disable", mode: "project" }, ctx);
+    expect(next.project.packages).toEqual([
+      { source: relative(join("/proj", ".pi"), join(home, "src", "pi-extensions")), extensions: ["-extensions/quota/index.ts"] },
+    ]);
+  });
+
   it("self-heals an old no-op pattern from the global resource array", () => {
     const prev = empty();
     prev.global.packages.push("git:github.com/acme/my-pkg");
     prev.global.extensions.push("-extensions/quota/index.ts");
-    const next = transition(prev, pkgExt(), { op: "disable", mode: "global" }, ctx);
+    const next = transition(prev, pkgExt(), { op: "disable", mode: "global" }, { ...ctx, topLevelRefs: [] });
     expect(next.global.extensions).toEqual([]);
     expect(next.global.packages).toEqual([
       { source: "git:github.com/acme/my-pkg", extensions: ["-extensions/quota/index.ts"] },
@@ -399,8 +431,52 @@ describe("transition: package resources (packages-array filter)", () => {
     const prev = empty();
     prev.global.packages.push("git:github.com/acme/my-pkg");
     prev.project.extensions.push("/opt/pkgs/my-pkg/extensions/quota/index.ts", "-/opt/pkgs/my-pkg/extensions/quota/index.ts");
-    const next = transition(prev, pkgExt(), { op: "disable", mode: "project" }, ctx);
+    const next = transition(prev, pkgExt(), { op: "disable", mode: "project" }, { ...ctx, topLevelRefs: [] });
     expect(next.project.extensions).toEqual([]);
+  });
+
+  it("does not self-heal without a top-level resource list", () => {
+    const prev = empty();
+    prev.global.packages.push("git:github.com/acme/my-pkg");
+    prev.global.extensions.push("-extensions/quota/index.ts");
+    const next = transition(prev, pkgExt(), { op: "disable", mode: "global" }, ctx);
+    expect(next.global.extensions).toEqual(["-extensions/quota/index.ts"]);
+  });
+
+  it("keeps a global pattern that a top-level resource at the same relative path relies on", () => {
+    const prev = empty();
+    prev.global.packages.push("git:github.com/acme/my-pkg");
+    prev.global.extensions.push("-extensions/quota/index.ts");
+    const topRef: ResourceRef = {
+      type: "extensions",
+      path: "/home/u/.pi/agent/extensions/quota/index.ts",
+      scope: "user",
+      baseDir: "/home/u/.pi/agent",
+    };
+    const next = transition(prev, pkgExt(), { op: "disable", mode: "global" }, { ...ctx, topLevelRefs: [topRef] });
+    expect(next.global.extensions).toEqual(["-extensions/quota/index.ts"]);
+  });
+
+  it("removes the no-op pattern when the top-level resources rely on different patterns", () => {
+    const prev = empty();
+    prev.global.packages.push("git:github.com/acme/my-pkg");
+    prev.global.extensions.push("-extensions/quota/index.ts");
+    const next = transition(prev, pkgExt(), { op: "disable", mode: "global" }, { ...ctx, topLevelRefs: [ext("foo.ts")] });
+    expect(next.global.extensions).toEqual([]);
+  });
+
+  it("keeps a project pattern that a top-level project resource relies on", () => {
+    const prev = empty();
+    prev.global.packages.push("git:github.com/acme/my-pkg");
+    prev.project.extensions.push("-extensions/quota/index.ts");
+    const topRef: ResourceRef = {
+      type: "extensions",
+      path: "/proj/.pi/extensions/quota/index.ts",
+      scope: "project",
+      baseDir: "/proj/.pi",
+    };
+    const next = transition(prev, pkgExt(), { op: "disable", mode: "project" }, { ...ctx, topLevelRefs: [topRef] });
+    expect(next.project.extensions).toEqual(["-extensions/quota/index.ts"]);
   });
 
   it("does not write a package-relative pattern into a resource array", () => {

@@ -29,7 +29,7 @@ import {
 import { machineContextFor, resolveResources } from "./lib/resolver.ts";
 import { matchResource } from "./lib/matcher.ts";
 import { writeSettings } from "./lib/writer.ts";
-import { SelfRefusalError, projectOverrideState, resourceLabel, transition } from "./lib/state-machine.ts";
+import { SelfRefusalError, projectOverrideState, resourceLabel, topLevelRefsOf, transition } from "./lib/state-machine.ts";
 import { globalViewRows, projectViewRows, renderResourceTable, shortPath } from "./lib/table.ts";
 import type {
   MachineContext,
@@ -61,7 +61,18 @@ export default function (pi: ExtensionAPI): void {
     state.projectTrusted = ctx.isProjectTrusted();
   });
 
-  const machine = (): MachineContext => ({ ...machineContextFor(state.cwd, getAgentDir()), selfPath: SELF_PATH });
+  const machine = (): MachineContext => ({
+    ...machineContextFor(state.cwd, getAgentDir()),
+    selfPath: SELF_PATH,
+  });
+
+  /**
+   * The single-file refusal, shared by the command and tool paths: pi
+   * loads a single-file package source unconditionally, so a packages-
+   * array filter cannot change its state.
+   */
+  const singleFileRefusal = (resource: ResourceInfo): string =>
+    `Refused: "${resource.displayName}" comes from a single-file package. pi loads a single-file source unconditionally, so its state cannot be toggled; remove the package entry from the settings instead.`;
 
   const isSelf = (path: string): boolean => {
     const self = safeRealpath(SELF_PATH);
@@ -106,6 +117,9 @@ export default function (pi: ExtensionAPI): void {
       return { ok: false, text: `Ambiguous name "${name}". Candidates:\n${list}`, needsReload: false };
     }
     const resource = match.resource;
+    if (resource.singleFilePackage) {
+      return { ok: false, text: singleFileRefusal(resource), needsReload: false };
+    }
     if (op.op !== "enable" && isSelf(resource.path)) {
       return {
         ok: false,
@@ -122,7 +136,7 @@ export default function (pi: ExtensionAPI): void {
     };
     let next: SettingsState;
     try {
-      next = transition(resolved.settings, ref, op, machine());
+      next = transition(resolved.settings, ref, op, { ...machine(), topLevelRefs: topLevelRefsOf(resolved.resources) });
     } catch (error) {
       if (error instanceof SelfRefusalError) {
         return { ok: false, text: error.message, needsReload: false };
@@ -195,7 +209,7 @@ export default function (pi: ExtensionAPI): void {
             theme,
             resources: resolved.resources,
             settings: resolved.settings,
-            machine: machine(),
+            machine: { ...machine(), topLevelRefs: topLevelRefsOf(resolved.resources) },
             projectTrusted: ctx.isProjectTrusted(),
             apply: (prev, next) =>
               writeSettings({ cwd: ctx.cwd, agentDir: getAgentDir(), projectTrusted: ctx.isProjectTrusted() }, prev, next),

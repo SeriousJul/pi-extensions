@@ -97,10 +97,22 @@ per-resource-type filter, with patterns relative to the package root:
   entry; an entry that loses its last filter collapses back to the plain
   source string.
 
+Local package sources resolve with pi's rules: a leading `~` expands to
+the home directory and a `file:` URL to its path, before the source
+resolves against the settings directory of its scope. Two local sources
+that resolve to the same path name the same package.
+
 An empty per-type array is never written, because in pi it disables the
 whole type. When a transition touches a package resource, it also removes
 the old no-op package-relative pattern the previous code wrote into the
-resource arrays, so a harmed settings file heals itself on first use.
+resource arrays, so a harmed settings file heals itself on first use. The
+self-heal removes a pattern only when no top-level resource relies on it:
+the same string can also be the own-scope pattern of a top-level resource
+at the same relative path, and that one is real.
+
+A toggle of a resource from a single-file package source is refused with
+a clear message: pi loads a single-file source unconditionally and never
+applies a packages-array filter to it, so its state cannot be toggled.
 
 ## Tests
 

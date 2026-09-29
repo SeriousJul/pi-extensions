@@ -245,7 +245,25 @@ describe("package resources", () => {
       expect(quota?.scope).toBe("user");
       expect(quota?.enabled).toBe(true);
       expect(quota?.ownEnabled).toBe(true);
+      expect(quota?.singleFilePackage).toBeUndefined();
       expect(settings.global.packages).toEqual([pkgDir]);
+    } finally {
+      restoreGlobalPackages();
+    }
+  });
+
+  it("marks a single-file local package source for refusal", async () => {
+    // HOME is sandboxed to the fixture root, so ~/single.ts is a fixture path.
+    const singleFile = join(root, "single.ts");
+    writeFileSync(singleFile, "export default function (pi) {}\n");
+    withGlobalPackages([pkgDir, "~/single.ts"]);
+    try {
+      const { resources } = await resolveResources({ cwd: project, agentDir, projectTrusted: true });
+      const single = resources.find((r) => r.path === singleFile);
+      expect(single?.origin).toBe("package");
+      expect(single?.source).toBe("~/single.ts");
+      expect(single?.singleFilePackage).toBe(true);
+      expect(resources.find((r) => r.displayName === "quota.ts")?.singleFilePackage).toBeUndefined();
     } finally {
       restoreGlobalPackages();
     }

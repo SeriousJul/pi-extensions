@@ -91,6 +91,14 @@ export interface MachineContext {
    * resource-toggle (then nothing is refused).
    */
   selfPath?: string;
+  /**
+   * The top-level (non-package) resources, as known to the caller. The
+   * self-heal keeps any resource-array pattern one of them relies on, so
+   * a pattern that also names a real top-level resource at the same
+   * relative path survives. Absent when the caller does not know the
+   * list; then the self-heal removes nothing.
+   */
+  topLevelRefs?: ResourceRef[];
 }
 
 /** One loadable resource with its derived state, as shown in lists. */
@@ -106,6 +114,13 @@ export interface ResourceInfo {
   /** Package source, "auto" (auto-discovered), or "local" (settings entry). */
   source: string;
   baseDir?: string;
+  /**
+   * True when the resource's package source is a single file. pi loads a
+   * single-file source unconditionally and never applies a packages-array
+   * filter to it, so its state cannot be toggled; the toggle is refused
+   * with a clear message.
+   */
+  singleFilePackage?: boolean;
   /** Effective state: what pi loads right now, project overrides applied. */
   enabled: boolean;
   /** State in the resource's own scope: the global view of the list. */
