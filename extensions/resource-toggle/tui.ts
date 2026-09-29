@@ -6,21 +6,24 @@
  * shows a two-state checkbox per resource; project mode shows inherited
  * global resources dimmed, and space cycles inherit, load, unload. Every
  * toggle writes the settings at once; one reload runs on close if anything
- * changed. Package resources appear dimmed and read-only.
+ * changed. Package rows carry a `(package)` label and toggle like any
+ * other row.
  */
 import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { TUI } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import {
+  SelfRefusalError,
   effectiveEnabled,
   nextOverrideState,
   overrideToOp,
+  packageScopeEnabled,
   projectOverrideState,
   resourceLabel,
   scopeEnabled,
   transition,
 } from "./lib/state-machine.ts";
-import type { ResourceInfo, ResourceRef, ResourceType, SettingsState, ToggleOp } from "./lib/types.ts";
+import type { MachineContext, ResourceInfo, ResourceRef, ResourceType, SettingsState, ToggleOp } from "./lib/types.ts";
 import type { WriteOutcome } from "./lib/writer.ts";
 import { RESOURCE_TYPES } from "./lib/types.ts";
 
@@ -62,7 +65,24 @@ const refOf = (r: ResourceInfo): ResourceRef => ({
   path: r.path,
   scope: r.scope,
   baseDir: r.baseDir,
+  packageSource: r.origin === "package" ? r.source : undefined,
 });
+
+/**
+ * The target of one space press in project mode. The cycle's base is what
+ * the resource inherits without a project override: the global state. For
+ * a package row the own state already reflects a project entry, so the
+ * global state is read separately.
+ */
+function projectTarget(ref: ResourceRef, row: Row, settings: SettingsState, machine: MachineContext): "inherit" | "load" | "unload" {
+  const own = scopeEnabled(settings, ref, machine);
+  const inheritedEnabled = ref.packageSource
+    ? packageScopeEnabled(settings, ref, "user", machine)
+    : row.resource.scope === "user"
+      ? own
+      : true;
+  return nextOverrideState(row.override, inheritedEnabled);
+}
 
 export function createResourceToggleTui(deps: ResourceTuiDeps) {
   const { theme, tui } = deps;
@@ -129,19 +149,24 @@ export function createResourceToggleTui(deps: ResourceTuiDeps) {
 
   const toggle = (): void => {
     const row = visible[cursor];
-    if (!row || row.packageRow || busy) return;
+    if (!row || busy) return;
     busy = true;
     writeError = undefined;
     const ref = refOf(row.resource);
     let next: SettingsState;
-    if (mode === "global") {
-      const op: ToggleOp = row.enabled ? { op: "disable", mode: "global" } : { op: "enable", mode: "global" };
-      next = transition(settings, ref, op, deps.machine);
-    } else {
-      const own = scopeEnabled(settings, ref, deps.machine);
-      const inheritedEnabled = row.resource.scope === "user" ? own : true;
-      const target = nextOverrideState(row.override, inheritedEnabled);
-      next = transition(settings, ref, overrideToOp(target), deps.machine);
+    try {
+      next =
+        mode === "global"
+          ? transition(settings, ref, row.enabled ? { op: "disable", mode: "global" } : { op: "enable", mode: "global" }, deps.machine)
+          : transition(settings, ref, overrideToOp(projectTarget(ref, row, settings, deps.machine)), deps.machine);
+    } catch (error) {
+      if (error instanceof SelfRefusalError) {
+        busy = false;
+        writeError = error.message;
+        tui.requestRender();
+        return;
+      }
+      throw error;
     }
     const prev = settings;
     settings = next;
@@ -236,7 +261,7 @@ export function createResourceToggleTui(deps: ResourceTuiDeps) {
         // The styled rows carry ANSI codes, so a raw slice would clip by
         // byte length and eat visible characters on narrow terminals.
         const clipped = truncateToWidth(body, width);
-        lines.push(row.inherited || row.packageRow ? theme.fg("dim", clipped) : clipped);
+        lines.push(row.inherited ? theme.fg("dim", clipped) : clipped);
       }
       if (top + rendered < visible.length || top > 0) {
         lines.push(theme.fg("dim", `  (${cursor + 1}/${visible.length})`));

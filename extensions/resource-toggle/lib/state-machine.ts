@@ -18,18 +18,36 @@
  *     global disable entry stays in place.
  *   - Inherit: the project-side entries for the resource are removed.
  *
+ * For a package resource the write is pi's own package filter (ADR 0029):
+ * the package's entry in the packages array of the resource's own scope
+ * file (global mode) or the project file (project mode) becomes object
+ * form carrying a per-resource-type pattern array relative to the package
+ * root. Disable writes `-pattern`, enable writes `+pattern`. A project
+ * filter replaces, not merges, the global entry for the same package: pi's
+ * dedupe keeps the winning entry whole. A packages entry that loses its
+ * last filter collapses back to the plain source string, and an empty
+ * per-type array is never written, because in pi an empty array disables
+ * the whole type. A transition that touches a package resource also
+ * removes the old no-op package-relative pattern the previous code wrote
+ * into the settings resource arrays, so a harmed settings file heals
+ * itself.
+ *
  * No I/O. No pi imports.
  */
-import { basename, dirname, join, relative, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import type {
   MachineContext,
   OverrideState,
+  PackageEntry,
+  PackageFilter,
   ResourceRef,
   ResourceType,
   Scope,
   SettingsState,
   ToggleOp,
+  WriteMode,
 } from "./types.ts";
+import { RESOURCE_TYPES } from "./types.ts";
 
 const isPatternEntry = (entry: string): boolean =>
   entry.startsWith("!") || entry.startsWith("+") || entry.startsWith("-");
@@ -72,21 +90,41 @@ export function projectTargets(ref: ResourceRef, ctx: MachineContext): Set<strin
 }
 
 function cloneState(state: SettingsState): SettingsState {
-  const cloneArrays = (a: SettingsState["global"]) => ({
-    extensions: [...a.extensions],
-    skills: [...a.skills],
-    prompts: [...a.prompts],
-    themes: [...a.themes],
+  const cloneScope = (s: SettingsState["global"]) => ({
+    extensions: [...s.extensions],
+    skills: [...s.skills],
+    prompts: [...s.prompts],
+    themes: [...s.themes],
+    packages: s.packages.map((entry) => (typeof entry === "string" ? entry : { ...entry })),
   });
-  return { global: cloneArrays(state.global), project: cloneArrays(state.project) };
+  return { global: cloneScope(state.global), project: cloneScope(state.project) };
+}
+
+/** Thrown when a transition would disable the resource-toggle extension itself. */
+export class SelfRefusalError extends Error {
+  constructor() {
+    super("Refused: resource-toggle will not disable itself; that would remove the toggle commands.");
+    this.name = "SelfRefusalError";
+  }
 }
 
 /**
- * Apply one toggle operation and return the next settings arrays.
- * The input is never mutated.
+ * Apply one toggle operation and return the next settings state.
+ * The input is never mutated. A disable of the extension's own path
+ * (ctx.selfPath) throws SelfRefusalError.
  */
 export function transition(prev: SettingsState, ref: ResourceRef, op: ToggleOp, ctx: MachineContext): SettingsState {
+  if (op.op !== "enable" && ctx.selfPath !== undefined && ref.path === ctx.selfPath) {
+    throw new SelfRefusalError();
+  }
   const state = cloneState(prev);
+
+  if (ref.packageSource) {
+    selfHealPackagePatterns(state, ref, ctx);
+    return op.op === "inherit"
+      ? inheritPackage(state, ref, ctx)
+      : setPackageFilter(state, ref, op.op === "enable", op.mode, ctx);
+  }
 
   if (op.op === "inherit") {
     // Inherit is project mode only: clear the project-side entries.
@@ -124,11 +162,193 @@ export function transition(prev: SettingsState, ref: ResourceRef, op: ToggleOp, 
   return state;
 }
 
+// ---------------------------------------------------------------------------
+// Package resources: the packages-array filter (ADR 0029)
+// ---------------------------------------------------------------------------
+
+/**
+ * The filter pattern pi uses for this package resource: the path relative
+ * to the package root, exactly as `pi config` computes it.
+ */
+export function packagePattern(ref: ResourceRef): string {
+  const baseDir = ref.baseDir ?? dirname(ref.path);
+  const rel = toPosix(relative(baseDir, ref.path));
+  return rel === "" ? "." : rel;
+}
+
+/** The absolute path a local package source resolves to, for comparison. */
+function resolvedLocalSource(source: string, scope: Scope, ctx: MachineContext): string {
+  return toPosix(resolve(defaultBaseDir(scope, ctx), source));
+}
+
+/** Mirrors pi: a source is local when it carries no npm/git/remote prefix. */
+export function isLocalSource(source: string): boolean {
+  return !/^(npm|git|github|http|https|ssh):/.test(source.trim());
+}
+
+/**
+ * Whether two packages sources name the same package: an exact string
+ * match, or, for two local sources, the same resolved path. Mirrors
+ * `pi config`'s matching.
+ */
+export function packageSourceMatches(
+  a: string,
+  aScope: Scope,
+  b: string,
+  bScope: Scope,
+  ctx: MachineContext,
+): boolean {
+  if (a === b) return true;
+  if (!isLocalSource(a) || !isLocalSource(b)) return false;
+  return resolvedLocalSource(a, aScope, ctx) === resolvedLocalSource(b, bScope, ctx);
+}
+
+/**
+ * Find the packages entry that carries this package in one scope's array.
+ * Local sources match by resolved path, as in pi.
+ */
+export function findPackageEntry(
+  packages: readonly PackageEntry[],
+  source: string,
+  sourceScope: Scope,
+  entryScope: Scope,
+  ctx: MachineContext,
+): number {
+  return packages.findIndex((entry) =>
+    packageSourceMatches(source, sourceScope, typeof entry === "string" ? entry : entry.source, entryScope, ctx),
+  );
+}
+
+/** Whether one filter-array entry names this resource directly. */
+function filterEntryTouches(entry: string, ref: ResourceRef, ctx: MachineContext): boolean {
+  if (entry.startsWith("!")) return globPatternMatches(entry.slice(1), ref, ctx);
+  if (entry.startsWith("+") || entry.startsWith("-")) return exactMatches(entry.slice(1), ref, ctx);
+  return globPatternMatches(entry, ref, ctx);
+}
+
+/**
+ * Whether the filter touches this resource at all. Any `+`/`-`/`!` pattern
+ * that names the resource is a decision; a plain include is always a
+ * decision, because in pi's loader it restricts the type to its matches.
+ */
+function filterTouchesResource(patterns: readonly string[], ref: ResourceRef, ctx: MachineContext): boolean {
+  return patterns.some((p) => filterEntryTouches(p, ref, ctx)) || patterns.some((p) => !isPatternEntry(p));
+}
+
+/**
+ * The state of one package resource under one packages entry, mirroring
+ * pi's loader: an absent per-type key means the package default (enabled),
+ * an empty array disables the whole type, and otherwise the patterns apply
+ * in pi's order - plain includes restrict the type, `!` globs exclude,
+ * `+` exact patterns force-include, and `-` exact patterns force-exclude
+ * over everything - all relative to the package root.
+ */
+export function packageEntryEnabled(entry: PackageEntry, ref: ResourceRef, ctx: MachineContext): boolean {
+  if (typeof entry === "string") return true;
+  const patterns = entry[ref.type];
+  if (patterns === undefined) return true;
+  if (patterns.length === 0) return false;
+  let enabled = true;
+  const includes = patterns.filter((p) => !isPatternEntry(p));
+  if (includes.length > 0 && !includes.some((p) => globPatternMatches(p, ref, ctx))) enabled = false;
+  if (patterns.some((p) => p.startsWith("!") && globPatternMatches(p.slice(1), ref, ctx))) enabled = false;
+  if (patterns.some((p) => p.startsWith("+") && exactMatches(p.slice(1), ref, ctx))) enabled = true;
+  if (patterns.some((p) => p.startsWith("-") && exactMatches(p.slice(1), ref, ctx))) enabled = false;
+  return enabled;
+}
+
+/**
+ * Write the `+`/`-` filter for a package resource into the packages entry
+ * of one scope file, mirroring `pi config`: a string entry becomes object
+ * form, the resource's old pattern is replaced, an emptied per-type key is
+ * dropped, and an entry with no filter left collapses back to the plain
+ * source string. Returns the source the entry carries.
+ */
+function setPackageFilter(
+  state: SettingsState,
+  ref: ResourceRef,
+  enabled: boolean,
+  mode: WriteMode,
+  ctx: MachineContext,
+): SettingsState {
+  const source = ref.packageSource!;
+  // Same-scope rule as top-level resources: the entry lives in the file of
+  // the resource's own scope in global mode, and in the project file in
+  // project mode.
+  const inProjectFile = mode === "project" || ref.scope === "project";
+  const bucket = inProjectFile ? state.project : state.global;
+  const pattern = packagePattern(ref);
+  const index = findPackageEntry(bucket.packages, source, ref.scope, inProjectFile ? "project" : "user", ctx);
+  if (index === -1) {
+    // Not found: create the entry. A local source is rewritten relative to
+    // the project base so the project file stays portable, as `pi config`
+    // does.
+    const entrySource =
+      inProjectFile && ref.scope === "user" && isLocalSource(source)
+        ? toPosix(relative(defaultBaseDir("project", ctx), resolvedLocalSource(source, "user", ctx))) || "."
+        : source;
+    const created: PackageFilter = { source: entrySource, [ref.type]: [`${enabled ? "+" : "-"}${pattern}`] };
+    bucket.packages.push(created);
+    return state;
+  }
+  const entry: PackageFilter = typeof bucket.packages[index] === "string"
+    ? { source: bucket.packages[index] as string }
+    : { ...bucket.packages[index] };
+  const current = entry[ref.type] ?? [];
+  const updated = current.filter((p) => entryTarget(p) !== pattern);
+  updated.push(`${enabled ? "+" : "-"}${pattern}`);
+  entry[ref.type] = updated;
+  bucket.packages[index] = entry;
+  return state;
+}
+
+/**
+ * Clear the project override of a package resource: the resource's filter
+ * patterns leave the project entry, an emptied per-type key is dropped, and
+ * an entry with no filter left collapses back to the plain source string.
+ */
+function inheritPackage(state: SettingsState, ref: ResourceRef, ctx: MachineContext): SettingsState {
+  const source = ref.packageSource!;
+  const pattern = packagePattern(ref);
+  const index = findPackageEntry(state.project.packages, source, ref.scope, "project", ctx);
+  if (index === -1) return state;
+  const entry: PackageFilter = typeof state.project.packages[index] === "string"
+    ? { source: state.project.packages[index] as string }
+    : { ...state.project.packages[index] };
+  const current = entry[ref.type];
+  if (current) {
+    const updated = current.filter((p) => entryTarget(p) !== pattern);
+    entry[ref.type] = updated.length > 0 ? updated : undefined;
+  }
+  const hasFilters = RESOURCE_TYPES.some((key) => entry[key] !== undefined);
+  state.project.packages[index] = hasFilters ? entry : entry.source;
+  return state;
+}
+
+/**
+ * Self-heal: remove the old no-op package-relative pattern for this
+ * resource from the settings resource arrays. The previous toggle code
+ * wrote such patterns for package resources and pi ignores them there; the
+ * project file may also carry an old shadow pair for the resource's
+ * absolute path.
+ */
+function selfHealPackagePatterns(state: SettingsState, ref: ResourceRef, ctx: MachineContext): void {
+  const pattern = packagePattern(ref);
+  const removeGlobal = (entry: string): boolean =>
+    !(isPatternEntry(entry) && entryTarget(entry) === pattern);
+  state.global[ref.type] = state.global[ref.type].filter(removeGlobal);
+  const targets = projectTargets(ref, ctx);
+  const removeProject = (entry: string): boolean =>
+    entry !== ref.path && !(isPatternEntry(entry) && targets.has(entryTarget(entry)));
+  state.project[ref.type] = state.project[ref.type].filter(removeProject);
+}
+
 /**
  * The project-side override state of a resource: does the project file
  * carry a `+`/`-` pattern for it? Last matching entry wins, as in pi.
  */
 export function projectOverrideState(state: SettingsState, ref: ResourceRef, ctx: MachineContext): OverrideState {
+  if (ref.packageSource) return packageOverrideState(state, ref, ctx);
   const targets = projectTargets(ref, ctx);
   let override: OverrideState = "inherit";
   for (const entry of state.project[ref.type]) {
@@ -137,6 +357,25 @@ export function projectOverrideState(state: SettingsState, ref: ResourceRef, ctx
     override = entry.startsWith("!") || entry.startsWith("-") ? "unload" : "load";
   }
   return override;
+}
+
+/**
+ * The project override of a package resource: the project file's packages
+ * entry decides when it carries one for the package (pi's dedupe replaces
+ * the global entry), otherwise the resource inherits the global state. A
+ * string entry and an entry whose per-type filter never targets the
+ * resource are both inherit.
+ */
+export function packageOverrideState(state: SettingsState, ref: ResourceRef, ctx: MachineContext): OverrideState {
+  const index = findPackageEntry(state.project.packages, ref.packageSource!, ref.scope, "project", ctx);
+  if (index === -1) return "inherit";
+  const entry = state.project.packages[index];
+  if (typeof entry === "string") return "inherit";
+  const patterns = entry[ref.type];
+  if (patterns === undefined) return "inherit";
+  if (patterns.length === 0) return "unload";
+  if (!filterTouchesResource(patterns, ref, ctx)) return "inherit";
+  return packageEntryEnabled(entry, ref, ctx) ? "load" : "unload";
 }
 
 /**
@@ -221,6 +460,33 @@ function globPatternMatches(pattern: string, ref: ResourceRef, ctx: MachineConte
 }
 
 /**
+ * The state of a package resource read from one scope's packages array
+ * alone, with the package default when the scope carries no entry for it.
+ */
+export function packageScopeEnabled(
+  state: SettingsState,
+  ref: ResourceRef,
+  scope: Scope,
+  ctx: MachineContext,
+): boolean {
+  const bucket = scope === "user" ? state.global : state.project;
+  const index = findPackageEntry(bucket.packages, ref.packageSource!, ref.scope, scope, ctx);
+  return index === -1 ? true : packageEntryEnabled(bucket.packages[index], ref, ctx);
+}
+
+/**
+ * The own-scope state of a package resource. The packages entry of the
+ * file the resource resolves from decides: the project entry when the
+ * project file carries one (pi's dedupe replaces the global entry),
+ * otherwise the global entry, and the package default when neither does.
+ */
+export function packageOwnEnabled(state: SettingsState, ref: ResourceRef, ctx: MachineContext): boolean {
+  const projectIndex = findPackageEntry(state.project.packages, ref.packageSource!, ref.scope, "project", ctx);
+  if (projectIndex !== -1) return packageEntryEnabled(state.project.packages[projectIndex], ref, ctx);
+  return packageScopeEnabled(state, ref, "user", ctx);
+}
+
+/**
  * The state of a resource in its own scope, derived from that scope's
  * settings arrays alone. Patterns apply in pi's order: `!` excludes first,
  * then `+` force-includes, then `-` force-excludes (a `-` always beats a `+`).
@@ -228,6 +494,7 @@ function globPatternMatches(pattern: string, ref: ResourceRef, ctx: MachineConte
 export function scopeEnabled(state: SettingsState, ref: ResourceRef, ctx: MachineContext): boolean {
   const scope = ref.scope;
   const bucket = scope === "user" ? state.global : state.project;
+  if (ref.packageSource) return packageOwnEnabled(state, ref, ctx);
   const entries = bucket[ref.type];
   const excludes: string[] = [];
   const forceIncludes: string[] = [];

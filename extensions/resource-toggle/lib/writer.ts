@@ -13,7 +13,7 @@
  * surfaced, not retried.
  */
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
-import type { SettingsState } from "./types.ts";
+import type { PackageEntry, SettingsState } from "./types.ts";
 
 export interface WriteOptions {
   cwd: string;
@@ -30,6 +30,20 @@ export interface WriteOutcome {
 
 const sameArray = (a: readonly string[], b: readonly string[]): boolean =>
   a.length === b.length && a.every((v, i) => v === b[i]);
+
+const sameEntry = (a: PackageEntry, b: PackageEntry): boolean => {
+  if (typeof a === "string" || typeof b === "string") return a === b;
+  return (
+    a.source === b.source &&
+    sameArray(a.extensions ?? [], b.extensions ?? []) &&
+    sameArray(a.skills ?? [], b.skills ?? []) &&
+    sameArray(a.prompts ?? [], b.prompts ?? []) &&
+    sameArray(a.themes ?? [], b.themes ?? [])
+  );
+};
+
+const samePackages = (a: readonly PackageEntry[], b: readonly PackageEntry[]): boolean =>
+  a.length === b.length && a.every((entry, i) => sameEntry(entry, b[i]));
 
 const trustedRefusal = (message: string): string =>
   message.includes("not trusted")
@@ -64,6 +78,9 @@ export async function writeSettings(
     if (!sameArray(prev.global.themes, next.global.themes)) {
       manager.setThemePaths(next.global.themes);
     }
+    if (!samePackages(prev.global.packages, next.global.packages)) {
+      manager.setPackages(next.global.packages);
+    }
     if (!sameArray(prev.project.extensions, next.project.extensions)) {
       manager.setProjectExtensionPaths(next.project.extensions);
     }
@@ -75,6 +92,9 @@ export async function writeSettings(
     }
     if (!sameArray(prev.project.themes, next.project.themes)) {
       manager.setProjectThemePaths(next.project.themes);
+    }
+    if (!samePackages(prev.project.packages, next.project.packages)) {
+      manager.setProjectPackages(next.project.packages);
     }
   } catch (error) {
     return { ok: false, error: trustedRefusal(error instanceof Error ? error.message : String(error)) };
