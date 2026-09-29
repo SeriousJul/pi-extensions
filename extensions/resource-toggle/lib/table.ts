@@ -30,7 +30,17 @@ const stateText = (row: TableRow): string => {
 };
 
 /**
- * Render a text table of resources: NAME, TYPE, SCOPE, LOCATION, STATE.
+ * Cap a Resource description for one display surface: at most `limit`
+ * characters, with an ellipsis where the text was cut.
+ */
+export function capDescription(text: string, limit = 60): string {
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit - 1)}…`;
+}
+
+/**
+ * Render a text table of resources: NAME, TYPE, SCOPE, LOCATION,
+ * DESCRIPTION, STATE. The description is capped at 60 characters.
  */
 export function renderResourceTable(rows: TableRow[]): string {
   if (rows.length === 0) return "No resources found.";
@@ -42,10 +52,11 @@ export function renderResourceTable(rows: TableRow[]): string {
       resourceLabel(row.resource.type),
       row.resource.scope === "user" ? "global" : "project",
       shortPath(row.resource.path),
+      row.resource.description ? capDescription(row.resource.description) : "",
       stateText(row),
     ];
   });
-  const header = ["NAME", "TYPE", "SCOPE", "LOCATION", "STATE"];
+  const header = ["NAME", "TYPE", "SCOPE", "LOCATION", "DESCRIPTION", "STATE"];
   const widths = header.map((h, i) => Math.max(h.length, ...body.map((row) => row[i].length)));
   const line = (cells: string[]): string =>
     cells.map((c, i) => (i === cells.length - 1 ? c : c.padEnd(widths[i]))).join("  ");

@@ -16,6 +16,7 @@ import {
   SettingsManager,
   parseFrontmatter,
 } from "@earendil-works/pi-coding-agent";
+import { resourceDescription } from "./description.ts";
 import type { MachineContext, ResolvedResources, ResourceInfo, ResourceRef, ScopeArrays, ResourceType } from "./types.ts";
 import { scopeEnabled } from "./state-machine.ts";
 
@@ -163,6 +164,11 @@ export async function resolveResources(options: ResolveOptions): Promise<Resolve
   }
 
   merged.sort((a, b) => a.displayName.localeCompare(b.displayName) || a.path.localeCompare(b.path));
+  // The Resource description is derived from the source file at list time
+  // and never stored (ADR 0030); the self row gets it like any extension.
+  for (const info of merged) {
+    info.description = resourceDescription(info.type, info.path);
+  }
 
   return {
     resources: merged,

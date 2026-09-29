@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { resourceDescription } from "../../extensions/resource-toggle/lib/description.ts";
 import { displayNameFor, machineContextFor, resolveResources } from "../../extensions/resource-toggle/lib/resolver.ts";
 import { writeSettings } from "../../extensions/resource-toggle/lib/writer.ts";
 import { emptyScopeArrays, type SettingsState } from "../../extensions/resource-toggle/lib/types.ts";
@@ -28,12 +29,30 @@ beforeAll(() => {
   mkdirSync(join(projectPi, "extensions"), { recursive: true });
 
   writeFileSync(join(agentDir, "extensions", "a.ts"), "export default function (pi) {}\n");
+  writeFileSync(
+    join(agentDir, "extensions", "bom-shebang.ts"),
+    "\uFEFF#!/usr/bin/env node\n/** BOM and shebang precede the comment. */\nexport default function (pi) {}\n",
+  );
+  writeFileSync(
+    join(agentDir, "extensions", "c.ts"),
+    "/**\n * Leading comment with   several   words\n * across lines. */\nexport default function (pi) {}\n",
+  );
+  writeFileSync(
+    join(agentDir, "extensions", "late-comment.ts"),
+    "export default function (pi) {}\n/** A comment that is not leading. */\n",
+  );
   writeFileSync(join(agentDir, "extensions", "other", "index.ts"), "export default function (pi) {}\n");
   writeFileSync(
     join(agentDir, "skills", "my-skill", "SKILL.md"),
     "---\nname: custom-name\ndescription: fixture skill\n---\nBody.\n",
   );
   writeFileSync(join(agentDir, "prompts", "p.md"), "prompt body\n");
+  writeFileSync(
+    join(agentDir, "prompts", "d.md"),
+    "---\ndescription: The prompt with a frontmatter description\n---\nprompt body\n",
+  );
+  mkdirSync(join(agentDir, "skills", "bad-skill"), { recursive: true });
+  writeFileSync(join(agentDir, "skills", "bad-skill", "SKILL.md"), "---\nname: [unclosed\n---\nbody\n");
   writeFileSync(join(agentDir, "themes", "t.json"), "{}\n");
   writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ theme: "dark" }, null, 2) + "\n");
   writeFileSync(join(projectPi, "settings.json"), JSON.stringify({ extensions: [] }, null, 2) + "\n");
@@ -60,6 +79,16 @@ describe("resolveResources", () => {
     expect(byName.get("t.json")?.type).toBe("themes");
     expect(byName.get("a.ts")?.enabled).toBe(true);
     expect(byName.get("a.ts")?.ownEnabled).toBe(true);
+    // The resolved list carries the Resource description (ADR 0030).
+    expect(byName.get("c.ts")?.description).toBe("Leading comment with several words across lines.");
+    expect(byName.get("bom-shebang.ts")?.description).toBe("BOM and shebang precede the comment.");
+    expect(byName.get("late-comment.ts")?.description).toBeUndefined();
+    expect(byName.get("a.ts")?.description).toBeUndefined();
+    expect(byName.get("custom-name")?.description).toBe("fixture skill");
+    expect(byName.get("bad-skill")?.description).toBeUndefined();
+    expect(byName.get("p.md")?.description).toBe("prompt body");
+    expect(byName.get("d.md")?.description).toBe("The prompt with a frontmatter description");
+    expect(byName.get("t.json")?.description).toBeUndefined();
   });
 
   it("derives the own-scope state from the settings patterns", async () => {
@@ -211,5 +240,69 @@ describe("displayNameFor", () => {
 describe("machineContextFor", () => {
   it("uses the pi config dir", () => {
     expect(machineContextFor("/proj", "/agent")).toEqual({ cwd: "/proj", agentDir: "/agent", configDir: ".pi" });
+  });
+});
+
+describe("resourceDescription", () => {
+  it("a skill gets its SKILL.md frontmatter description", () => {
+    expect(resourceDescription("skills", join(agentDir, "skills", "my-skill", "SKILL.md"))).toBe("fixture skill");
+  });
+
+  it("a skill with malformed frontmatter gets no description", () => {
+    expect(resourceDescription("skills", join(agentDir, "skills", "bad-skill", "SKILL.md"))).toBeUndefined();
+  });
+
+  it("a skill without a frontmatter description gets no description", () => {
+    const path = join(agentDir, "skills", "my-skill", "SKILL.md");
+    writeFileSync(path, "---\nname: custom-name\n---\nBody.\n");
+    expect(resourceDescription("skills", path)).toBeUndefined();
+    writeFileSync(path, "---\nname: custom-name\ndescription: fixture skill\n---\nBody.\n");
+  });
+
+  it("a prompt template uses the frontmatter description", () => {
+    expect(resourceDescription("prompts", join(agentDir, "prompts", "d.md"))).toBe("The prompt with a frontmatter description");
+  });
+
+  it("a prompt template without a frontmatter description falls back to its first non-empty line", () => {
+    expect(resourceDescription("prompts", join(agentDir, "prompts", "p.md"))).toBe("prompt body");
+    const path = join(agentDir, "prompts", "first-line.md");
+    writeFileSync(path, "\n   \n  The first non-empty line.\nsecond line\n");
+    expect(resourceDescription("prompts", path)).toBe("The first non-empty line.");
+    rmSync(path);
+  });
+
+  it("a prompt template with malformed frontmatter falls back to the first non-empty line", () => {
+    const path = join(agentDir, "prompts", "bad.md");
+    writeFileSync(path, "---\ndescription: [unclosed\n---\nthe body line\n");
+    expect(resourceDescription("prompts", path)).toBe("the body line");
+    rmSync(path);
+  });
+
+  it("an extension gets the leading block comment, markers stripped and whitespace collapsed", () => {
+    expect(resourceDescription("extensions", join(agentDir, "extensions", "c.ts"))).toBe(
+      "Leading comment with several words across lines.",
+    );
+  });
+
+  it("an extension comment preceded by a BOM and a shebang still counts as leading", () => {
+    expect(resourceDescription("extensions", join(agentDir, "extensions", "bom-shebang.ts"))).toBe(
+      "BOM and shebang precede the comment.",
+    );
+  });
+
+  it("a comment that is not leading gets no description", () => {
+    expect(resourceDescription("extensions", join(agentDir, "extensions", "late-comment.ts"))).toBeUndefined();
+  });
+
+  it("a code-first extension file gets no description", () => {
+    expect(resourceDescription("extensions", join(agentDir, "extensions", "a.ts"))).toBeUndefined();
+  });
+
+  it("a theme has no description", () => {
+    expect(resourceDescription("themes", join(agentDir, "themes", "t.json"))).toBeUndefined();
+  });
+
+  it("an unreadable file gets no description", () => {
+    expect(resourceDescription("extensions", join(agentDir, "extensions", "missing.ts"))).toBeUndefined();
   });
 });
