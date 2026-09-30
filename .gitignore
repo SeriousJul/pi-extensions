@@ -61,6 +61,8 @@ web_modules/
 
 # Output of 'npm pack'
 *.tgz
+# Committed security patch tarballs (scripts/patch-brace-expansion.mjs)
+!scripts/patches/*.tgz
 
 # Yarn Integrity file
 .yarn-integrity
