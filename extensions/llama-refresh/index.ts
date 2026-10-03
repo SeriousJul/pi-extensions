@@ -26,9 +26,21 @@
 //   near-empty answer may spend an unspent Attempt on an extra compare, also
 //   awaited inside the turn boundary for the same reason.
 // - The /llama-window command re-arms the pre-request Attempt and runs one
-//   compare on demand, and reports the result, because pi emits no
-//   model_select when the same model is selected again, so a re-select
-//   cannot re-arm anything.
+//   compare on demand, and reports the result.
+//
+// The same-model re-select. pi emits no model_select when the selected model
+// equals the current one (its modelsAreEqual compares id and provider), so a
+// re-select cannot re-arm anything through that event. pi does record every
+// selection: setModel appends a model_change entry to the transcript even for
+// an equal model. That entry is the only signal an extension can read, and the
+// earliest boundary that can read it is the next turn_start. The wiring
+// therefore tracks the newest model_change entry it has accounted for - a
+// select pi reported, or a re-apply this extension made itself - and treats a
+// newer entry as the operator's re-select: it re-arms both Attempts before the
+// pre-request compare runs, so the first request after the re-select gets the
+// healed window. The extension's own re-apply writes the same kind of entry,
+// so the wiring accounts for it the moment it lands; a heal can never re-arm
+// itself.
 //
 // Every applied heal reports one line, and every command run reports one
 // line. The lines are built in refresh.ts, in exactly one place, so a test
@@ -72,10 +84,29 @@ type Ref = { provider: string; id: string };
 
 const refOf = (model: Model<Api>): Ref => ({ provider: model.provider, id: model.id });
 
+/**
+ * The newest model_change entry in the transcript, or undefined when the
+ * session has none. pi appends one for every setModel, including a selection
+ * of the model the session already holds, so this entry is the record that a
+ * selection happened.
+ */
+function newestModelChange(ctx: ExtensionContext): { id: string; provider: string; modelId: string } | undefined {
+	const entries = ctx.sessionManager.getEntries();
+	for (let i = entries.length - 1; i >= 0; i -= 1) {
+		const entry = entries[i];
+		if (entry.type === "model_change") return { id: entry.id, provider: entry.provider, modelId: entry.modelId };
+	}
+	return undefined;
+}
+
 export default function (pi: ExtensionAPI): void {
 	// The core for the current session. Null before the first session start
 	// and after a shutdown.
 	let llamaRefresh: LlamaRefresh | null = null;
+	// The newest model_change entry the wiring has accounted for: a select pi
+	// reported through model_select, or a re-apply this extension made. A
+	// newer entry at a boundary is a selection pi did not report.
+	let lastSelectionEntryId: string | undefined;
 
 	pi.on("session_start", (_event, sessionCtx: ExtensionContext) => {
 		llamaRefresh = createLlamaRefresh({
@@ -129,7 +160,12 @@ export default function (pi: ExtensionAPI): void {
 			resolveModel: (ref) => sessionCtx.modelRegistry.find(ref.provider, ref.id),
 			applyModel: async (model) => {
 				try {
-					return await pi.setModel(model);
+					const applied = await pi.setModel(model);
+					// The re-apply appended its own model_change entry. Account
+					// for it here so the heal never reads as the operator's
+					// selection at the next boundary.
+					if (applied) lastSelectionEntryId = newestModelChange(sessionCtx)?.id;
+					return applied;
 				} catch {
 					return false;
 				}
@@ -149,16 +185,19 @@ export default function (pi: ExtensionAPI): void {
 			// session_start; the core clamps both sides of the compare to it.
 			windowCap: () => getActiveWindowCap(),
 		});
-		// A new session start re-arms every selection's Attempts.
+		// A new session start re-arms every selection's Attempts, and the
+		// transcript's existing selections are history, not a re-select.
+		lastSelectionEntryId = newestModelChange(sessionCtx)?.id;
 		llamaRefresh.onSessionStart();
 	});
 
-	pi.on("model_select", (event) => {
+	pi.on("model_select", (event, ctx: ExtensionContext) => {
 		// Every select re-arms both Attempts for its selection. pi emits
 		// this event only for a different model (its modelsAreEqual compares
-		// id and provider), so a re-select of the same model re-arms nothing:
-		// the /llama-window command is the human re-run.
+		// id and provider), so the wiring accounts for the entry this select
+		// appended and reads a same-model re-select from the transcript.
 		llamaRefresh?.onModelSelect({ provider: event.model.provider, id: event.model.id });
+		lastSelectionEntryId = newestModelChange(ctx)?.id;
 	});
 
 	// The pre-request Heal moment. pi awaits this handler before it builds
@@ -170,6 +209,15 @@ export default function (pi: ExtensionAPI): void {
 		const model = ctx.model;
 		if (!model) return;
 		const ref = refOf(model);
+		// A model_change entry the wiring has not accounted for is a selection
+		// pi did not report: the operator re-selected the model the session
+		// already holds. Re-arm before the compare so this turn's request gets
+		// the healed window.
+		const selection = newestModelChange(ctx);
+		if (selection && selection.id !== lastSelectionEntryId) {
+			lastSelectionEntryId = selection.id;
+			if (selection.provider === ref.provider && selection.modelId === ref.id) llamaRefresh.onReSelect(ref);
+		}
 		let decision: RefreshDecision;
 		try {
 			decision = await llamaRefresh.onPreRequest(ref);

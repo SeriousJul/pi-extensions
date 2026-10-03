@@ -22,10 +22,15 @@ it, so the extension compares instead of matching.
   starved output budget) may spend an unspent Attempt on an extra compare,
   and can never re-arm one.
 - A selection gets one Attempt per moment, two in total, and a new
-  selection re-arms both. Because pi emits no `model_select` when the same
-  model is selected again, a re-select re-arms nothing; the
-  `/llama-window` command re-arms the pre-request Attempt and runs one
-  compare on demand.
+  selection re-arms both. Re-selecting the model the session already holds
+  re-arms them too. pi emits no `model_select` for an equal model, but it
+  records every selection in the session transcript, so the extension reads
+  the re-select from that record at the next turn start: the first request
+  after your re-select gets the healed window, and the report line appears
+  with that turn. The extension's own repair writes the same record, so a
+  repair never re-arms itself.
+- The `/llama-window` command re-arms the pre-request Attempt and runs one
+  compare on demand, for a window you moved without re-selecting the model.
 - Every applied heal reports one line, and every command run reports one
   line (under an active cap, the values are the clamped windows the session
   actually holds):
@@ -65,7 +70,9 @@ The decision logic lives in the engine-free core module
 (`extensions/llama-refresh/refresh.ts`); the pi wiring (`index.ts`) only
 binds events and supplies the real dependencies (registry refresh, registry
 read-back, `pi.setModel`, the currency probe, and the active cap from the
-shared record the context-cap extension publishes). The notify lines are
-built in the core module in exactly one place, so a test can assert a line
-verbatim.
+shared record the context-cap extension publishes). The wiring also tracks
+the newest `model_change` entry it has accounted for, so a transcript entry
+that no `model_select` reported is read as your re-select of the same model.
+The notify lines are built in the core module in exactly one place, so a
+test can assert a line verbatim.
 See [ADR 0027](/adr/0027-the-live-catalog-comparison-heals-the-window).
