@@ -1,5 +1,10 @@
 # The live catalog comparison heals the window, not the fallback sentinel
 
+Amended by [ADR 0031](/adr/0031-a-same-model-re-select-is-read-from-the-transcript)
+on one sentence of it: a same-model re-select does re-arm the Attempts, because
+the wiring reads it from the transcript's `model_change` entry. The budget, the
+two Heal moments, the clamp rule, and the failure check all stand.
+
 ADR 0019 gates its self-heal on one value: the check runs only when the session's
 model reports exactly the 128000 Fallback window. That gate is the reason a
 session died quietly. A llama.cpp service relaunched between two days carries a

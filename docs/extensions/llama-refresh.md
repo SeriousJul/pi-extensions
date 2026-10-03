@@ -75,4 +75,5 @@ the newest `model_change` entry it has accounted for, so a transcript entry
 that no `model_select` reported is read as your re-select of the same model.
 The notify lines are built in the core module in exactly one place, so a
 test can assert a line verbatim.
-See [ADR 0027](/adr/0027-the-live-catalog-comparison-heals-the-window).
+See [ADR 0027](/adr/0027-the-live-catalog-comparison-heals-the-window) and
+[ADR 0031](/adr/0031-a-same-model-re-select-is-read-from-the-transcript).
