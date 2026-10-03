@@ -22,6 +22,9 @@
  *      (no repair, no message); a drift that crosses below the cap heals
  *   8. /llama-window: the command re-arms one Attempt, reports the heal,
  *      confirms an unchanged window, and reports a check failure
+ *   9. same-model re-select: the operator changes n_ctx on the server and
+ *      re-selects the same model; the re-select re-arms the Attempts, the
+ *      next turn heals, and the extension's own heal entry does not re-arm
  *
  * Any extension_error event fails the run.
  *
@@ -425,6 +428,44 @@ const healedLine = (from, to) => `llama window: ${from} -> ${to} (llama.cpp/${MO
 	if (!rpc.notifies.includes(`llama window: check failed (llama.cpp/${MODEL})`))
 		fail(`8. missing check-failed line; notifies: ${JSON.stringify(rpc.notifies)}`);
 	console.log("ok: the check-failed line, verbatim");
+	await rpc.close();
+}
+
+// ---------------------------------------------------------------------------
+// 9. Same-model re-select: the operator changes n_ctx on the server and
+// re-selects the same model. pi emits no model_select for an equal model, so
+// the re-select must be read from the transcript, and it must re-arm.
+// ---------------------------------------------------------------------------
+{
+	console.log("\n9. same-model re-select re-arms the Attempts");
+	const { mock, rpc } = await startSession({ [MODEL]: { nCtx: 40192, status: "loaded" } }, { expectedWindow: 40192 });
+	// Spend both Attempts on a no-drift turn.
+	await prompt(rpc, "Reply with exactly: OK");
+	if (rpc.notifies.length !== 0) fail(`9. expected silence before the re-select; got: ${JSON.stringify(rpc.notifies)}`);
+	const changes0 = await modelChangeCount(rpc);
+	// The operator changes n_ctx on the server, then re-selects the same model.
+	mock.setNCtx(MODEL, 160000);
+	const reselect = await rpc.request("set_model", { provider: "llama.cpp", modelId: MODEL });
+	if (!reselect.success) fail(`9. set_model: ${JSON.stringify(reselect)}`);
+	// pi records the selection in the transcript even though it emits no
+	// model_select for an equal model. That entry is the only signal an
+	// extension can read.
+	if ((await modelChangeCount(rpc)) !== changes0 + 1) fail("9. the re-select did not record a model change entry");
+	console.log("ok: the re-select recorded one model change entry (the signal)");
+	await prompt(rpc, "Reply with exactly: OK");
+	if ((await window(rpc)) !== 160000) fail(`9. the re-select did not re-arm; the window stayed at ${await window(rpc)}`);
+	console.log("ok: the re-select re-armed and the next turn healed to 160000");
+	if (!rpc.notifies.includes(healedLine(40192, 160000))) fail(`9. missing heal line; notifies: ${JSON.stringify(rpc.notifies)}`);
+	console.log("ok: one report line, verbatim");
+	// The heal's own re-apply writes a model change entry too. That entry is
+	// the extension's own, not the operator's selection, so it must not re-arm:
+	// the next turn runs no compare and reports nothing.
+	const reads0 = mock.catalogReads.length;
+	const notifies0 = rpc.notifies.length;
+	await prompt(rpc, "Reply with exactly: OK");
+	if (mock.catalogReads.length !== reads0) fail(`9. the extension's own heal entry re-armed; a compare ran on the next turn`);
+	if (rpc.notifies.length !== notifies0) fail(`9. the next turn reported; got: ${JSON.stringify(rpc.notifies.slice(notifies0))}`);
+	console.log("ok: the extension's own entry did not re-arm");
 	await rpc.close();
 }
 
