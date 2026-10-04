@@ -42,8 +42,11 @@ export async function startLlamaMockRouter(options = {}) {
 	const requests = [];
 	// Catalog reads, in order: { path } for /models and /props.
 	const catalogReads = [];
-	// One scripted completions response, consumed by the next request.
-	let scripted = undefined;
+	// Scripted completions responses, consumed in order. Each completions
+	// request takes the next one; when the queue is empty the answer is the
+	// plain default.
+	/** @type {Array<{ content?: string, finishReason?: string, outputTokens?: number, promptTokens?: number, toolCalls?: Array<{ id?: string, name: string, arguments?: unknown }> }>} */
+	const scripted = [];
 	// Drift applied right after the next completions request is handled.
 	let driftOnRequest = undefined;
 
@@ -73,8 +76,7 @@ export async function startLlamaMockRouter(options = {}) {
 				} catch {
 					parsed = {};
 				}
-				const response = scripted ?? { content: "Confirmed.", finishReason: "stop", outputTokens: 3 };
-				scripted = undefined;
+				const response = scripted.shift() ?? { content: "Confirmed.", finishReason: "stop", outputTokens: 3 };
 				requests.push({ model: parsed.model, maxTokens: parsed.max_tokens, body: parsed });
 				// A request wakes a sleeping model, the way the real router
 				// loads on demand.
@@ -84,13 +86,28 @@ export async function startLlamaMockRouter(options = {}) {
 				} else {
 					for (const m of state.values()) if (m.status === "sleeping") m.status = "loaded";
 				}
+				// The Reported context this answer reports back: the prompt size
+				// the server counted. A test scripts it to make the session's
+				// usage anchor say what a real provider would.
+				const promptTokens = response.promptTokens ?? 4;
+				const delta = response.toolCalls
+					? {
+							tool_calls: response.toolCalls.map((call, index) => ({
+								index,
+								id: call.id ?? `call-${index + 1}`,
+								type: "function",
+								function: { name: call.name, arguments: JSON.stringify(call.arguments ?? {}) },
+							})),
+						}
+						: { content: response.content };
+				const finishReason = response.finishReason ?? (response.toolCalls ? "tool_calls" : "stop");
 				res.writeHead(200, { "content-type": "text/event-stream" });
-				res.write(`data: ${JSON.stringify({ id: "cmpl-1", choices: [{ index: 0, delta: { content: response.content } }] })}\n\n`);
+				res.write(`data: ${JSON.stringify({ id: "cmpl-1", choices: [{ index: 0, delta }] })}\n\n`);
 				res.write(
 					`data: ${JSON.stringify({
 						id: "cmpl-1",
-						choices: [{ index: 0, delta: {}, finish_reason: response.finishReason }],
-						usage: { prompt_tokens: 4, completion_tokens: response.outputTokens, total_tokens: 4 + response.outputTokens },
+						choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
+						usage: { prompt_tokens: promptTokens, completion_tokens: response.outputTokens, total_tokens: promptTokens + response.outputTokens },
 					})}\n\n`,
 				);
 				res.write("data: [DONE]\n\n");
@@ -136,9 +153,12 @@ export async function startLlamaMockRouter(options = {}) {
 		setStatus(id, status) {
 			handle.setModel(id, { status });
 		},
-		/** Script the next completions response: { content, finishReason, outputTokens }. */
+		/** Queue one completions response: { content, finishReason, outputTokens,
+		 * promptTokens, toolCalls }. `promptTokens` is the Reported context the
+		 * answer reports; `toolCalls` makes the answer ask for real tool calls.
+		 * Requests consume the queue in order. */
 		scriptResponse(response) {
-			scripted = response;
+			scripted.push(response);
 		},
 		/** Drift a model's reported n_ctx right after the next completions request. */
 		driftAfterRequest(id, nCtx) {
