@@ -35,6 +35,11 @@
  *   8. the fit repeats: a tool-calling turn whose every request is fitted,
  *      each on its own Corrected estimate, with the notice capped at one
  *      line per turn
+ *   9. the same shape with the guard off: the provider enforces its window,
+ *      refuses the unfitted request, and pi takes its compaction path
+ *  10. a fresh session with no Reported context to anchor on: the guard's
+ *      own guess says nothing fits, and it still leaves the request alone;
+ *      the provider answers it
  *
  * Any extension_error event fails the run.
  *
@@ -192,13 +197,13 @@ function prebuildStaleSession(agentDir) {
 	return builder.getSessionFile();
 }
 
-function startRpc(agentDir, extraArgs = [], extraExtensions = []) {
+function startRpc(agentDir, extraArgs = [], extraExtensions = [], { guard = true } = {}) {
 	// --no-extensions: on a machine where this repo is installed as a pi
 	// package, discovery loads a second copy of every extension and the
 	// duplicate flag registration stops the session starting.
 	const child = spawn(
 		process.execPath,
-		[piCli, "--mode", "rpc", "--no-extensions", "--extension", guardExtension, ...extraExtensions, ...extraArgs],
+		[piCli, "--mode", "rpc", "--no-extensions", ...(guard ? ["--extension", guardExtension] : []), ...extraExtensions, ...extraArgs],
 		{
 			cwd: agentDir,
 			env: { ...process.env, PI_CODING_AGENT_DIR: agentDir },
@@ -269,14 +274,32 @@ function startRpc(agentDir, extraArgs = [], extraExtensions = []) {
 
 /** Start a mock + a pi session on it, and wait until the session resolves the model at the expected window. With `prebuild`, the child
  * starts from a pre-built session: the stale-usage one by default, or one
- * built by the function passed for it. */
-async function startSession(window, { compactionEnabled = true, extraExtensions = [], prebuild = false, buildSession = prebuildStaleSession } = {}) {
-	const mock = await startLlamaMockRouter({ models: { [MODEL]: { nCtx: window, status: "loaded" } } });
+ * built by the function passed for it. With `guard: false`, the child runs
+ * without the guard extension, which is how a scenario shows what pi and
+ * the provider do on their own. With `enforceWindow`, the mock refuses a
+ * request whose prompt plus its ceiling exceeds the window. */
+async function startSession(
+	window,
+	{
+		compactionEnabled = true,
+		extraExtensions = [],
+		prebuild = false,
+		buildSession = prebuildStaleSession,
+		guard = true,
+		enforceWindow,
+		mockOptions = {},
+	} = {},
+) {
+	const mock = await startLlamaMockRouter({
+		models: { [MODEL]: { nCtx: window, status: "loaded" } },
+		...(enforceWindow ? { enforceWindow: { nCtx: window, ...enforceWindow } } : {}),
+		...mockOptions,
+	});
 	const agentDir = prepareAgentDir(mock.url, { compactionEnabled });
 	// The pre-built session must record the child's cwd, so build it after
 	// the agent dir exists and pass it through --session.
 	const sessionArgs = prebuild ? ["--session", buildSession(agentDir)] : [];
-	const rpc = startRpc(agentDir, sessionArgs, extraExtensions);
+	const rpc = startRpc(agentDir, sessionArgs, extraExtensions, { guard });
 	running.push(() => rpc.close());
 	await waitFor(async () => {
 		const available = await rpc.request("get_available_models");
@@ -328,17 +351,22 @@ function wireChars(message) {
  * The Fit the guard owes one recorded request, computed independently of the
  * extension from what actually went over the wire: the Reported context the
  * session's last answer carries, plus the recorded payload's content after
- * that answer at pi's chars/4 rate times the Inflation factor, and pi's own
- * 4096 margin.
+ * the anchored answer at pi's chars/4 rate times the Inflation factor, and
+ * pi's own 4096 margin. `answersAfterAnchor` is how many answers the session
+ * holds after the one the provider counted; the boundary sits at that
+ * anchored answer, not at the payload's last one.
  */
-function expectedFit(body, anchor, window, { inflation = 2, bytesPerChar = 4, margin = 4096 } = {}) {
+function expectedFit(body, anchor, window, { inflation = 2, bytesPerChar = 4, margin = 4096, answersAfterAnchor = 0 } = {}) {
 	const messages = body.messages ?? [];
+	let seen = 0;
 	let anchorIndex = -1;
 	for (let i = messages.length - 1; i >= 0; i--) {
-		if (messages[i]?.role === "assistant") {
+		if (messages[i]?.role !== "assistant") continue;
+		if (seen === answersAfterAnchor) {
 			anchorIndex = i;
 			break;
 		}
+		seen += 1;
 	}
 	let chars = 0;
 	for (let i = anchorIndex + 1; i < messages.length; i++) chars += wireChars(messages[i]);
@@ -462,13 +490,19 @@ function expectedFit(body, anchor, window, { inflation = 2, bytesPerChar = 4, ma
 // 6. Output overrun: the request is fitted, not rejected. The session's
 //    Reported context (150,020) plus one dense trailing tool result leaves
 //    the Corrected estimate 180,031 of the 200,000 window, while pi's own
-//    chars/4 estimate sees 166,882 and leaves a budget of about 29,000.
-//    The provider would reject that request; the guard lowers the budget to
-//    the room the Corrected estimate leaves, the request goes out, and the
-//    answer comes back. That answer reports a Reported context past pi's
-//    compaction threshold, so pi's own threshold compaction fires in the
-//    same run: the Fit is the last thing the operator sees before pi's
-//    normal recovery path runs.
+//    chars/4 estimate sees about 165,000 and leaves a budget of about
+//    30,900. The mock enforces the window at the incident's measured rate
+//    (2 characters per token), so that request is a real 400 from the
+//    provider; the guard lowers the budget to the room the Corrected
+//    estimate leaves, the request goes out, and the answer comes back. That
+//    answer reports a Reported context past pi's compaction threshold, so
+//    pi's own threshold compaction fires in the same run: the Fit is the
+//    last thing the operator sees before pi's normal recovery path runs.
+//
+//    The history before the anchored answer carries twice its token count in
+//    characters, which is what that 2-characters-per-token rate means for a
+//    real session: the payload the guard screens on and the count the
+//    provider made then describe the same content.
 // ---------------------------------------------------------------------------
 {
 	const window = 200_000;
@@ -476,10 +510,12 @@ function expectedFit(body, anchor, window, { inflation = 2, bytesPerChar = 4, ma
 	const denseChars = 60_000;
 	// History before the answer, so pi's cut-point search has something to
 	// summarize when the fitted turn's reported count pushes the session past
-	// the compaction threshold.
+	// the compaction threshold, and so the payload carries the content the
+	// Reported context counted.
 	const { mock, rpc } = await startSession(window, {
 		prebuild: true,
-		buildSession: (dir) => prebuildDenseSession(dir, { anchorTokens: anchor, denseChars, historyTurns: 6 }),
+		buildSession: (dir) => prebuildDenseSession(dir, { anchorTokens: anchor, denseChars, historyTurns: 6, historyChars: 50_000 }),
+		enforceWindow: { promptTokens: anchor, charsPerToken: 2, requests: 1 },
 	});
 
 	// The fitted answer reports the provider's real count: past pi's threshold
@@ -529,7 +565,11 @@ function expectedFit(body, anchor, window, { inflation = 2, bytesPerChar = 4, ma
 	const window = 200_000;
 	const anchor = 170_000;
 	const denseChars = 60_000;
-	const { mock, rpc } = await startSession(window, { compactionEnabled: false, prebuild: true, buildSession: (dir) => prebuildDenseSession(dir, { anchorTokens: anchor, denseChars }) });
+	const { mock, rpc } = await startSession(window, {
+		compactionEnabled: false,
+		prebuild: true,
+		buildSession: (dir) => prebuildDenseSession(dir, { anchorTokens: anchor, denseChars, historyTurns: 6, historyChars: 56_000 }),
+	});
 
 	await prompt(rpc, "Reply with exactly: OK");
 	if (mock.requests.length !== 0) fail(`an overrun with no answer room reached the provider: budgets ${mockBudgets(mock)}`);
@@ -564,7 +604,11 @@ function expectedFit(body, anchor, window, { inflation = 2, bytesPerChar = 4, ma
 	const anchor = 150_020;
 	const denseChars = 60_000;
 	const toolAnswerTokens = 20;
-	const { mock, rpc } = await startSession(window, { compactionEnabled: false, prebuild: true, buildSession: (dir) => prebuildDenseSession(dir, { anchorTokens: anchor, denseChars }) });
+	const { mock, rpc } = await startSession(window, {
+		compactionEnabled: false,
+		prebuild: true,
+		buildSession: (dir) => prebuildDenseSession(dir, { anchorTokens: anchor, denseChars, historyTurns: 6, historyChars: 50_000 }),
+	});
 
 	// The first answer asks for a real tool call and reports the same Reported
 	// context; the tool result it brings back is itself dense, so the second
@@ -595,6 +639,77 @@ function expectedFit(body, anchor, window, { inflation = 2, bytesPerChar = 4, ma
 	rpc.close();
 	await mock.close();
 	console.log(`8. the fit repeats: both requests went out fitted (${first.fit}, ${second.fit}), one notice per turn`);
+}
+
+// ---------------------------------------------------------------------------
+// 9. The same session shape with the guard off: the request goes out with
+//    the budget pi's own estimate allowed, the provider refuses it, and pi
+//    takes its destructive recovery path. This is the incident, reproduced
+//    against a server that enforces its window; scenario 6 is the same run
+//    with the guard loaded, where the request is answered instead.
+// ---------------------------------------------------------------------------
+{
+	const window = 200_000;
+	const anchor = 150_020;
+	const denseChars = 60_000;
+	const { mock, rpc } = await startSession(window, {
+		prebuild: true,
+		guard: false,
+		buildSession: (dir) => prebuildDenseSession(dir, { anchorTokens: anchor, denseChars, historyTurns: 6, historyChars: 50_000 }),
+		enforceWindow: { promptTokens: anchor, charsPerToken: 2, requests: 1 },
+	});
+
+	await prompt(rpc, "Reply with exactly: OK");
+	if (mock.requests.length < 1) fail("the unfitted request never reached the provider");
+	const refused = mock.requests.find((request) => request.refused);
+	if (!refused) fail(`the provider accepted an unfitted over-window request: budgets ${mockBudgets(mock)}`);
+	if (refused.refused.nCtx !== window) fail(`the refusal names ${refused.refused.nCtx}, expected the ${window} window`);
+	// The budget pi's own estimate chose is what the guard would have fitted.
+	if (refused.maxTokens <= 1) fail(`the unfitted request carried pi's floor: ${refused.maxTokens}`);
+	if (rpc.notifies.length !== 0) fail(`the guard spoke though it was not loaded: ${JSON.stringify(rpc.notifies)}`);
+	// pi's own answer to the refusal is compaction: the session loses content.
+	const entries = await rpc.request("get_entries");
+	if (!entries.success) fail(`get_entries: ${JSON.stringify(entries)}`);
+	if (!(entries.data?.entries ?? []).some((entry) => entry.type === "compaction")) {
+		fail(`expected pi to take its overflow recovery path after the provider's refusal; entries: ${(entries.data?.entries ?? []).map((e) => e.type).join(",")}`);
+	}
+	rpc.close();
+	await mock.close();
+	console.log(`9. the same request without the guard: the provider refused it (${refused.refused.promptTokens} counted + ${refused.maxTokens} asked > ${window}) and pi compacted`);
+}
+
+// ---------------------------------------------------------------------------
+// 10. A fresh session that is already large, with no answer to anchor on:
+//     the guard's own Inflation-corrected guess over the payload puts the
+//     request over the window, but the guess is not pi's arithmetic and not
+//     the provider's, so the guard never refuses on it. The request goes out
+//     as pi built it, and the server, which reads this content at pi's own
+//     chars/4 rate, answers it. ADR 0028 refuses on pi's arithmetic; this is
+//     the branch where the guard's arithmetic would have destroyed a turn
+//     that works.
+// ---------------------------------------------------------------------------
+{
+	const window = 200_000;
+	const { mock, rpc } = await startSession(window, { compactionEnabled: false, enforceWindow: { promptTokens: 0, charsPerToken: 4, requests: 1 } });
+
+	// 420,000 characters of prompt: the guard's guess reads it at 210,000
+	// tokens, over the window, while the server reads it at 105,000.
+	await prompt(rpc, "x".repeat(420_000));
+
+	if (mock.requests.length < 1) fail("the guard stopped a request it should have left alone: no request reached the provider");
+	const sent = mock.requests[0];
+	if (sent.refused) fail(`the provider refused the request the guard left alone: ${JSON.stringify(sent.refused)}`);
+	if (starvedNotifies(rpc).length !== 0) fail(`the guard refused on its own unanchored estimate: ${JSON.stringify(starvedNotifies(rpc))}`);
+	if (overrunNotifies(rpc).length !== 0) fail(`the guard fitted on its own unanchored estimate: ${JSON.stringify(overrunNotifies(rpc))}`);
+	// The server had room for the whole request: its own count plus the
+	// budget pi chose sits inside the window.
+	if (!(sent.counted + sent.maxTokens <= window)) fail(`the accepted request did not fit: ${sent.counted} + ${sent.maxTokens} > ${window}`);
+	if (sent.maxTokens <= 1) fail(`the request that went out carried pi's floor: ${sent.maxTokens}`);
+	const lastReason = stopReasons(rpc).at(-1);
+	if (lastReason !== "stop") fail(`the turn the guard left alone ended ${lastReason}, expected stop`);
+	rpc.close();
+	await mock.close();
+	console.log(`10. no anchor, no refusal: the guard stayed silent on its own guess, the provider answered (${sent.counted} counted + ${sent.maxTokens} asked)`);
 }
 
 console.log("output-starvation e2e: all scenarios passed");
