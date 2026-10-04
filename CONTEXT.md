@@ -552,6 +552,34 @@ _Avoid_: truncation (a cut that keeps an answer and loses its tail), length
 stop (the transcript record of a starved turn that went out), overflow
 (the window's state, not the budget's)
 
+**Output overrun**:
+The state of a request whose output budget cannot be paid for out of the room
+the Corrected estimate leaves in the Effective window, so the provider rejects
+the whole request instead of answering it. The name of what the guard Fits.
+_Avoid_: Output starvation (there the budget collapsed to pi's floor; here the
+budget is pi's full choice and the window is what will not pay for it),
+overflow (the window's state, not the budget's), 400 (the transport symptom,
+not the state)
+
+**Reported context**:
+The prompt size the provider itself counted for the last answer it gave, read
+from that answer's usage block. The anchor every honest context estimate
+starts from.
+_Avoid_: usage tokens, last usage (pi's field name for one response, not the
+session's anchor), prompt tokens (a wire field of one response)
+
+**Corrected estimate**:
+The Reported context plus an Inflation-corrected estimate of everything the
+provider has not counted yet. The figure pi's arithmetic is missing.
+_Avoid_: pi's estimate (that is the chars/4 figure), true count (it is still
+an estimate, anchored on one real count)
+
+**Fit**:
+A request's output budget lowered to the room the Corrected estimate leaves in
+the Effective window. One direction only: a Fit never raises a budget.
+_Avoid_: clamp (that names pi's arithmetic, which produced the bad budget),
+truncation, cap
+
 **Spill**:
 The lossless file copy of a result this extension cut, held under the agent
 directory beside the sessions. The cut text goes to the model; the whole
