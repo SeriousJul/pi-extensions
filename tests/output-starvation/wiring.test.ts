@@ -448,6 +448,70 @@ describe("output overrun: the guard fits the budget", () => {
 		expect(captured.notifications[0]!.message).toContain(`context estimate ${estimate}`);
 	});
 
+	it("lowers a thinking budget that shared the ceiling it just lowered", () => {
+		// pi writes thinking_token_budget beside the ceiling and clamps the
+		// pair together. A Fit that lowered only the ceiling would send a
+		// reasoning budget above the ceiling it just wrote, which vLLM and
+		// SGLang reject and which answers with nothing elsewhere.
+		const handlers = loadExtension();
+		const captured: Captured = { notifications: [], aborts: 0 };
+		const ctx = makeContext(sm, captured);
+		handlers.sessionStart!({ type: "session_start", reason: "startup" }, ctx);
+		handlers.turnStart!({ type: "turn_start" }, ctx);
+		const payload = { ...(payloadWith(DENSE, 32_768) as Record<string, unknown>), thinking_token_budget: 16_000 };
+		const sent = handlers.beforeProviderRequest!({ type: "before_provider_request", payload }, ctx) as Record<string, unknown>;
+
+		expect(sent.max_tokens).toBe(DENSE_FIT);
+		expect(sent.thinking_token_budget).toBe(DENSE_FIT - 1024);
+		expect(captured.aborts).toBe(0);
+	});
+
+	it("never aborts a request it can only judge on its own unanchored guess", () => {
+		// A fresh session that is already larger than the window: no answer
+		// carries a Reported context, so the estimate is the guard's guess,
+		// and the guess says nothing fits. ADR 0028 refuses on pi's
+		// arithmetic, so the request goes out as pi built it and the provider
+		// is the one that reads it.
+		rmSync(cwd, { recursive: true, force: true });
+		cwd = mkdtempSync(join(tmpdir(), "output-starvation-wiring-"));
+		projectDir = cwd;
+		const builder = SessionManager.create(cwd, join(cwd, "sessions"));
+		builder.appendMessage(user("q1"));
+		sm = SessionManager.open(builder.getSessionFile()!, join(cwd, "sessions"), cwd);
+
+		const handlers = loadExtension();
+		const captured: Captured = { notifications: [], aborts: 0 };
+		const ctx = makeContext(sm, captured);
+		handlers.sessionStart!({ type: "session_start", reason: "startup" }, ctx);
+		handlers.turnStart!({ type: "turn_start" }, ctx);
+		const payload = payloadWith(80_000, 32_768);
+		const sent = handlers.beforeProviderRequest!({ type: "before_provider_request", payload }, ctx);
+
+		expect(sent).toBeUndefined();
+		expect(captured.notifications).toEqual([]);
+		expect(captured.aborts).toBe(0);
+	});
+
+	it("does not rebuild pi's session projection for a request the payload alone clears", () => {
+		// pi builds one projection per request itself. The guard reads a
+		// second one only when the payload does not prove the request has
+		// room, so a healthy turn does not pay for the extra build.
+		let builds = 0;
+		const counting = { buildSessionProjection: () => { builds += 1; return sm.buildSessionProjection(); } } as unknown as SessionManager;
+		const handlers = loadExtension();
+		const captured: Captured = { notifications: [], aborts: 0 };
+		const ctx = makeContext(counting, captured);
+		handlers.sessionStart!({ type: "session_start", reason: "startup" }, ctx);
+		handlers.turnStart!({ type: "turn_start" }, ctx);
+		handlers.beforeProviderRequest!({ type: "before_provider_request", payload: payloadWith(1000, 20_000) }, ctx);
+		expect(builds).toBe(0);
+
+		// The same session on a request the payload cannot clear does read it,
+		// and reads it once.
+		handlers.beforeProviderRequest!({ type: "before_provider_request", payload: payloadWith(DENSE, 32_768) }, ctx);
+		expect(builds).toBe(1);
+	});
+
 	it("reads the settings it owns: inflation, margin, and the answer floor", () => {
 		writeAgentSettings({ outputStarvation: { inflation: 1, safetyMargin: 1024, minAnswerTokens: 20_000 } });
 		const handlers = loadExtension();

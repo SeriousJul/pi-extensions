@@ -22,8 +22,10 @@
  * it: it returns the payload with its budget lowered to the room the
  * estimate leaves, and the request goes out and gets answered instead of
  * being rejected by the provider. A Fit never raises a budget (ADR 0028),
- * and when the room left cannot hold any real answer the guard refuses
- * instead, so the operator is never charged for a one-token non-answer.
+ * it lowers any thinking budget that shared the old ceiling by the same
+ * room rule pi's own clamp uses, and when the room left cannot hold any
+ * real answer the guard refuses instead - unless the estimate it judged on
+ * was its own unanchored guess, which is never grounds to abort a turn.
  *
  * Budget of the guard itself (user stories 8, 9): at most one refusal per
  * turn, and at most one fit notice per turn. A Fit is not a refusal, so it
@@ -31,7 +33,8 @@
  * budget that just failed - while the notice stays at one line. Both flags
  * reset on every turn_start and on session_start, and nothing survives a
  * model selection. The guard reads a payload that already exists and adds
- * no per-turn network call.
+ * no per-turn network call; it reads the session projection only for the
+ * requests the payload alone does not clear.
  *
  * The guard never takes over window ownership from Llama refresh: it reads
  * the Effective window for its lines and changes nothing about it. It
@@ -42,31 +45,38 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { Message } from "@earendil-works/pi-ai";
 import { modelKey, readReserveTokens } from "../shared/settings.ts";
 import {
+	contextAnchor,
 	decide,
 	estimateProjectionTokens,
 	fitLine,
-	reportedContextTokens,
 	reserveDisagreementLine,
 	starvationLine,
 	PI_OUTPUT_FLOOR,
 	type GuardSettings,
+	type SessionFacts,
 } from "./guard.ts";
 import { envDisabled, readOutputStarvationSettings, type OutputStarvationSettings } from "./settings.ts";
 
-/** What the session projection says about the request about to go out: the
- * Reported context the provider counted for its last answer, and pi's own
- * estimate, which the guard degrades to when the payload carries nothing
- * it can read. A dead projection yields neither: the trigger is the
- * payload, never the estimate. */
-function readProjection(ctx: ExtensionContext): { reportedContext: number | null; projectionEstimate: number } {
+/** What the session says about the request about to go out: the Reported
+ * context the provider counted for its last answer, and pi's own estimate,
+ * which the guard degrades to when the payload carries nothing it can read.
+ * A dead session yields neither: the trigger is the payload, never the
+ * estimate.
+ *
+ * This is the one place pi's session projection is rebuilt, and the guard
+ * asks for it only when the payload alone does not prove the request has
+ * room, or when it is about to refuse and its line names pi's figure. pi
+ * builds a projection per request itself; a second build per request on a
+ * long session is a cost the guard does not pay for a healthy turn. */
+function readSession(ctx: ExtensionContext): SessionFacts {
 	try {
 		// The projection is pi-agent-core's AgentMessage[]; the mirror reads
 		// the same array at runtime (it is what pi's clamp reads), so one
 		// type bridge stands at the package boundary.
 		const messages = ctx.sessionManager.buildSessionProjection().messages as unknown as readonly Message[];
-		return { reportedContext: reportedContextTokens(messages), projectionEstimate: estimateProjectionTokens(messages) };
+		return { anchor: contextAnchor(messages), projectionEstimate: estimateProjectionTokens(messages) };
 	} catch {
-		return { reportedContext: null, projectionEstimate: 0 };
+		return { anchor: null, projectionEstimate: 0 };
 	}
 }
 
@@ -146,12 +156,13 @@ export default function (pi: ExtensionAPI): void {
 			safetyMargin: current.safetyMargin,
 			minAnswerTokens: current.minAnswerTokens,
 		};
-		const projection = readProjection(ctx);
+		// The session is read on demand, and at most once per request: the
+		// decision asks for it only for the paths that need pi's figures.
+		let session: SessionFacts | undefined;
 		const decision = decide({
 			payload: event.payload,
 			window: ctx.model?.contextWindow ?? 0,
-			reportedContext: projection.reportedContext,
-			projectionEstimate: projection.projectionEstimate,
+			session: () => (session ??= readSession(ctx)),
 			settings: guardSettings,
 		});
 		const facts = {
