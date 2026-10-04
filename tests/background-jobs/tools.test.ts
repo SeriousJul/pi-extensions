@@ -19,6 +19,7 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import registerBackgroundJobs, { registerTools } from "../../extensions/background-jobs/index";
 import { paintBashBgCallLine } from "../../extensions/background-jobs/render";
+import { MAX_LISTED_JOBS, formatLiveJobs } from "../../extensions/background-jobs/core.ts";
 
 type ToolDef = Parameters<ExtensionAPI["registerTool"]>[0];
 
@@ -299,5 +300,90 @@ describe("bash_bg tool row (issue #101)", () => {
 		const context = { lastComponent: undefined } as unknown as Parameters<NonNullable<ToolDef["renderCall"]>>[2];
 		const component = def!.renderCall!({ command: "npm test" }, theme, context);
 		expect(component.render(200).map((line) => line.trim())).toEqual(["$ npm test"]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// The bound on the job listing
+// ---------------------------------------------------------------------------
+
+/** Write a job directory the way the wrapper leaves one: a manifest, and no
+ * exit code file when the job is to read as running. */
+function writeJobDir(jobsRoot: string, jobId: string, { startedAt, label, running }: { startedAt: string; label: string; running: boolean }): void {
+	const dir = join(jobsRoot, jobId);
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(
+		join(dir, "manifest.json"),
+		JSON.stringify({ jobId, command: `echo ${label}`, cwd: jobsRoot, label, pid: running ? process.pid : 0, startedAt, logPath: join(dir, "job.log") }),
+	);
+	if (!running) writeFileSync(join(dir, "exitcode"), "0");
+}
+
+/** `count` job directories, the newest first in time: job-0 is the oldest. */
+function writeJobDirs(jobsRoot: string, count: number, { running = false }: { running?: boolean } = {}): string[] {
+	const base = Date.parse("2026-01-01T00:00:00.000Z");
+	const ids: string[] = [];
+	for (let i = 0; i < count; i++) {
+		const id = `job-${String(i).padStart(3, "0")}`;
+		writeJobDir(jobsRoot, id, { startedAt: new Date(base + i * 1000).toISOString(), label: `job ${i}`, running });
+		ids.push(id);
+	}
+	return ids;
+}
+
+describe("the job listing is bounded", () => {
+	it("names the bound as a constant, not a setting", () => {
+		// A listing bound protects the message, not a taste, so it is not
+		// operator-configurable. Pinning it says so.
+		expect(MAX_LISTED_JOBS).toBe(20);
+	});
+
+	it("lists the newest jobs and says how many it left out", async () => {
+		const h = makeHarness();
+		const ids = writeJobDirs(join(h.sessionsRoot, "jobs"), MAX_LISTED_JOBS + 5);
+		const list = await h.call("job_status", {});
+		const lines = list.split("\n");
+
+		// The total stays the truth about the root; only the listing is bounded.
+		expect(lines[0]).toBe(`${MAX_LISTED_JOBS + 5} job(s):`);
+		expect(lines.length).toBe(2 + MAX_LISTED_JOBS);
+		expect(lines[lines.length - 1]).toBe(`5 older job(s) not listed: the newest ${MAX_LISTED_JOBS} are shown; the full list is in ${join(h.sessionsRoot, "jobs")}`);
+		// Newest first, and the ones left out are the oldest.
+		expect(lines[1]).toContain(ids[ids.length - 1]);
+		expect(lines[MAX_LISTED_JOBS]).toContain(ids[ids.length - MAX_LISTED_JOBS]);
+		expect(list).not.toContain("job 000");
+	});
+
+	it("says nothing about omissions when the bound covers every job", async () => {
+		const h = makeHarness();
+		writeJobDirs(join(h.sessionsRoot, "jobs"), MAX_LISTED_JOBS);
+		const list = await h.call("job_status", {});
+		expect(list).not.toContain("not listed");
+		expect(list.split("\n").length).toBe(1 + MAX_LISTED_JOBS);
+	});
+
+	it("bounds the live-job listing with the same wording", () => {
+		// The live listing is what an unknown job id answers with. A root full
+		// of running jobs must not bury the one the caller might mean.
+		const h = makeHarness();
+		writeJobDirs(join(h.sessionsRoot, "jobs"), MAX_LISTED_JOBS + 3, { running: true });
+		const live = formatLiveJobs(join(h.sessionsRoot, "jobs"));
+		const lines = live.split("\n");
+		expect(lines.length).toBe(1 + MAX_LISTED_JOBS);
+		expect(lines[lines.length - 1]).toBe(`3 older job(s) not listed: the newest ${MAX_LISTED_JOBS} are shown; the full list is in ${join(h.sessionsRoot, "jobs")}`);
+	});
+
+	it("an unknown job id answers with the bounded live listing", async () => {
+		const h = makeHarness();
+		writeJobDirs(join(h.sessionsRoot, "jobs"), MAX_LISTED_JOBS + 3, { running: true });
+		let message = "";
+		try {
+			await h.call("job_status", { jobId: "job-nope" });
+		} catch (error) {
+			message = (error as Error).message;
+		}
+		expect(message).toContain("job-nope");
+		expect(message).toContain(`not listed: the newest ${MAX_LISTED_JOBS} are shown; the full list is in ${join(h.sessionsRoot, "jobs")}`);
+		expect(message).not.toContain("job 000");
 	});
 });

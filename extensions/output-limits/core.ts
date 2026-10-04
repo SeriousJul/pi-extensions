@@ -35,6 +35,18 @@
  * it cuts bash and read by line and cuts grep, find, and ls by bytes alone
  * (`lineCeilingOf`).
  */
+import {
+	PI_IMAGE_CHARGE_BYTES,
+	type TokenMath,
+	bytesFromTokens,
+	tokensFromBytes,
+} from "../shared/token-math.ts";
+
+// The character-to-token math has one owner (`shared/token-math.ts`), so the
+// Inflation-corrected figure this extension bounds with is the same figure
+// the output-starvation guard estimates with. It is re-exported here because
+// this module is where the repo's callers already reach for it.
+export { bytesFromTokens, tokensFromBytes, type TokenMath };
 
 /** pi's own per-call byte figure, `core/tools/truncate.ts` DEFAULT_MAX_BYTES. */
 export const PI_MAX_OUTPUT_BYTES = 50 * 1024;
@@ -112,14 +124,12 @@ export function noLineCeiling(maxLines: number): boolean {
 }
 
 /**
- * The charge for one image block. pi counts an image as 4800 characters in
- * its own estimate (`ESTIMATED_IMAGE_CHARS` in
- * `core/compaction/compaction.ts`); the extension charges the same figure in
- * bytes so it keeps pi's scale and picks up the Inflation correction. Images
- * are charged and never cut, because pi normalizes image blocks after the
- * hook runs, so there is nothing here to cut them into.
+ * The charge for one image block: pi's own flat image figure, held by
+ * `shared/token-math.ts`. Images are charged and never cut, because pi
+ * normalizes image blocks after the hook runs, so there is nothing here to
+ * cut them into.
  */
-export const IMAGE_CHARGE_BYTES = 4800;
+export const IMAGE_CHARGE_BYTES = PI_IMAGE_CHARGE_BYTES;
 
 /** The default outer max: pi's own per-call figure, plus pi's own notice. */
 export const DEFAULT_MAX_OUTPUT_TOKENS = tokensFromBytes(PI_MAX_OUTPUT_BYTES + PI_NOTICE_SLACK_BYTES, { bytesPerChar: 4, inflation: 2 });
@@ -160,24 +170,6 @@ export type Cutter = (content: string, options: { maxLines?: number; maxBytes?: 
 export interface Cutters {
 	head: Cutter;
 	tail: Cutter;
-}
-
-/** The two knobs of the byte-to-token estimate. */
-export interface TokenMath {
-	bytesPerChar: number;
-	inflation: number;
-}
-
-/** Bytes to tokens: pi's chars/4 estimate times the Inflation factor. */
-export function tokensFromBytes(bytes: number, math: TokenMath): number {
-	if (bytes <= 0) return 0;
-	return Math.ceil((bytes * math.inflation) / math.bytesPerChar);
-}
-
-/** Tokens to bytes: the inverse of `tokensFromBytes`, rounded down. */
-export function bytesFromTokens(tokens: number, math: TokenMath): number {
-	if (tokens <= 0) return 0;
-	return Math.floor((tokens * math.bytesPerChar) / math.inflation);
 }
 
 // ---------------------------------------------------------------------------
