@@ -25,7 +25,7 @@ import {
 	DEFAULT_WAIT_TIMEOUT_S,
 	UnknownJobError,
 	formatJob,
-	formatJobLine,
+	formatJobListing,
 	formatLiveJobs,
 	getJob,
 	listJobs,
@@ -143,7 +143,9 @@ export function registerTools(pi: ExtensionAPI): void {
 			}
 			const jobs = listJobs(jobsRoot);
 			if (jobs.length === 0) return textResult("no jobs");
-			return textResult(`${jobs.length} job(s):\n${jobs.map(formatJobLine).join("\n")}`);
+			// The total is the truth about how many jobs exist; the listing
+			// itself is bounded to the newest ones (MAX_LISTED_JOBS).
+			return textResult(`${jobs.length} job(s):\n${formatJobListing(jobs, jobsRoot)}`);
 		},
 	});
 }
