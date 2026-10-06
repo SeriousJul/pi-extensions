@@ -85,6 +85,7 @@ console.log("migrate void to 2 on a multi-context fixture");
 	writeFile(dir, "src/ordering/CONTEXT.md", "# Ordering\n\nOrdering emits events. See CONTEXT-FORMAT.md.\n");
 	writeFile(dir, "src/billing/CONTEXT.md", "# Billing\n");
 	writeFile(dir, "README.md", "The glossary is CONTEXT.md.\n");
+	writeFile(dir, "CONTEXT-FORMAT.md", "Format rules. See CONTEXT-MAP.md.\n");
 	const identity = expectedIdentity();
 	try {
 		const migrated = run(["migrate"], dir);
@@ -95,6 +96,9 @@ console.log("migrate void to 2 on a multi-context fixture");
 		check(existsSync(join(dir, "src/billing/GLOSSARY.md")), "second per-context glossary renamed");
 		check(readFileSync(join(dir, "README.md"), "utf8") === "The glossary is GLOSSARY.md.\n", "reference rewritten");
 		check(readFileSync(join(dir, "GLOSSARY-MAP.md"), "utf8").includes("./src/ordering/GLOSSARY.md"), "map references rewritten");
+		check(existsSync(join(dir, "GLOSSARY-FORMAT.md")), "CONTEXT-FORMAT.md renamed");
+		check(!existsSync(join(dir, "CONTEXT-FORMAT.md")), "old format file gone");
+		check(readFileSync(join(dir, "GLOSSARY-FORMAT.md"), "utf8") === "Format rules. See GLOSSARY-MAP.md.\n", "format file references rewritten");
 		const changelog = JSON.parse(readFileSync(join(dir, CHANGELOG), "utf8"));
 		check(changelog.migrations.length === 2, "two records");
 		check(changelog.migrations[0].version === 1 && changelog.migrations[0].migration === "create-changelog", "record 1 is create-changelog");
@@ -184,7 +188,34 @@ console.log("identity override");
 }
 
 // ---------------------------------------------------------------------------
-// 7. self-migration on a clone of the checkout: the tool's own source and
+// 7. a repo ahead of the registry is up to date at its actual version
+// ---------------------------------------------------------------------------
+console.log("repo ahead of the registry is up to date");
+{
+	const dir = fixture("ahead");
+	writeFile(dir, CHANGELOG, JSON.stringify({ migrations: [
+		{ version: 1, migration: "create-changelog", identity: "x", dateTime: "2026-01-01T00:00:00.000Z" },
+		{ version: 2, migration: "glossary-rename", identity: "x", dateTime: "2026-01-01T00:00:00.000Z" },
+		{ version: 3, migration: "future-step", identity: "x", dateTime: "2026-01-01T00:00:00.000Z" },
+	]}, null, 2) + "\n");
+	const before = readFileSync(join(dir, CHANGELOG), "utf8");
+	try {
+		const status = run(["status"], dir);
+		check(status.code === 0, "status exit 0");
+		check(status.out.includes("Current version: 3"), "status reports the repo's actual version 3");
+		check(status.out.includes("Up to date"), "status reports up to date");
+		check(status.out.includes("exceeds the latest known version"), "status names the ahead state");
+		const migrated = run(["migrate"], dir);
+		check(migrated.code === 0 && migrated.out.includes("Up to date"), "migrate is a no-op");
+		check(migrated.out.includes("Current version: 3"), "migrate keeps version 3, not the registry maximum");
+		check(readFileSync(join(dir, CHANGELOG), "utf8") === before, "changelog untouched");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 8. self-migration on a clone of the checkout: the tool's own source and
 //    test trees carry the old names as migration data and must survive
 // ---------------------------------------------------------------------------
 console.log("self-migration on a clone of the checkout");

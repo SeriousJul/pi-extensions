@@ -1,8 +1,9 @@
 # skill-migrate runs sequential migrations with a committed changelog
 
-The upstream skills renamed the domain docs layout (`GLOSSARY.md` to
-`GLOSSARY.md`, `GLOSSARY-MAP.md` to `GLOSSARY-MAP.md`), so every underlying repo
-that still ships the old layout disagrees with what the skills expect. Editing
+The upstream skills renamed the domain docs layout (`CONTEXT.md` to
+`GLOSSARY.md`, `CONTEXT-MAP.md` to `GLOSSARY-MAP.md`, `CONTEXT-FORMAT.md` to
+`GLOSSARY-FORMAT.md`), so every underlying repo that still ships the
+old layout disagrees with what the skills expect. Editing
 the repos by hand would leave no trace of which structure version each carries,
 and the next structural change would start the same chore over. We decided: a
 deterministic extension, skill-migrate, owns the migrations. Each Target repo
@@ -28,6 +29,11 @@ UTC date time for every step.
   to start unless the tree is in the state it expects.
 - **A top-level current version in the changelog file.** Rejected because it
   duplicates the last record, and two copies of one version drift.
+- **Rewrite references to the format file without renaming the file.**
+  Rejected because the reference rewrite would then point at a file that no
+  longer exists: the upstream rename covers `CONTEXT-FORMAT.md`, so the root
+  format file is renamed like the glossary and the map, and the old and new
+  names present together is ambiguous state like any other root pair.
 
 ## Consequences
 
@@ -42,3 +48,14 @@ UTC date time for every step.
   way.
 - Migrations are defined once in the extension and applied to many repos. A new
   structural expectation is one new numbered step; the runner never changes.
+- The extension identity is anchored to the checkout's own git toplevel:
+  the commit SHA is recorded only when the checkout is the toplevel. A package
+  installed inside a consumer git repo records its package version, not the
+  consumer's SHA.
+- A repo whose changelog is ahead of the registry is up to date: it has no
+  pending migration. `status` and `migrate` report its actual version and
+  change nothing.
+- Files that document the rename itself (this ADR, the glossary terms) carry
+  the old names as historical data. The rewrite cannot tell a reference from
+  history; where a rewrite touched such a file, the historical wording was
+  repaired by hand.

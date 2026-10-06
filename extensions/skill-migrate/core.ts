@@ -17,7 +17,7 @@
  * operator at git restore plus a re-run. Precondition checks make the
  * re-run safe.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 export const CHANGELOG_RELATIVE_PATH = ".pi/skill-migrate_changelog.json";
@@ -72,6 +72,7 @@ export interface RepoStatus {
   currentVersion: number | "void";
   records: MigrationRecord[];
   latestVersion: number;
+  /** True when no migration is pending, including when the repo is ahead of the registry. */
   upToDate: boolean;
 }
 
@@ -88,6 +89,7 @@ export interface MigrateResult {
   repoRoot: string;
   /** The version before the run (0 means void). */
   fromVersion: number;
+  /** The repo's version after the run; its actual version when the repo was ahead of the registry. */
   currentVersion: number;
   /** The records appended by this run, in order. */
   applied: MigrationRecord[];
@@ -182,7 +184,7 @@ export function appendRecord(repoRoot: string, record: MigrationRecord): void {
     renameSync(tempPath, path);
   } catch (error) {
     try {
-      if (existsSync(tempPath)) writeFileSync(tempPath, "");
+      if (existsSync(tempPath)) unlinkSync(tempPath);
     } catch {
       /* best effort cleanup */
     }
@@ -199,12 +201,16 @@ export function status(repoRoot: string, registry: readonly Migration[]): RepoSt
   const records = readChangelog(resolvedRoot)?.migrations ?? [];
   const current: number | "void" = records.length === 0 ? "void" : records[records.length - 1].version;
   const latest = latestVersion(registry);
+  // A repo whose changelog is ahead of the registry (it carries records for
+  // migrations this build of the registry does not know) has nothing pending
+  // and is reported as up to date at its actual version.
+  const upToDate = current === "void" ? false : current >= latest;
   return {
     repoRoot: resolvedRoot,
     currentVersion: current,
     records,
     latestVersion: latest,
-    upToDate: current === latest,
+    upToDate,
   };
 }
 
@@ -259,5 +265,7 @@ export function migrateToLatest(repoRoot: string, registry: readonly Migration[]
     appendRecord(resolvedRoot, record);
     applied.push(record);
   }
-  return { repoRoot: resolvedRoot, fromVersion: from, currentVersion: latestVersion(sorted), applied };
+  // When the repo is ahead of the registry nothing is applied and the
+  // repo keeps its actual version, not the registry maximum.
+  return { repoRoot: resolvedRoot, fromVersion: from, currentVersion: Math.max(from, latestVersion(sorted)), applied };
 }

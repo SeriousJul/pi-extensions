@@ -16,7 +16,7 @@
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { MigrationError, migrateToLatest, status } from "./core.ts";
+import { MigrationError, latestVersion, migrateToLatest, status } from "./core.ts";
 import { MIGRATIONS } from "./migrations.ts";
 import { resolveIdentity } from "./identity.ts";
 
@@ -27,7 +27,11 @@ const checkoutRoot = resolve(join(extensionDir, "..", ".."));
 
 function renderMigrate(result: { applied: { version: number; migration: string }[]; currentVersion: number; fromVersion: number }): string {
   if (result.applied.length === 0) {
-    return `Up to date: the project repo is at structure version ${String(result.currentVersion)}. Nothing to do.`;
+    const note =
+      result.currentVersion > latestVersion(MIGRATIONS)
+        ? ` The repo's version exceeds the latest known version; the registry knows no migration beyond it.`
+        : "";
+    return `Up to date: the project repo is at structure version ${String(result.currentVersion)}. Nothing to do.${note}`;
   }
   const steps = result.applied.map((r) => `${String(r.version)} ${r.migration}`).join(", ");
   return `Migrated the project repo ${result.fromVersion === 0 ? "from void" : `from version ${String(result.fromVersion)}`} to version ${String(result.currentVersion)}: ${steps}. Commit the changelog and every changed file so the new structure version travels with the repo.`;

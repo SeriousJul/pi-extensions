@@ -12,7 +12,7 @@
  */
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { MigrationError, migrateToLatest, status, type MigrateResult, type RepoStatus } from "./core.ts";
+import { MigrationError, latestVersion, migrateToLatest, status, type MigrateResult, type RepoStatus } from "./core.ts";
 import { MIGRATIONS } from "./migrations.ts";
 import { resolveIdentity } from "./identity.ts";
 
@@ -35,12 +35,19 @@ usage:
 repo-path defaults to the current directory.
 --identity <id> overrides the recorded extension identity (tests only).`;
 
+function aheadNote(current: number, latest: number): string {
+  return `Note: the repo's version ${current} exceeds the latest known version ${latest}; the registry knows no migration beyond it.`;
+}
+
 function renderStatus(result: RepoStatus): string {
   const lines: string[] = [];
   lines.push(`Target repo: ${result.repoRoot}`);
   lines.push(`Current version: ${result.currentVersion === "void" ? "void" : String(result.currentVersion)}`);
   lines.push(`Latest known version: ${result.latestVersion}`);
   lines.push(result.upToDate ? "Up to date." : "Not up to date.");
+  if (typeof result.currentVersion === "number" && result.currentVersion > result.latestVersion) {
+    lines.push(aheadNote(result.currentVersion, result.latestVersion));
+  }
   if (result.records.length > 0) {
     lines.push("Records:");
     for (const record of result.records) {
@@ -52,7 +59,11 @@ function renderStatus(result: RepoStatus): string {
 
 function renderMigrate(result: MigrateResult): string {
   if (result.applied.length === 0) {
-    return `Target repo: ${result.repoRoot}\nCurrent version: ${String(result.currentVersion)}\nUp to date; nothing to do.`;
+    const lines = [`Target repo: ${result.repoRoot}`, `Current version: ${String(result.currentVersion)}`, "Up to date; nothing to do."];
+    if (result.currentVersion > latestVersion(MIGRATIONS)) {
+      lines.push(aheadNote(result.currentVersion, latestVersion(MIGRATIONS)));
+    }
+    return lines.join("\n");
   }
   const lines: string[] = [];
   lines.push(`Target repo: ${result.repoRoot}`);

@@ -21,9 +21,9 @@ with `npm run skill-migrate -- <verb> [repo]`.
 
 `.pi/skill-migrate_changelog.json`: one object holding an append-only
 `migrations` array. Each record carries the target version, the migration
-name, the extension identity (the pi-extensions git commit SHA, or the
-package version when the checkout is not git), and the UTC date time
-(ISO-8601). The current version is the last record's version, or void when
+name, the extension identity (the pi-extensions git commit SHA when the
+checkout is its own git toplevel, or the package version otherwise), and the
+UTC date time (ISO-8601). The current version is the last record's version, or void when
 the file is absent. The file is written atomically and only ever appended.
 
 ## Migrations
@@ -31,7 +31,7 @@ the file is absent. The file is written atomically and only ever appended.
 | Version | Name | What it does |
 | --- | --- | --- |
 | 1 | `create-changelog` | Creates the changelog carrying only its own record. |
-| 2 | `glossary-rename` | Renames the root `CONTEXT.md` to `GLOSSARY.md` and the root `CONTEXT-MAP.md` to `GLOSSARY-MAP.md` when present, plus each per-context `CONTEXT.md` the map references by the local path exactly as written in the map. Then rewrites every exact reference to the three old file names across the repo's text files, skipping `.git`, dependency and build directories, binary files, and lock files. Renames are conditional on presence, so a repo without the old files still migrates its references. |
+| 2 | `glossary-rename` | Renames the root `CONTEXT.md` to `GLOSSARY.md`, the root `CONTEXT-MAP.md` to `GLOSSARY-MAP.md`, and the root `CONTEXT-FORMAT.md` to `GLOSSARY-FORMAT.md` when present, plus each per-context `CONTEXT.md` the map references by the local path exactly as written in the map. Then rewrites every exact reference to the three old file names across the repo's text files, skipping `.git`, dependency and build directories, binary files, and lock files. Renames are conditional on presence, so a repo without the old files still migrates its references. |
 
 ## Adding a migration
 

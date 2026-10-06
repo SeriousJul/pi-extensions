@@ -243,6 +243,7 @@ describe("migrateToLatest", () => {
     file("docs/keep.md", "MY-CONTEXT.md is an unrelated file name.\n");
     file("package-lock.json", "{ \"note\": \"CONTEXT.md\" }\n");
     file("node_modules/pkg/readme.md", "CONTEXT.md\n");
+    file(".skill-cache/upstream/notes.md", "CONTEXT.md\n");
     file("dist/app.js", "var x = 'CONTEXT.md';\n");
     file("docs/binary.md", "CONTEXT.md");
     // append a null byte so the file is binary
@@ -256,13 +257,14 @@ describe("migrateToLatest", () => {
     expect(readFileSync(join(root, "docs/keep.md"), "utf8")).toContain("MY-CONTEXT.md");
     expect(readFileSync(join(root, "package-lock.json"), "utf8")).toBe("{ \"note\": \"CONTEXT.md\" }\n");
     expect(readFileSync(join(root, "node_modules/pkg/readme.md"), "utf8")).toBe("CONTEXT.md\n");
+    expect(readFileSync(join(root, ".skill-cache/upstream/notes.md"), "utf8")).toBe("CONTEXT.md\n");
     expect(readFileSync(join(root, "dist/app.js"), "utf8")).toBe("var x = 'CONTEXT.md';\n");
     const binary = readFileSync(join(root, "docs/binary.md"));
     expect(binary.subarray(0, 10).toString("utf8")).toBe("CONTEXT.md");
     expect(readFileSync(join(excludedDir, "self.md"), "utf8")).toBe("CONTEXT.md\n");
   });
 
-  it("rewrites CONTEXT-FORMAT.md and CONTEXT-MAP.md tokens; only the map file itself is renamed", () => {
+  it("renames the root CONTEXT-FORMAT.md like the glossary and the map", () => {
     file("CONTEXT.md", "# Glossary\n");
     file("CONTEXT-MAP.md", "# Map\n\n- [Ordering](./src/ordering/CONTEXT.md): orders\n");
     file("src/ordering/CONTEXT.md", "# Ordering\n");
@@ -271,13 +273,71 @@ describe("migrateToLatest", () => {
 
     migrate();
 
-    // the root map is renamed; no other file is renamed, however it is named
+    // all three root domain-docs files are renamed; no other file is renamed, however it is named
     expect(existsSync(join(root, "GLOSSARY-MAP.md"))).toBe(true);
-    expect(existsSync(join(root, "CONTEXT-FORMAT.md"))).toBe(true);
-    expect(existsSync(join(root, "GLOSSARY-FORMAT.md"))).toBe(false);
-    // but every reference to the three old names is rewritten
-    expect(readFileSync(join(root, "CONTEXT-FORMAT.md"), "utf8")).toBe("Format rules. See GLOSSARY-MAP.md and GLOSSARY.md.\n");
+    expect(existsSync(join(root, "GLOSSARY-FORMAT.md"))).toBe(true);
+    expect(existsSync(join(root, "CONTEXT-FORMAT.md"))).toBe(false);
+    // and every reference to the three old names is rewritten
+    expect(readFileSync(join(root, "GLOSSARY-FORMAT.md"), "utf8")).toBe("Format rules. See GLOSSARY-MAP.md and GLOSSARY.md.\n");
     expect(readFileSync(join(root, "docs/agents.md"), "utf8")).toBe("Follow GLOSSARY-FORMAT.md.\n");
+  });
+
+  it("aborts on ambiguous root format file (both CONTEXT-FORMAT.md and GLOSSARY-FORMAT.md present)", () => {
+    file("CONTEXT-FORMAT.md", "old\n");
+    file("GLOSSARY-FORMAT.md", "new\n");
+    const changelog: Changelog = {
+      migrations: [{ version: 1, migration: "create-changelog", identity: IDENTITY, dateTime: FIXED_DATE_TIME }],
+    };
+    file(CHANGELOG_RELATIVE_PATH, JSON.stringify(changelog, null, 2) + "\n");
+
+    expect(() => migrate()).toThrowError(/ambiguous state: both .*CONTEXT-FORMAT\.md and .*GLOSSARY-FORMAT\.md/);
+    expect(readChangelogFile()!.migrations).toHaveLength(1);
+  });
+
+  it("reads per-context paths from reference definitions, titled links, and angle targets", () => {
+    file(
+      "CONTEXT-MAP.md",
+      ["# Map", "", "- [Ordering](./src/ordering/CONTEXT.md \"local glossary\"): orders", "- [Billing](<./src/billing/CONTEXT.md>): invoices", "", "[Ref]: ./src/ref/CONTEXT.md", "[Ref] label for the reference definition", ""].join("\n"),
+    );
+    file("src/ordering/CONTEXT.md", "# Ordering\n");
+    file("src/billing/CONTEXT.md", "# Billing\n");
+    file("src/ref/CONTEXT.md", "# Ref\n");
+
+    const result = migrate();
+
+    expect(result.applied.map((r) => r.version)).toEqual([1, 2]);
+    expect(existsSync(join(root, "src/ordering/GLOSSARY.md"))).toBe(true);
+    expect(existsSync(join(root, "src/billing/GLOSSARY.md"))).toBe(true);
+    expect(existsSync(join(root, "src/ref/GLOSSARY.md"))).toBe(true);
+    const map = readFileSync(join(root, "GLOSSARY-MAP.md"), "utf8");
+    expect(map).toContain("./src/ordering/GLOSSARY.md");
+    expect(map).toContain("./src/billing/GLOSSARY.md");
+    expect(map).toContain("./src/ref/GLOSSARY.md");
+  });
+
+  it("treats a repo ahead of the registry as up to date and a no-op", () => {
+    const changelog: Changelog = {
+      migrations: [
+        { version: 1, migration: "create-changelog", identity: IDENTITY, dateTime: FIXED_DATE_TIME },
+        { version: 2, migration: "glossary-rename", identity: IDENTITY, dateTime: FIXED_DATE_TIME },
+        { version: 3, migration: "a-future-step", identity: IDENTITY, dateTime: FIXED_DATE_TIME },
+      ],
+    };
+    file(CHANGELOG_RELATIVE_PATH, JSON.stringify(changelog, null, 2) + "\n");
+    const before = readFileSync(join(root, CHANGELOG_RELATIVE_PATH), "utf8");
+
+    const result = status(root, MIGRATIONS);
+
+    expect(result.currentVersion).toBe(3);
+    expect(result.latestVersion).toBe(2);
+    expect(result.upToDate).toBe(true);
+
+    const migrated = migrate();
+
+    expect(migrated.fromVersion).toBe(3);
+    expect(migrated.currentVersion).toBe(3);
+    expect(migrated.applied).toEqual([]);
+    expect(readFileSync(join(root, CHANGELOG_RELATIVE_PATH), "utf8")).toBe(before);
   });
 });
 

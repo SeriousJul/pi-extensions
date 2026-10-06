@@ -5,7 +5,7 @@
  * expectation is one new numbered step with its own preconditions and
  * postconditions. The runner (core.ts) never changes.
  */
-import { existsSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, openSync, readSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import type { Migration, MigrationContext } from "./core.ts";
 
@@ -17,7 +17,12 @@ export const NEW_GLOSSARY = "GLOSSARY.md";
 export const NEW_MAP = "GLOSSARY-MAP.md";
 export const NEW_FORMAT = "GLOSSARY-FORMAT.md";
 
-/** The old file names and their replacements, longest name first. */
+/**
+ * The old file names and their replacements, longest name first. All three
+ * root files are renamed (not just referenced), because the upstream layout
+ * rename covers the format file too and a renamed reference to a file that
+ * keeps its old name is a dangling reference (ADR 0032).
+ */
 const RENAMES: { from: string; to: string }[] = [
   { from: OLD_MAP, to: NEW_MAP },
   { from: OLD_FORMAT, to: NEW_FORMAT },
@@ -35,6 +40,7 @@ const EXCLUDED_DIRS = new Set([
   "vendor",
   "coverage",
   ".next",
+  ".skill-cache",
 ]);
 
 /** Lock file names the reference rewrite never touches. */
@@ -74,23 +80,44 @@ function isExcludedPath(path: string, excluded: string[]): boolean {
   return false;
 }
 
+/** Inline link targets: `[text](target)`, with optional `"title"` or `(title)`. */
+const INLINE_LINK = /\[[^\]]*\]\(([^()]*)\)/g;
+/** Reference-style definitions: `[label]: target`, one per line. */
+const REFERENCE_DEF = /^\s{0,3}\[[^\]]*\]:\s*(\S+)/gm;
+
+/** Strip optional angle brackets and a trailing title from a link target. */
+function linkTarget(raw: string): string {
+  const trimmed = raw.trim();
+  if (trimmed.startsWith("<")) {
+    const end = trimmed.indexOf(">");
+    return (end === -1 ? trimmed.slice(1) : trimmed.slice(1, end)).trim();
+  }
+  const bare = trimmed.match(/^[^\s(]+/);
+  return bare ? bare[0] : trimmed;
+}
+
 /**
- * The local .md paths the root map names, exactly as written in the map
- * (markdown link targets). URLs, anchors, and non-.md targets are skipped.
+ * The local .md paths the root map names, exactly as written in the map.
+ * Covers inline links (with titles and angle-bracketed targets) and
+ * reference-style definitions. URLs, anchors, and non-.md targets are
+ * skipped.
  */
 export function mapReferences(repoRoot: string): string[] {
   for (const name of [OLD_MAP, NEW_MAP]) {
     const path = join(repoRoot, name);
     if (!isFile(path)) continue;
+    const text = readFileSync(path, "utf8");
+    const rawTargets: string[] = [];
+    for (const match of text.matchAll(INLINE_LINK)) rawTargets.push(match[1]);
+    for (const match of text.matchAll(REFERENCE_DEF)) rawTargets.push(match[1]);
     const refs: string[] = [];
-    const link = /\[[^\]]*\]\(([^)]+)\)/g;
-    for (const match of readFileSync(path, "utf8").matchAll(link)) {
-      const target = match[1].trim();
+    for (const raw of rawTargets) {
+      const target = linkTarget(raw);
       if (target === "" || target.startsWith("#")) continue;
       if (/^[a-z][a-z0-9+.-]*:/i.test(target)) continue; // http:, mailto:, ...
       const pathOnly = target.split("#")[0];
       if (pathOnly === "" || !pathOnly.endsWith(".md")) continue;
-      refs.push(pathOnly);
+      if (!refs.includes(pathOnly)) refs.push(pathOnly);
     }
     return refs;
   }
@@ -104,16 +131,17 @@ function renameIfExists(from: string, to: string): boolean {
 }
 
 /**
- * Rename the root glossary and map when present, plus each per-context
- * glossary the map references, by the local path exactly as written in the
- * map. A reference that already carries the new name but whose file still
- * lives under the old name is renamed too, so a half-finished rename
- * completes instead of aborting.
+ * Rename the three root domain-docs files (glossary, map, format) when
+ * present, plus each per-context glossary the map references, by the local
+ * path exactly as written in the map. A reference that already carries the
+ * new name but whose file still lives under the old name is renamed too, so
+ * a half-finished rename completes instead of aborting.
  */
 function renameGlossaryFiles(repoRoot: string): void {
   const refs = mapReferences(repoRoot);
-  renameIfExists(join(repoRoot, OLD_GLOSSARY), join(repoRoot, NEW_GLOSSARY));
-  renameIfExists(join(repoRoot, OLD_MAP), join(repoRoot, NEW_MAP));
+  for (const rename of RENAMES) {
+    renameIfExists(join(repoRoot, rename.from), join(repoRoot, rename.to));
+  }
   for (const ref of refs) {
     const refPath = join(repoRoot, ref);
     const dir = dirname(refPath);
@@ -129,11 +157,10 @@ function renameGlossaryFiles(repoRoot: string): void {
 /** Both the old and the new file present in one location: the runner must not guess. */
 function ambiguityProblems(repoRoot: string): string[] {
   const problems: string[] = [];
-  if (isFile(join(repoRoot, OLD_GLOSSARY)) && isFile(join(repoRoot, NEW_GLOSSARY))) {
-    problems.push(`ambiguous state: both ${OLD_GLOSSARY} and ${NEW_GLOSSARY} are present at the repo root`);
-  }
-  if (isFile(join(repoRoot, OLD_MAP)) && isFile(join(repoRoot, NEW_MAP))) {
-    problems.push(`ambiguous state: both ${OLD_MAP} and ${NEW_MAP} are present at the repo root`);
+  for (const rename of RENAMES) {
+    if (isFile(join(repoRoot, rename.from)) && isFile(join(repoRoot, rename.to))) {
+      problems.push(`ambiguous state: both ${rename.from} and ${rename.to} are present at the repo root`);
+    }
   }
   for (const ref of mapReferences(repoRoot)) {
     const refPath = join(repoRoot, ref);
@@ -146,12 +173,24 @@ function ambiguityProblems(repoRoot: string): string[] {
   return problems;
 }
 
-function isBinary(buffer: Buffer): boolean {
-  const limit = Math.min(buffer.length, 8192);
-  for (let i = 0; i < limit; i++) {
-    if (buffer[i] === 0) return true;
+/** True when the first 8 KB of the file carry a null byte. Reads only that window. */
+function isBinary(path: string): boolean {
+  let fd: number;
+  try {
+    fd = openSync(path, "r");
+  } catch {
+    return true;
   }
-  return false;
+  try {
+    const chunk = Buffer.alloc(8192);
+    const bytes = readSync(fd, chunk, 0, chunk.length, 0);
+    for (let i = 0; i < bytes; i++) {
+      if (chunk[i] === 0) return true;
+    }
+    return false;
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /**
@@ -180,14 +219,13 @@ function rewriteReferences(repoRoot: string, excludedPaths: string[]): { files: 
       if (!entry.isFile()) continue;
       if (LOCK_FILES.has(entry.name)) continue;
       if (isExcludedPath(path, excludedPaths)) continue;
-      let buffer: Buffer;
+      if (isBinary(path)) continue;
+      let text: string;
       try {
-        buffer = readFileSync(path);
+        text = readFileSync(path, "utf8");
       } catch {
         continue;
       }
-      if (isBinary(buffer)) continue;
-      const text = buffer.toString("utf8");
       let count = 0;
       const out = text.replace(OLD_NAME_TOKEN, (match) => {
         count += 1;
@@ -206,11 +244,10 @@ function rewriteReferences(repoRoot: string, excludedPaths: string[]): { files: 
 
 function glossaryRenamePostconditions(repoRoot: string): string[] {
   const problems: string[] = [];
-  if (isFile(join(repoRoot, OLD_GLOSSARY))) {
-    problems.push(`the root ${OLD_GLOSSARY} is still present`);
-  }
-  if (isFile(join(repoRoot, OLD_MAP))) {
-    problems.push(`the root ${OLD_MAP} is still present`);
+  for (const rename of RENAMES) {
+    if (isFile(join(repoRoot, rename.from))) {
+      problems.push(`the root ${rename.from} is still present`);
+    }
   }
   for (const ref of mapReferences(repoRoot)) {
     const refPath = join(repoRoot, ref);
