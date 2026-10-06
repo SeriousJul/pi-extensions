@@ -1,7 +1,7 @@
 /**
  * Sync extension: cross-device pi config sync (issue #32).
  *
- * Domain terms (see CONTEXT.md, "Sync" section):
+ * Domain terms (see GLOSSARY.md, "Sync" section):
  *
  * Sync manifest - the config that names the sync Backend and the include and
  *                 exclude patterns. Default deny; excludes win over includes.

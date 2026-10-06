@@ -1,7 +1,7 @@
 # skill-migrate runs sequential migrations with a committed changelog
 
-The upstream skills renamed the domain docs layout (`CONTEXT.md` to
-`GLOSSARY.md`, `CONTEXT-MAP.md` to `GLOSSARY-MAP.md`), so every underlying repo
+The upstream skills renamed the domain docs layout (`GLOSSARY.md` to
+`GLOSSARY.md`, `GLOSSARY-MAP.md` to `GLOSSARY-MAP.md`), so every underlying repo
 that still ships the old layout disagrees with what the skills expect. Editing
 the repos by hand would leave no trace of which structure version each carries,
 and the next structural change would start the same chore over. We decided: a

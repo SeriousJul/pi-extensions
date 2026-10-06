@@ -102,7 +102,7 @@ SeriousJul/pi-extensions`.
 │   ├── .vitepress/   # site config; its own package.json + lockfile for site tooling
 │   ├── adr/          # architecture decision records
 │   └── agents/       # agent skill files (excluded from the site navigation)
-├── CONTEXT.md        # the domain glossary, single source (published on the site)
+├── GLOSSARY.md        # the domain glossary, single source (published on the site)
 ├── scripts/          # postinstall patch for the embedded codegraph library
 │   └── skills/       # skill sync (skills:update) and adopt (skills:add) tools
 ├── skills/           # the skill tree pi loads from the package (mattpocock/ + local/)

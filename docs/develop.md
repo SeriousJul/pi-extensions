@@ -105,7 +105,7 @@ bun test tests/codegraph/runtime-bun.test.cts
 
 ## Documentation
 
-The [glossary](/glossary) (the repo-root `CONTEXT.md`) is the single
+The [glossary](/glossary) (the repo-root `GLOSSARY.md`) is the single
 source of the domain language: index, project root, named root, trusted
 root, seed, reconcile, prewarm, and the rest. The
 [ADRs](/adr/) record the architecture decisions behind the design.

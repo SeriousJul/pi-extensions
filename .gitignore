@@ -150,6 +150,6 @@ vite.config.ts.timestamp-*
 # skill sync: per-source upstream git cache (see scripts/skills)
 .skill-cache/
 
-# docs site: glossary.md is generated from the repo-root CONTEXT.md by
+# docs site: glossary.md is generated from the repo-root GLOSSARY.md by
 # docs/prepare-glossary.mjs before every build
 /docs/glossary.md

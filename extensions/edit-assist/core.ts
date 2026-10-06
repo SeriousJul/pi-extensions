@@ -10,7 +10,7 @@
  *
  * Pure module: no pi API, no filesystem. The wiring (index.ts) reads the
  * file and calls these functions. Every output is a size-bounded Diagnosis
- * block (CONTEXT.md): the block re-entries into the model context on every
+ * block (GLOSSARY.md): the block re-entries into the model context on every
  * later call until compaction.
  *
  * The stock error text is never rewritten; a Diagnosis is appended after it
