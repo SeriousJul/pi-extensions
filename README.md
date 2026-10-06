@@ -20,6 +20,7 @@ VitePress from the [`docs/`](docs/) folder.
 - **edit-assist** - corrects and diagnoses built-in edit calls: an oldText that differs from the file only in leading whitespace is corrected before execution, and the success result carries a one-line honesty note naming the line; a no-match failure gets the Nearest region with a unified diff, an ambiguous match gets the occurrence line numbers, a malformed call gets one targeted hint, and the stock error text is always kept. Also injects the standing edit-tool prompt rule while the edit tool is active.
 - **bash-no-match** - returns a no-match search (rg/grep exit 1 with an empty stream) to the agent as a normal result with a "(no matches)" note, instead of an error.
 - **background-jobs** - `bash_bg`, `job_wait`, `job_status`: run long commands in the background and wait on them once, instead of sleep-and-tail loops.
+- **skill-migrate** - deterministic repo-structure migrations with a committed changelog: a `status`/`migrate` CLI and a `/migrate` command. The first step records the adoption, the second migrates the domain docs to the GLOSSARY file layout and rewrites every reference to the old file names.
 - **skills** - a curated skill tree loaded by pi from the package's `skills/` directory, with `npm run skills:update` to three-way-merge upstream changes into the copies. The `mattpocock/` skills come from [mattpocock/skills](https://github.com/mattpocock/skills), MIT licensed (the upstream `LICENSE` ships at `skills/mattpocock/LICENSE`).
 
 See the [pi packages docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md) and the [extensions docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md).
@@ -43,6 +44,7 @@ See the [pi packages docs](https://github.com/earendil-works/pi/blob/main/packag
 | edit-assist | [docs](https://seriousjul.github.io/pi-extensions/extensions/edit-assist.html) |
 | bash-no-match | [docs](https://seriousjul.github.io/pi-extensions/extensions/bash-no-match.html) |
 | background-jobs | [docs](https://seriousjul.github.io/pi-extensions/extensions/background-jobs.html) |
+| skill-migrate | [README](extensions/skill-migrate/README.md) |
 
 ## Skills
 
@@ -92,6 +94,7 @@ SeriousJul/pi-extensions`.
 │   ├── resource-toggle/  # multi-file extension, entry point at resource-toggle/index.ts
 │   ├── usage/        # multi-file extension, entry point at usage/index.ts, plus the pi-usage CLI
 │   ├── sync/         # multi-file extension, entry point at sync/index.ts, plus the pi-sync CLI
+│   ├── skill-migrate/  # multi-file extension, entry point at skill-migrate/index.ts, plus the CLI
 │   ├── codegraph/    # multi-file extension, entry point at codegraph/index.ts
 │   ├── compress/     # multi-file extension, entry point at compress/index.ts
 │   └── pruning/      # multi-file extension, entry point at pruning/index.ts
