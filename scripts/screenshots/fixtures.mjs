@@ -306,12 +306,17 @@ export function resourceSettings() {
 			skills: [],
 			prompts: [],
 			themes: [],
+			packages: [
+				"npm:pi-web-access",
+				{ source: "git:github.com/SeriousJul/pi-extensions", extensions: ["-extensions/quota/index.ts"] },
+			],
 		},
 		project: {
 			extensions: [],
 			skills: [],
 			prompts: [],
 			themes: [],
+			packages: [],
 		},
 	};
 }

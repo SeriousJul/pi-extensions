@@ -35,15 +35,15 @@
     "@earendil-works/pi-coding-agent": "^0.87.1",
     "@earendil-works/pi-tui": "^0.87.1",
     "@resvg/resvg-js": "^2.6.2",
-    "@types/node": "^26.6.2",
+    "@types/node": "^26.6.3",
     "@xterm/headless": "^6.0.0",
     "node-pty": "^1.1.0",
     "typebox": "^1.3.34",
     "typescript": "^5.6.0",
-    "vitest": "^5.0.1"
+    "vitest": "^5.0.2"
   },
   "scripts": {
-    "postinstall": "node scripts/patch-codegraph.mjs && node scripts/welcome.mjs",
+    "postinstall": "node scripts/patch-codegraph.mjs && node scripts/patch-brace-expansion.mjs && node scripts/welcome.mjs",
     "docs:dev": "npm --prefix docs run dev",
     "docs:build": "npm --prefix docs run build",
     "docs:screenshots": "node scripts/screenshots/capture.mjs",
@@ -62,15 +62,22 @@
     "e2e:quota": "node tests/quota/e2e-rpc.mjs",
     "e2e:resource-toggle": "node tests/resource-toggle/e2e-rpc.mjs",
     "e2e:safe-branch-summary": "node tests/safe-branch-summary/e2e.mjs",
+    "e2e:skill-migrate": "node tests/skill-migrate/e2e-migrate.mjs",
     "e2e:skills": "node tests/skills/e2e-update.mjs",
     "e2e:sync": "node tests/sync/e2e-gist.mjs",
     "e2e:usage": "node tests/usage/e2e-rpc.mjs",
+    "skill-migrate": "node extensions/skill-migrate/cli.mjs",
     "skills:update": "node scripts/skills/update.mjs",
     "skills:add": "node scripts/skills/add.mjs"
   },
   "dependencies": {
     "@colbymchenry/codegraph": "^1.6.0",
     "jiti": "^2.7.0"
+  },
+  "overrides": {
+    "minimatch": {
+      "brace-expansion": "^5.0.12"
+    }
   },
   "allowScripts": {
     "esbuild@0.28.2": true

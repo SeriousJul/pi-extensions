@@ -3,23 +3,24 @@
  * /disable, or /inherit runs without a name.
  *
  * Built over the interactive list's row building and row rendering:
- * every resource is a row - the
- * grid's first line (state mark, display name, scope, path) and the dimmed
- * description line beneath, clipped to the terminal width. A row whose
- * pick would be a no-op in the active mode is dimmed (for inherit: a row
- * without a project override). Typing filters by name, path, or kind.
+ * every resource is a row - the grid's first line (state mark, display
+ * name, scope, path) and the dimmed description line beneath, clipped to
+ * the terminal width. A row whose pick would be a no-op in the active
+ * mode is dimmed (for inherit: a row without a project override). Typing
+ * filters by name, path, or kind.
  *
  * Enter applies exactly the toggle the named call would apply in the
- * active mode - same self-guard, same write, same report - and closes only
- * on a successful change. A no-op pick and a failed write show their
- * message and keep the picker open. Esc closes with no change.
+ * active mode - same self-guard, same write, same report - and closes
+ * only on a successful change. A no-op pick, a single-file package
+ * refusal, a self-guard refusal, and a failed write show their message
+ * and keep the picker open. Esc closes with no change.
  */
 import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { TUI } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { projectOverrideState, resourceLabel } from "./lib/state-machine.ts";
 import type { MachineContext, ResourceInfo, ResourceType, SettingsState, ToggleOp, WriteMode } from "./lib/types.ts";
-import { buildResourceRows, refOf, renderResourceRow, type ResourceRow } from "./tui.ts";
+import { buildResourceRows, refOf, renderResourceRow, singleFileRefusalText, type ResourceRow } from "./tui.ts";
 
 const TYPE_LABELS: Record<ResourceType, string> = {
   extensions: "Extensions",
@@ -42,11 +43,11 @@ export interface ResourcePickerDeps {
   machine: MachineContext;
   /** Whether the project view is available (project trusted). */
   projectTrusted: boolean;
-  /** The self-guard: is this path the loaded resource-toggle? */
-  isSelf: (path: string) => boolean;
   /**
    * Applies the pick in the picker's active mode: the same self-guard, write,
-   * and report a named call in that mode would run.
+   * and report a named call in that mode would run. A self-guard refusal
+   * (the state machine's SelfRefusalError) and a failed write come back as
+   * { ok: false, text } and keep the picker open.
    */
   applyPick: (resource: ResourceInfo, mode: WriteMode) => Promise<{ ok: boolean; text: string }>;
   /** How many item lines fit at the current terminal size. */
@@ -72,8 +73,6 @@ export function createResourcePickerTui(deps: ResourcePickerDeps) {
 
   /** Would a pick of this row in the active mode change nothing? */
   const noOp = (row: ResourceRow): boolean => {
-    if (row.resource.origin === "package") return true;
-    if (deps.isSelf(row.resource.path) && operation.op !== "enable") return true;
     if (operation.op === "inherit") {
       return projectOverrideState(settings, refOf(row.resource), deps.machine) === "inherit";
     }
@@ -126,13 +125,8 @@ export function createResourcePickerTui(deps: ResourcePickerDeps) {
   const pick = (): void => {
     const row = visible[cursor];
     if (!row || busy) return;
-    if (row.resource.origin === "package") {
-      note = `Refused: "${row.resource.displayName}" is a package resource; package rows are read-only.`;
-      tui.requestRender();
-      return;
-    }
-    if (deps.isSelf(row.resource.path) && operation.op !== "enable") {
-      note = `Refused: resource-toggle will not ${operation.op} itself; that would remove the toggle commands.`;
+    if (row.resource.singleFilePackage) {
+      note = singleFileRefusalText(row.resource);
       tui.requestRender();
       return;
     }

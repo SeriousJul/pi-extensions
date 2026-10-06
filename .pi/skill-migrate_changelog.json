@@ -1,0 +1,16 @@
+{
+  "migrations": [
+    {
+      "version": 1,
+      "migration": "create-changelog",
+      "identity": "9730ebb727f7f9dd7bae9338ece474e66f8bd95b",
+      "dateTime": "2026-10-06T13:08:13.701Z"
+    },
+    {
+      "version": 2,
+      "migration": "glossary-rename",
+      "identity": "9730ebb727f7f9dd7bae9338ece474e66f8bd95b",
+      "dateTime": "2026-10-06T13:08:13.716Z"
+    }
+  ]
+}

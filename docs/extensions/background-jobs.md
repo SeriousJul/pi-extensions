@@ -11,8 +11,10 @@ whole duration of a test suite, a build, or a long fetch. Three tools:
   and returns the exit code with a tail of the output (default 30 lines).
   On timeout it returns "still running" with the tail so far, so the agent
   can wait again or move on.
-- `job_status` reports one job by id, or lists every job with its age, its
-  label or command head, and its status, without waiting.
+- `job_status` reports one job by id, or lists jobs with their age, their
+  label or command head, and their status, without waiting. The listing is
+  bounded: newest first, the total stated, and one line naming how many the
+  bound left out and where the rest lives.
 
 The tools are active by default. The guideline is: background a command
 only when it is expected to take more than about ten seconds, or when other
@@ -52,6 +54,14 @@ wait on a job an old session started. `PI_JOBS_DIR` overrides the root.
   not only the one that spawned the command.
 - **A machine-level bound of eight** concurrent running jobs. A start
   beyond the bound is refused with the list of running jobs.
+- **A bound on the listing itself.** One `job_status` call with no id lists
+  at most `MAX_LISTED_JOBS` jobs (20), newest first, and then says how many
+  it left out and names the Job root where the rest lives. The bound is a
+  constant, not a setting: it protects the context the listing is written
+  into. A machine with hundreds of jobs must not pay roughly 19,000 tokens
+  for one status call, and the unknown-job-id error stays bounded the same
+  way and running-jobs-only, so a typo cannot pull the machine's job history
+  into the session.
 - **Stale cleanup.** Starting a new job removes job directories older
   than seven days, so the state directory does not grow forever.
 - **No kill tool.** To stop a job, signal the pid that `job_status`

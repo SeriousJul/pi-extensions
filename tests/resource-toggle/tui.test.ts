@@ -1,7 +1,7 @@
 /**
- * TUI tests for the resource list: drive the component with key events
- * against fake terminal and theme objects, asserting rendered lines and
- * the resulting state.
+ * TUI tests for the resource list and the resource picker: drive the
+ * components with key events against fake terminal and theme objects,
+ * asserting rendered lines and the resulting state.
  */
 import type { TUI } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 import { createResourceToggleTui } from "../../extensions/resource-toggle/tui.ts";
 import { createResourcePickerTui } from "../../extensions/resource-toggle/picker.ts";
 import type { MachineContext, ResourceInfo, SettingsState, ToggleOp, WriteMode } from "../../extensions/resource-toggle/lib/types.ts";
-import { emptyScopeArrays } from "../../extensions/resource-toggle/lib/types.ts";
+import { emptyScopeState } from "../../extensions/resource-toggle/lib/types.ts";
 import type { WriteOutcome } from "../../extensions/resource-toggle/lib/writer.ts";
 
 const fakeTheme = {
@@ -37,8 +37,9 @@ const res = (partial: Partial<ResourceInfo> & { path: string; displayName: strin
   displayName: partial.displayName,
   scope: partial.scope ?? "user",
   origin: partial.origin ?? "top-level",
-  source: "auto",
+  source: partial.source ?? "auto",
   baseDir: partial.baseDir,
+  singleFilePackage: partial.singleFilePackage,
   enabled: partial.enabled ?? true,
   ownEnabled: partial.ownEnabled ?? true,
 });
@@ -47,7 +48,7 @@ const resources: ResourceInfo[] = [
   res({ path: "/home/u/.pi/agent/extensions/dummy.ts", displayName: "dummy.ts" }),
   res({ path: "/proj/.pi/extensions/proj.ts", displayName: "proj.ts", scope: "project" }),
   res({ path: "/home/u/.pi/agent/skills/my-skill/SKILL.md", displayName: "my-skill", type: "skills" }),
-  res({ path: "/pkg/ext/tool.ts", displayName: "tool.ts", origin: "package", source: "acme/pkg" }),
+  res({ path: "/pkg/extensions/tool.ts", displayName: "tool.ts", origin: "package", source: "git:github.com/acme/pkg", baseDir: "/pkg" }),
 ];
 
 interface Rig {
@@ -63,14 +64,15 @@ function makeRig(
   settings?: SettingsState,
   applyImpl?: (next: SettingsState) => Promise<WriteOutcome>,
   theme: Theme = fakeTheme,
+  rigResources: ResourceInfo[] = resources,
 ): Rig {
   const applyCalls: SettingsState[] = [];
   const closed = { called: false } as { called: boolean; changed?: boolean };
   const component = createResourceToggleTui({
     tui: fakeTui,
     theme,
-    resources,
-    settings: settings ?? { global: emptyScopeArrays(), project: emptyScopeArrays() },
+    resources: rigResources,
+    settings: settings ?? { global: emptyScopeState(), project: emptyScopeState() },
     machine,
     projectTrusted: true,
     apply: (_prev, next) => {
@@ -162,15 +164,75 @@ describe("resource list TUI", () => {
     expect(rig.applyCalls[0].global.extensions).toEqual([]);
   });
 
-  it("package rows are read-only", async () => {
+  it("package rows toggle like any row and write the packages filter", async () => {
     const rig = makeRig();
-    rig.press(" ");
-    await rig.tick(); // dummy.ts
     rig.press("\x1b[B");
     expect(cursorLine(rig.render())).toContain("tool.ts");
     rig.press(" ");
     await rig.tick();
-    expect(rig.applyCalls.length).toBe(1); // the package row was skipped
+    expect(rig.applyCalls[0].global.packages).toEqual([
+      { source: "git:github.com/acme/pkg", extensions: ["-extensions/tool.ts"] },
+    ]);
+    expect(rig.applyCalls[0].global.extensions).toEqual([]); // never a resource-array pattern
+    expect(lineFor(rig.render(), "tool.ts")).toContain("[ ]");
+    expect(lineFor(rig.render(), "tool.ts")).toContain("(package)");
+    rig.press(" ");
+    await rig.tick();
+    expect(rig.applyCalls[1].global.packages).toEqual([
+      { source: "git:github.com/acme/pkg", extensions: ["+extensions/tool.ts"] },
+    ]);
+    expect(lineFor(rig.render(), "tool.ts")).toContain("[x]");
+  });
+
+  it("refuses to toggle a single-file package row and says why", async () => {
+    const single = res({
+      path: "/home/u/single.ts",
+      displayName: "single/single.ts",
+      origin: "package",
+      source: "/home/u/single.ts",
+      baseDir: "/home/u",
+      singleFilePackage: true,
+    });
+    const rig = makeRig(undefined, undefined, fakeTheme, [...resources, single]);
+    // Item order: dummy.ts, single/single.ts, tool.ts (package), proj.ts.
+    rig.press("\x1b[B");
+    expect(cursorLine(rig.render())).toContain("single/single.ts");
+    rig.press(" ");
+    await rig.tick();
+    expect(rig.applyCalls.length).toBe(0);
+    expect(rig.render().join("\n")).toContain("single-file package");
+    rig.press("\x1b");
+    expect(rig.closed.changed).toBe(false);
+  });
+
+  it("a disabled package row shows its state from the packages filter", () => {
+    const settings = {
+      global: { ...emptyScopeState(), packages: [{ source: "git:github.com/acme/pkg", extensions: ["-extensions/tool.ts"] }] },
+      project: emptyScopeState(),
+    };
+    const rig = makeRig(settings);
+    expect(lineFor(rig.render(), "tool.ts")).toContain("[ ]");
+  });
+
+  it("project mode cycles a package row through the project packages entry", async () => {
+    const rig = makeRig();
+    rig.press("\t");
+    rig.press("\x1b[B");
+    expect(cursorLine(rig.render())).toContain("tool.ts");
+    rig.press(" ");
+    await rig.tick(); // inherit -> unload
+    expect(rig.applyCalls[0].project.packages).toEqual([
+      { source: "git:github.com/acme/pkg", extensions: ["-extensions/tool.ts"] },
+    ]);
+    expect(lineFor(rig.render(), "tool.ts")).toContain("[-]");
+    rig.press(" ");
+    await rig.tick(); // unload -> load
+    expect(rig.applyCalls[1].project.packages).toEqual([
+      { source: "git:github.com/acme/pkg", extensions: ["+extensions/tool.ts"] },
+    ]);
+    rig.press(" ");
+    await rig.tick(); // load -> inherit: the emptied entry collapses to the plain string
+    expect(rig.applyCalls[2].project.packages).toEqual(["git:github.com/acme/pkg"]);
   });
 
   it("search filters rows and backspace clears", () => {
@@ -216,7 +278,7 @@ describe("resource list TUI", () => {
       tui: fakeTui,
       theme: fakeTheme,
       resources,
-      settings: { global: emptyScopeArrays(), project: emptyScopeArrays() },
+      settings: { global: emptyScopeState(), project: emptyScopeState() },
       machine,
       projectTrusted: false,
       apply: async (_prev, _next) => ({ ok: true }),
@@ -251,11 +313,6 @@ describe("resource list TUI", () => {
 // ---------------------------------------------------------------------------
 
 // A theme that marks dimmed text so tests can assert which rows are dimmed.
-const dimTheme = {
-  fg: (_color: string, s: string) => s,
-  bg: (_color: string, s: string) => s,
-  bold: (s: string) => s,
-} as unknown as Theme;
 const markedDimTheme = {
   fg: (color: string, s: string) => (color === "dim" ? `dim[${s}]` : s),
   bg: (_color: string, s: string) => s,
@@ -265,7 +322,7 @@ const markedDimTheme = {
 const described = (info: ResourceInfo): ResourceInfo => ({ ...info, description: `${info.displayName} description.` });
 
 // dummy.ts is disabled in global mode (the settings exclude it); the rest
-// are enabled. proj.ts is a project resource.
+// are enabled. proj.ts is a project resource. tool.ts is a package resource.
 const pickerResources: ResourceInfo[] = [
   described(
     res({
@@ -275,13 +332,13 @@ const pickerResources: ResourceInfo[] = [
       ownEnabled: false,
     }),
   ),
-  described(res({ path: "/pkg/ext/tool.ts", displayName: "tool.ts", origin: "package", source: "acme/pkg" })),
+  described(res({ path: "/pkg/extensions/tool.ts", displayName: "tool.ts", origin: "package", source: "git:github.com/acme/pkg", baseDir: "/pkg" })),
   described(res({ path: "/proj/.pi/extensions/proj.ts", displayName: "proj.ts", scope: "project" })),
   described(res({ path: "/home/u/.pi/agent/skills/my-skill/SKILL.md", displayName: "my-skill", type: "skills" })),
 ];
 
 const pickerSettings = (): SettingsState => {
-  const s = { global: emptyScopeArrays(), project: emptyScopeArrays() };
+  const s = { global: emptyScopeState(), project: emptyScopeState() };
   s.global.extensions = ["-extensions/dummy.ts"]; // dummy.ts is disabled
   return s;
 };
@@ -320,7 +377,6 @@ function makePickerRig(
     settings: opts.settings ?? pickerSettings(),
     machine,
     projectTrusted: true,
-    isSelf: () => false,
     applyPick: async (resource, pickMode) => {
       applyPickCalls.push(resource);
       applyPickModes.push(pickMode);
@@ -354,16 +410,17 @@ describe("resource picker TUI", () => {
     // Every row carries its dimmed description line.
     expect(text).toContain("dummy.ts description.");
     expect(text).toContain("my-skill description.");
-    // Row content: disabled dummy, package tool, enabled proj, enabled skill.
+    // Row content: disabled dummy, enabled package tool, enabled proj,
+    // enabled skill.
     expect(text).toContain("Bdummy.ts  global  /home/u/.pi/agent/extensions/dummy.ts");
-    expect(text).toContain("[x] tool.ts (package)  global  /pkg/ext/tool.ts");
+    expect(text).toContain("[x] tool.ts (package)  global  /pkg/extensions/tool.ts");
     expect(text).toContain("[x] proj.ts  project  /proj/.pi/extensions/proj.ts");
     expect(text).toContain("[x] my-skill  global  /home/u/.pi/agent/skills/my-skill/SKILL.md");
-    // No-op rows (a disabled row under /disable) and the package row are dimmed.
+    // The no-op row (a disabled row under /disable) is dimmed.
     expect(text).toContain("dim[[ ]] Bdummy.ts");
-    expect(text).toContain("dim[   [x] tool.ts (package)");
-    // Actionable rows are not dimmed.
+    // Actionable rows are not dimmed, the package row among them.
     expect(text).not.toContain("dim[  [x] proj.ts");
+    expect(text).not.toContain("dim[   [x] tool.ts (package)");
   });
 
   it("typing filters by name, path, or kind", () => {
@@ -397,6 +454,62 @@ describe("resource picker TUI", () => {
     expect(rig.render().join("\n")).toContain(`No change: "dummy.ts" is already disabled in global mode.`);
   });
 
+  it("a pick of a package row applies the packages filter like the named call", async () => {
+    const rig = makePickerRig();
+    rig.press("\x1b[B"); // to tool.ts (package)
+    rig.press("\r");
+    await rig.tick();
+    expect(rig.applyPickCalls.length).toBe(1);
+    expect(rig.applyPickCalls[0]?.displayName).toBe("tool.ts");
+    expect(rig.applyPickModes[0]).toBe("global");
+    expect(rig.closeCalls.length).toBe(1);
+    expect(rig.closeCalls[0]).toEqual({ text: "applied to tool.ts" });
+  });
+
+  it("a pick of a disabled package row is a no-op and stays open", () => {
+    const settings = pickerSettings();
+    settings.global.packages = [{ source: "git:github.com/acme/pkg", extensions: ["-extensions/tool.ts"] }];
+    const rig = makePickerRig({ settings });
+    rig.press("\x1b[B"); // to tool.ts (package), disabled by the filter
+    rig.press("\r");
+    expect(rig.applyPickCalls.length).toBe(0);
+    expect(rig.closeCalls.length).toBe(0);
+    expect(rig.render().join("\n")).toContain(`No change: "tool.ts" is already disabled in global mode.`);
+  });
+
+  it("a single-file package row pick is refused and stays open", async () => {
+    const rig = makePickerRig();
+    // Point the cursor at a row, then swap in a single-file package for the
+    // test: the refusal fires on the row the cursor sits on.
+    rig.setApplyPick(async (resource) => ({ ok: true, text: `applied to ${resource.displayName}` }));
+    const component = createResourcePickerTui({
+      tui: fakeTui,
+      theme: fakeTheme,
+      operation: { op: "disable", mode: "global" },
+      initialMode: "global",
+      resources: [
+        described(
+          res({
+            path: "/home/u/single.ts",
+            displayName: "single/single.ts",
+            origin: "package",
+            source: "/home/u/single.ts",
+            baseDir: "/home/u",
+            singleFilePackage: true,
+          }),
+        ),
+      ],
+      settings: pickerSettings(),
+      machine,
+      projectTrusted: true,
+      applyPick: async () => ({ ok: true, text: "unreachable" }),
+      viewport: () => 20,
+      close: () => {},
+    });
+    component.handleInput("\r");
+    expect(component.render(120).join("\n")).toContain("single-file package");
+  });
+
   it("a failed write applies nothing, shows the error, and stays open", async () => {
     const rig = makePickerRig();
     rig.setApplyPick(async (resource) => ({ ok: false, text: `failed to write for ${resource.displayName}` }));
@@ -408,13 +521,18 @@ describe("resource picker TUI", () => {
     expect(rig.render().join("\n")).toContain("failed to write for proj.ts");
   });
 
-  it("a package row pick is refused and stays open", () => {
+  it("a self-guard refusal from the pick keeps the picker open", async () => {
     const rig = makePickerRig();
-    rig.press("\x1b[B"); // to tool.ts (package)
+    rig.setApplyPick(async () => ({
+      ok: false,
+      text: "Refused: resource-toggle will not disable itself; that would remove the toggle commands.",
+    }));
+    rig.press("\x1b[B");
+    rig.press("\x1b[B"); // to proj.ts
     rig.press("\r");
-    expect(rig.applyPickCalls.length).toBe(0);
+    await rig.tick();
     expect(rig.closeCalls.length).toBe(0);
-    expect(rig.render().join("\n")).toContain(`Refused: "tool.ts" is a package resource; package rows are read-only.`);
+    expect(rig.render().join("\n")).toContain("Refused: resource-toggle will not disable itself");
   });
 
   it("a pick after a tab mode switch applies in the active mode, not the command's", async () => {

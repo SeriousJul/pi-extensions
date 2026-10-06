@@ -6,7 +6,7 @@
  * resource. It never installs missing packages: resolution runs with a skip
  * callback, so a stale package entry stays a pure read.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import {
   type ResolvedPaths,
@@ -16,9 +16,18 @@ import {
   SettingsManager,
   parseFrontmatter,
 } from "@earendil-works/pi-coding-agent";
+import type {
+  MachineContext,
+  PackageEntry,
+  ResolvedResources,
+  ResourceInfo,
+  ResourceRef,
+  Scope,
+  ScopeState,
+  ResourceType,
+} from "./types.ts";
 import { resourceDescription } from "./description.ts";
-import type { MachineContext, ResolvedResources, ResourceInfo, ResourceRef, ScopeArrays, ResourceType } from "./types.ts";
-import { scopeEnabled } from "./state-machine.ts";
+import { isLocalSource, resolvedLocalSource, scopeEnabled } from "./state-machine.ts";
 
 const SKIP_MISSING = async (): Promise<"skip"> => "skip";
 
@@ -41,17 +50,25 @@ function selfDisplayName(selfPath: string): string {
   return file.replace(/\.(ts|js|mts|cts)$/, "");
 }
 
-function pickArrays(settings: {
+function pickPackages(settings: { packages?: PackageEntry[] }): PackageEntry[] {
+  return (settings.packages ?? []).map((entry) =>
+    typeof entry === "string" ? entry : { ...entry },
+  );
+}
+
+function pickScope(settings: {
   extensions?: string[];
   skills?: string[];
   prompts?: string[];
   themes?: string[];
-}): ScopeArrays {
+  packages?: PackageEntry[];
+}): ScopeState {
   return {
     extensions: [...(settings.extensions ?? [])],
     skills: [...(settings.skills ?? [])],
     prompts: [...(settings.prompts ?? [])],
     themes: [...(settings.themes ?? [])],
+    packages: pickPackages(settings),
   };
 }
 
@@ -81,17 +98,34 @@ export function displayNameFor(type: ResourceType, path: string): string {
   return file;
 }
 
-function toList(paths: ResolvedPaths): ResourceInfo[] {
+/**
+ * Whether a package source is a single file. pi loads a single-file
+ * source unconditionally and never applies a packages-array filter to it,
+ * so the resource's state cannot be toggled; the row is marked for a clear
+ * refusal.
+ */
+function singleFileSource(source: string | undefined, scope: Scope, ctx: MachineContext): boolean {
+  if (!source || !isLocalSource(source)) return false;
+  try {
+    return statSync(resolvedLocalSource(source, scope, ctx)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function toList(paths: ResolvedPaths, ctx: MachineContext): ResourceInfo[] {
   const out: ResourceInfo[] = [];
   const add = (type: ResourceType, res: ResolvedResource): void => {
+    const scope: Scope = res.metadata.scope === "project" ? "project" : "user";
     out.push({
       type,
       path: res.path,
       displayName: displayNameFor(type, res.path),
-      scope: res.metadata.scope === "project" ? "project" : "user",
+      scope,
       origin: res.metadata.origin,
       source: res.metadata.source,
       baseDir: res.metadata.baseDir,
+      singleFilePackage: res.metadata.origin === "package" && singleFileSource(res.metadata.source, scope, ctx) ? true : undefined,
       enabled: res.enabled,
       ownEnabled: res.enabled,
     });
@@ -114,17 +148,18 @@ export async function resolveResources(options: ResolveOptions): Promise<Resolve
   const globalManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
   const trustedManager = SettingsManager.create(cwd, agentDir, { projectTrusted });
 
+  const machineCtx = machineContextFor(cwd, agentDir);
   const globalPaths = await new DefaultPackageManager({ cwd, agentDir, settingsManager: globalManager }).resolve(SKIP_MISSING);
   const effectivePaths = projectTrusted
     ? await new DefaultPackageManager({ cwd, agentDir, settingsManager: trustedManager }).resolve(SKIP_MISSING)
     : globalPaths;
 
   const globalList = new Map<string, ResourceInfo>();
-  for (const info of toList(globalPaths)) globalList.set(`${info.type}:${info.path}`, info);
+  for (const info of toList(globalPaths, machineCtx)) globalList.set(`${info.type}:${info.path}`, info);
 
   const merged: ResourceInfo[] = [];
   const seen = new Set<string>();
-  for (const info of toList(effectivePaths)) {
+  for (const info of toList(effectivePaths, machineCtx)) {
     const key = `${info.type}:${info.path}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -144,7 +179,7 @@ export async function resolveResources(options: ResolveOptions): Promise<Resolve
   if (selfPath) {
     const alreadyListed = merged.some((info) => info.path === selfPath);
     if (!alreadyListed) {
-      const globals = pickArrays(globalManager.getGlobalSettings());
+      const globals = pickScope(globalManager.getGlobalSettings());
       const info: ResourceInfo = {
         type: "extensions",
         path: selfPath,
@@ -157,7 +192,7 @@ export async function resolveResources(options: ResolveOptions): Promise<Resolve
         ownEnabled: false,
       };
       const ref: ResourceRef = { type: "extensions", path: selfPath, scope: "user", baseDir: agentDir };
-      info.enabled = scopeEnabled({ global: globals, project: emptyProject() }, ref, machineContextFor(cwd, agentDir));
+      info.enabled = scopeEnabled({ global: globals, project: emptyProject() }, ref, machineCtx);
       info.ownEnabled = info.enabled;
       merged.push(info);
     }
@@ -173,13 +208,13 @@ export async function resolveResources(options: ResolveOptions): Promise<Resolve
   return {
     resources: merged,
     settings: {
-      global: pickArrays(trustedManager.getGlobalSettings()),
-      project: pickArrays(trustedManager.getProjectSettings()),
+      global: pickScope(trustedManager.getGlobalSettings()),
+      project: pickScope(trustedManager.getProjectSettings()),
     },
   };
 }
 
-const emptyProject = (): ScopeArrays => ({ extensions: [], skills: [], prompts: [], themes: [] });
+const emptyProject = (): ScopeState => ({ extensions: [], skills: [], prompts: [], themes: [], packages: [] });
 
 /** The machine context for the session's paths. */
 export function machineContextFor(cwd: string, agentDir: string): MachineContext {

@@ -7,16 +7,32 @@
 import { describe, expect, it } from "vitest";
 
 import type { Api, AssistantMessage, ImageContent, Model, SystemMessage, TranscriptContext, UserMessage } from "@earendil-works/pi-ai";
-import { clampMaxTokensToContext } from "@earendil-works/pi-ai/api/simple-options";
+import { clampMaxTokensToContext, clampThinkingBudgetToAnswerRoom, MIN_ANSWER_TOKENS } from "@earendil-works/pi-ai/api/simple-options";
 import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
 import {
 	budgetOf,
+	contextAnchor,
+	correctedEstimateTokens,
+	decide,
 	estimateProjectionTokens,
+	fitLine,
 	isStarved,
+	payloadMessages,
+	PI_MIN_ANSWER_TOKENS,
 	PI_OUTPUT_FLOOR,
+	PI_SAFETY_MARGIN,
+	reserveDisagreementLine,
 	starvationLine,
+	wholePayloadTokens,
+	withBudget,
+	type ContextAnchor,
+	type GuardSettings,
+	type OverrunFacts,
+	type ReserveFacts,
+	type SessionFacts,
 	type StarvationFacts,
 } from "../../extensions/output-starvation/guard.ts";
+import { PI_IMAGE_CHARGE_BYTES, type TokenMath, tokensFromBytes } from "../../extensions/shared/token-math.ts";
 
 // A model just enough for pi's clamp: the window and the budget the model
 // asks for.
@@ -42,6 +58,36 @@ describe("PI_OUTPUT_FLOOR", () => {
 	it("is below every healthy budget pi's clamp can produce", () => {
 		const healthy = clampMaxTokensToContext(model(100_000, 8192), overFullContext(10_000), 8192);
 		expect(healthy).toBeGreaterThan(PI_OUTPUT_FLOOR);
+	});
+});
+
+describe("PI_SAFETY_MARGIN", () => {
+	it("is the room pi's own clamp always leaves between the estimate and the window", () => {
+		// pi's clamp computes `contextWindow - estimate - CONTEXT_SAFETY_TOKENS`.
+		// Reading the margin off the clamp's own output is the tripwire: if pi
+		// moves the figure, the Fit would disagree with pi about the room it
+		// leaves, and this is where that shows up.
+		expect(clampMaxTokensToContext(model(100_000, 8192), overFullContext(90_000), 8192)).toBe(100_000 - 90_000 - PI_SAFETY_MARGIN);
+	});
+
+	it("is the same margin whatever the model asks for", () => {
+		for (const maxTokens of [8192, 60_000, 131_072]) {
+			expect(clampMaxTokensToContext(model(100_000, maxTokens), overFullContext(90_000), maxTokens)).toBe(100_000 - 90_000 - PI_SAFETY_MARGIN);
+		}
+	});
+
+	it("is pi's 4096 today", () => {
+		expect(PI_SAFETY_MARGIN).toBe(4096);
+	});
+});
+
+describe("PI_MIN_ANSWER_TOKENS", () => {
+	it("is pi's own minimum answer room", () => {
+		expect(PI_MIN_ANSWER_TOKENS).toBe(MIN_ANSWER_TOKENS);
+	});
+
+	it("is what pi leaves for an answer when a thinking budget shares the ceiling", () => {
+		expect(clampThinkingBudgetToAnswerRoom(20_000, 20_000)).toBe(20_000 - PI_MIN_ANSWER_TOKENS);
 	});
 });
 
@@ -78,6 +124,14 @@ describe("isStarved", () => {
 		expect(isStarved({ max_tokens: PI_OUTPUT_FLOOR })).toBe(true);
 		expect(isStarved({ max_completion_tokens: PI_OUTPUT_FLOOR })).toBe(true);
 		expect(isStarved({ max_output_tokens: PI_OUTPUT_FLOOR })).toBe(true);
+	});
+
+	it("is the test decide() runs, so the two cannot drift apart", () => {
+		// decide() calls this predicate rather than re-reading the floor, so a
+		// change to one is a change to both.
+		const starved = wirePayload([wireSystem(400), wireAssistant()], { max_tokens: PI_OUTPUT_FLOOR });
+		expect(isStarved(starved)).toBe(true);
+		expect(decide({ payload: starved, window: 200_000, session: () => SESSION_NONE, settings: SETTINGS }).outcome).toBe("starved");
 	});
 
 	it("is false for a healthy budget, however small", () => {
@@ -199,5 +253,514 @@ describe("starvationLine", () => {
 		expect(line).toContain("output budget 1");
 		expect(line).not.toContain("\n");
 		expect(line).not.toContain("\u2014");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// The Reported context: the provider's own count, read from the session
+// ---------------------------------------------------------------------------
+
+describe("contextAnchor", () => {
+	let clock = 0;
+	const user = (content: string): UserMessage => {
+		clock += 1000;
+		return { role: "user", content, timestamp: clock };
+	};
+	const assistant = (totalTokens: number, stopReason: AssistantMessage["stopReason"] = "stop"): AssistantMessage => {
+		clock += 1000;
+		return {
+			role: "assistant",
+			content: [{ type: "text", text: "done" }],
+			api: "openai-completions",
+			provider: "llama.cpp",
+			model: "m1",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason,
+			timestamp: clock,
+		} as AssistantMessage;
+	};
+
+	it("is null for a session with no answered turn", () => {
+		expect(contextAnchor([user("q1")])).toBeNull();
+	});
+
+	it("is the usage the provider reported for its last answer, with no answers after it", () => {
+		expect(contextAnchor([user("q1"), assistant(50), user("q2"), assistant(170_685), user("q3")])).toEqual({
+			reportedContext: 170_685,
+			answersAfterAnchor: 0,
+		});
+	});
+
+	it("falls back to an earlier answer when the last one carries no usable usage, and counts the answer it stepped over", () => {
+		// pi's own anchor rule: an aborted, errored, or zero-usage response
+		// does not describe the context, so the last one that does answers.
+		// The count of what sits after the anchor is what keeps the estimate
+		// from dropping the content between the two.
+		expect(contextAnchor([user("q1"), assistant(500), user("q2"), assistant(0), user("q3")])).toEqual({
+			reportedContext: 500,
+			answersAfterAnchor: 1,
+		});
+	});
+
+	it("does not count an answer pi drops from the payload", () => {
+		// pi-ai's transform-messages drops an errored or aborted assistant
+		// message from the request, so the payload never carries it and the
+		// boundary must not look for it.
+		expect(contextAnchor([user("q1"), assistant(500), user("q2"), assistant(900, "aborted"), user("q3")])).toEqual({
+			reportedContext: 500,
+			answersAfterAnchor: 0,
+		});
+		expect(contextAnchor([user("q1"), assistant(500), user("q2"), assistant(0, "error"), user("q3")])).toEqual({
+			reportedContext: 500,
+			answersAfterAnchor: 0,
+		});
+	});
+});
+
+// ---------------------------------------------------------------------------
+// The Corrected estimate: the payload read directly
+// ---------------------------------------------------------------------------
+
+const MATH: TokenMath = { bytesPerChar: 4, inflation: 2 };
+
+/** A wire payload of the shape pi's OpenAI-compatible providers send: the
+ * system prompt as a message, the tool declarations beside it, and the
+ * budget the guard owns. */
+const wirePayload = (messages: unknown[], extra: Record<string, unknown> = {}) =>
+	({ model: "m1", messages, stream: true, max_tokens: 32_768, ...extra }) as unknown;
+
+const wireSystem = (chars: number) => ({ role: "system", content: "s".repeat(chars) });
+const wireUser = (chars: number) => ({ role: "user", content: [{ type: "text", text: "u".repeat(chars) }] });
+const wireAssistant = (extra: Record<string, unknown> = {}) => ({ role: "assistant", content: "done", ...extra });
+const wireTool = (chars: number) => ({ role: "tool", tool_call_id: "c1", content: "t".repeat(chars) });
+
+describe("payloadMessages", () => {
+	it("reads the messages a payload carries", () => {
+		expect(payloadMessages(wirePayload([wireSystem(10), wireUser(10)]))?.length).toBe(2);
+	});
+
+	it("is null for a payload this guard cannot read", () => {
+		expect(payloadMessages({ max_tokens: 100 })).toBeNull();
+		expect(payloadMessages(undefined)).toBeNull();
+		expect(payloadMessages({ messages: "not an array" })).toBeNull();
+	});
+});
+
+describe("tokensFromBytes", () => {
+	it("is pi's chars/4 estimate times the Inflation factor", () => {
+		expect(tokensFromBytes(4000, MATH)).toBe(2000);
+		expect(tokensFromBytes(4001, MATH)).toBe(2001);
+		expect(tokensFromBytes(4000, { bytesPerChar: 4, inflation: 1 })).toBe(1000);
+	});
+});
+
+describe("wholePayloadTokens", () => {
+	it("counts every message and the tool declarations", () => {
+		const tools = [{ type: "function", function: { name: "bash", description: "d".repeat(200) } }];
+		const payload = wirePayload([wireSystem(400), wireUser(400)], { tools });
+		expect(wholePayloadTokens(payload, MATH)).toBe(tokensFromBytes(400 + 400 + JSON.stringify(tools).length, MATH));
+	});
+
+	it("is null for a payload with no messages the guard can read", () => {
+		expect(wholePayloadTokens({ max_tokens: 32_768 }, MATH)).toBeNull();
+		expect(wholePayloadTokens(undefined, MATH)).toBeNull();
+	});
+});
+
+describe("correctedEstimateTokens", () => {
+	it("anchors at the Reported context and inflates only what follows the anchor", () => {
+		// The system prompt and the earlier turns are inside the Reported
+		// context: the provider already counted them, so they are not
+		// estimated a second time.
+		const payload = wirePayload([wireSystem(400), wireUser(400), wireAssistant(), wireTool(40_000)]);
+		expect(correctedEstimateTokens(payload, { reportedContext: 10_000, answersAfterAnchor: 0 }, MATH)).toEqual({
+			tokens: 10_000 + 20_000,
+			anchored: true,
+		});
+	});
+
+	it("draws the boundary at the anchored answer, not at the payload's last answer", () => {
+		// The anchor sits two answers back: the answer the provider counted,
+		// then an answer whose usage was unusable, then more content. A
+		// boundary at the payload's last answer would drop the turn between
+		// the two answers out of the estimate and let an overrunning request
+		// go out.
+		const payload = wirePayload([wireSystem(400), wireAssistant(), wireTool(20_000), wireAssistant(), wireTool(20_000)]);
+		expect(correctedEstimateTokens(payload, { reportedContext: 10_000, answersAfterAnchor: 1 }, MATH)).toEqual({
+			// Everything after the anchored answer: the first tool result, the
+			// later answer's 4 characters, and the second tool result.
+			tokens: 10_000 + tokensFromBytes(20_000 + 4 + 20_000, MATH),
+			anchored: true,
+		});
+	});
+
+	it("estimates the whole payload when the payload carries fewer answers than the anchor expects", () => {
+		// The two views disagree: pi dropped an answer this guard expected to
+		// see. Guessing a boundary would drop content out of the estimate, so
+		// the guard estimates everything it can see and reports the figure as
+		// its own guess.
+		const payload = wirePayload([wireSystem(400), wireAssistant(), wireTool(4000)]);
+		expect(correctedEstimateTokens(payload, { reportedContext: 10_000, answersAfterAnchor: 3 }, MATH)).toEqual({
+			tokens: tokensFromBytes(400 + 4 + 4000, MATH),
+			anchored: false,
+		});
+	});
+
+	it("estimates the whole payload, tool declarations included, when the session has no anchor", () => {
+		const tools = [{ type: "function", function: { name: "bash", description: "d".repeat(200) } }];
+		const messages = [
+			wireSystem(400),
+			wireUser(400),
+			{ role: "assistant", content: "", tool_calls: [{ index: 0, id: "c1", type: "function", function: { name: "bash", arguments: '{"command":"ls"}' } }] },
+			wireTool(800),
+		];
+		const chars = 400 + 400 + "bash".length + '{"command":"ls"}'.length + 800 + JSON.stringify(tools).length;
+		expect(correctedEstimateTokens(wirePayload(messages, { tools }), null, MATH)).toEqual({
+			tokens: tokensFromBytes(chars, MATH),
+			anchored: false,
+		});
+	});
+
+	it("charges an image block at pi's own flat image cost", () => {
+		const image = { role: "user", content: [{ type: "image_url", image_url: { url: "http://x/y.png" } }] };
+		const payload = wirePayload([wireSystem(400), wireAssistant(), image]);
+		expect(correctedEstimateTokens(payload, { reportedContext: 1000, answersAfterAnchor: 0 }, MATH)).toEqual({
+			tokens: 1000 + tokensFromBytes(PI_IMAGE_CHARGE_BYTES, MATH),
+			anchored: true,
+		});
+	});
+
+	it("is the incident's figure: the provider's count plus the dense tool result, corrected", () => {
+		// The session the ticket records: the provider counted 170,685, and a
+		// dense tool result followed that answer. Here the trailing result is
+		// 4,354 characters, which at the default math is the 172,862 the
+		// ticket's report line names.
+		const payload = wirePayload([wireSystem(400), wireAssistant(), wireTool(4354)]);
+		expect(correctedEstimateTokens(payload, { reportedContext: 170_685, answersAfterAnchor: 0 }, MATH)).toEqual({
+			tokens: 172_862,
+			anchored: true,
+		});
+	});
+
+	it("is null when the payload carries nothing readable, so the caller degrades", () => {
+		expect(correctedEstimateTokens({ max_tokens: 32_768 }, { reportedContext: 5_000, answersAfterAnchor: 0 }, MATH)).toBeNull();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// The decision table
+// ---------------------------------------------------------------------------
+
+const SETTINGS: GuardSettings = {
+	inflation: 2,
+	bytesPerChar: 4,
+	safetyMargin: PI_SAFETY_MARGIN,
+	minAnswerTokens: PI_MIN_ANSWER_TOKENS,
+};
+
+const SESSION_NONE: SessionFacts = { anchor: null, projectionEstimate: 0 };
+
+/** A session thunk that counts how often the decision read the session. */
+const readSession = (facts: SessionFacts, reads: { n: number }) => () => {
+	reads.n += 1;
+	return facts;
+};
+
+describe("decide", () => {
+	it("refuses a budget at pi's floor as Output starvation, and leaves the payload alone", () => {
+		const payload = wirePayload([wireSystem(400), wireAssistant(), wireTool(4000)], { max_tokens: PI_OUTPUT_FLOOR });
+		const decision = decide({ payload, window: 200_000, session: () => ({ anchor: null, projectionEstimate: 12_345 }), settings: SETTINGS });
+		expect(decision.outcome).toBe("starved");
+		// The starvation line keeps naming pi's own figure, exactly as ADR 0028
+		// has it: the trigger is pi's clamp, not the guard's estimate.
+		expect(decision.estimate).toBe(12_345);
+		expect(decision.budget).toBe(PI_OUTPUT_FLOOR);
+		expect(decision.payload).toBe(payload);
+	});
+
+	it("stays silent for a payload that carries no budget", () => {
+		const payload = { model: "m1", messages: [], temperature: 0.5 } as unknown;
+		const reads = { n: 0 };
+		const decision = decide({ payload, window: 200_000, session: readSession(SESSION_NONE, reads), settings: SETTINGS });
+		expect(decision.outcome).toBe("silent");
+		expect(decision.budget).toBeNull();
+		expect(decision.payload).toBe(payload);
+		expect(reads.n).toBe(0);
+	});
+
+	it("stays silent when there is no Effective window to judge against", () => {
+		const payload = wirePayload([wireSystem(400), wireAssistant(), wireTool(40_000)], { max_tokens: 32_768 });
+		const reads = { n: 0 };
+		const decision = decide({ payload, window: 0, session: readSession(SESSION_NONE, reads), settings: SETTINGS });
+		expect(decision.outcome).toBe("silent");
+		expect(decision.payload).toBe(payload);
+		expect(reads.n).toBe(0);
+	});
+
+	it("does not read the session for a request the payload alone clears", () => {
+		// The cost the guard owns: pi rebuilds its session projection for
+		// every request itself, and a healthy turn must not pay for a second
+		// build. The payload here is small and its budget leaves the window
+		// room at the Inflation-corrected rate, so the request is judged on
+		// the payload and the session is never touched.
+		const payload = wirePayload([wireSystem(400), wireAssistant(), wireTool(4000)], { max_tokens: 20_000 });
+		const reads = { n: 0 };
+		const decision = decide({ payload, window: 200_000, session: readSession({ anchor: null, projectionEstimate: 1500 }, reads), settings: SETTINGS });
+		expect(decision.outcome).toBe("silent");
+		expect(reads.n).toBe(0);
+	});
+
+	it("stays silent while the budget fits the room the Corrected estimate leaves", () => {
+		// The payload is big enough that the payload alone cannot clear it,
+		// so the session is read, and the anchor still leaves room.
+		const payload = wirePayload([wireUser(200_000), wireAssistant(), wireTool(156_000)], { max_tokens: 20_000 });
+		const reads = { n: 0 };
+		const decision = decide({
+			payload,
+			window: 200_000,
+			session: readSession({ anchor: { reportedContext: 100_000, answersAfterAnchor: 0 }, projectionEstimate: 178_000 }, reads),
+			settings: SETTINGS,
+		});
+		expect(decision.outcome).toBe("silent");
+		expect(reads.n).toBe(1);
+		expect(decision.estimate).toBe(178_000);
+		expect(decision.payload).toBe(payload);
+	});
+
+	it("fits the incident's request to the room the Corrected estimate leaves", () => {
+		// The session the ticket records, at its own figures: the provider
+		// counted 170,685 for a history of twice that many characters (the
+		// rate the Inflation factor assumes), and a dense tool result
+		// followed that answer.
+		const payload = wirePayload([wireSystem(400), wireUser(341_370), wireAssistant(), wireTool(4354)], { max_tokens: 32_768 });
+		const decision = decide({
+			payload,
+			window: 200_000,
+			session: () => ({ anchor: { reportedContext: 170_685, answersAfterAnchor: 0 }, projectionEstimate: 162_182 }),
+			settings: SETTINGS,
+		});
+		expect(decision.outcome).toBe("fit");
+		expect(decision.estimate).toBe(172_862);
+		expect(decision.budget).toBe(32_768);
+		// 200000 - 172862 - 4096: the ticket's fitted budget.
+		expect(decision.fitted).toBe(23_042);
+		const sent = decision.payload as { max_tokens: number; model: string; messages: unknown[]; stream: boolean };
+		expect(sent.max_tokens).toBe(23_042);
+		// The Fit owns its budget fields and nothing else.
+		expect(sent.model).toBe("m1");
+		expect(sent.stream).toBe(true);
+		expect(sent.messages.length).toBe(4);
+	});
+
+	it("refuses rather than fits when the room left cannot hold any real answer", () => {
+		const payload = wirePayload([wireSystem(400), wireUser(340_000), wireAssistant(), wireTool(60_022)], { max_tokens: 32_768 });
+		const decision = decide({
+			payload,
+			window: 200_000,
+			session: () => ({ anchor: { reportedContext: 170_000, answersAfterAnchor: 0 }, projectionEstimate: 186_000 }),
+			settings: SETTINGS,
+		});
+		expect(decision.outcome).toBe("overrun");
+		expect(decision.estimate).toBe(200_011);
+		expect(decision.fitted).toBeNull();
+		expect(decision.payload).toBe(payload);
+	});
+
+	it("refuses rather than fits when the fit would fall under the minimum answer budget", () => {
+		// A reasoning operator raises minAnswerTokens so a fit never leaves
+		// less than thinking plus a usable reply; the same branch refuses.
+		const payload = wirePayload([wireSystem(400), wireUser(341_370), wireAssistant(), wireTool(4354)], { max_tokens: 32_768 });
+		const session = () => ({ anchor: { reportedContext: 170_685, answersAfterAnchor: 0 } as ContextAnchor, projectionEstimate: 162_182 });
+		const roomy = decide({ payload, window: 200_000, session, settings: SETTINGS });
+		expect(roomy.outcome).toBe("fit");
+		const tight = decide({ payload, window: 200_000, session, settings: { ...SETTINGS, minAnswerTokens: 24_000 } });
+		expect(tight.outcome).toBe("overrun");
+	});
+
+	it("never refuses a request on its own unanchored estimate", () => {
+		// A fresh session that is already large: no answer carries a Reported
+		// context, so the estimate is the guard's guess over the whole
+		// payload, and the guess says nothing fits. ADR 0028 refuses on pi's
+		// arithmetic; the guard's guess is not pi's arithmetic, and the
+		// provider has not seen this request yet. So the request goes out.
+		const payload = wirePayload([wireSystem(400), wireUser(400_000)], { max_tokens: 32_768 });
+		const decision = decide({ payload, window: 200_000, session: () => SESSION_NONE, settings: SETTINGS });
+		expect(decision.outcome).toBe("silent");
+		expect(decision.estimate).toBe(200_200);
+		expect(decision.payload).toBe(payload);
+	});
+
+	it("fits a request whose unanchored estimate still leaves room", () => {
+		// The same fresh session with room to spare is Fitted, which is what
+		// keeps the rule above from being a free pass for an overrun.
+		const payload = wirePayload([wireSystem(400), wireUser(380_000)], { max_tokens: 32_768 });
+		const decision = decide({ payload, window: 200_000, session: () => SESSION_NONE, settings: SETTINGS });
+		expect(decision.outcome).toBe("fit");
+		expect(decision.estimate).toBe(190_200);
+		expect(decision.fitted).toBe(200_000 - 190_200 - PI_SAFETY_MARGIN);
+	});
+
+	it("degrades to pi's own estimate when the payload carries nothing readable", () => {
+		const payload = { model: "m1", max_tokens: 32_768 } as unknown;
+		const decision = decide({ payload, window: 200_000, session: () => ({ anchor: null, projectionEstimate: 190_000 }), settings: SETTINGS });
+		expect(decision.outcome).toBe("fit");
+		expect(decision.estimate).toBe(190_000);
+		expect(decision.fitted).toBe(200_000 - 190_000 - PI_SAFETY_MARGIN);
+	});
+
+	it("never sends a budget below pi's floor", () => {
+		const payload = wirePayload([wireUser(10_000), wireAssistant(), wireTool(10_000)], { max_tokens: 5 });
+		const decision = decide({
+			payload,
+			window: 10_000,
+			session: () => ({ anchor: { reportedContext: 5000, answersAfterAnchor: 0 }, projectionEstimate: 10_000 }),
+			settings: { inflation: 2, bytesPerChar: 4, safetyMargin: 0, minAnswerTokens: 0 },
+		});
+		expect(decision.outcome).toBe("fit");
+		expect(decision.fitted).toBe(PI_OUTPUT_FLOOR);
+	});
+
+	it("writes whichever budget field the payload carries", () => {
+		for (const field of ["max_tokens", "max_completion_tokens", "max_output_tokens"] as const) {
+			const payload = { model: "m1", messages: [wireUser(10_000), wireAssistant(), wireTool(4354)], stream: true, [field]: 32_768 } as unknown;
+			const decision = decide({
+				payload,
+				window: 20_000,
+				session: () => ({ anchor: { reportedContext: 5000, answersAfterAnchor: 0 }, projectionEstimate: 7000 }),
+				settings: SETTINGS,
+			});
+			expect(decision.outcome).toBe("fit");
+			expect((decision.payload as Record<string, unknown>)[field]).toBe(8_727);
+		}
+	});
+});
+
+describe("withBudget", () => {
+	it("never raises a budget: a payload already at or under the figure is returned untouched", () => {
+		const at = { max_tokens: 100 };
+		expect(withBudget(at, 5_000)).toBe(at);
+		const equal = { max_tokens: 100 };
+		expect(withBudget(equal, 100)).toBe(equal);
+	});
+
+	it("leaves a payload with no readable budget untouched", () => {
+		const none = { temperature: 0.5 };
+		expect(withBudget(none, 10)).toBe(none);
+	});
+
+	it("changes one field and keeps the rest of the payload", () => {
+		const payload = { model: "m1", messages: [{ role: "user", content: "q" }], max_completion_tokens: 8000, temperature: 0.3 };
+		const fitted = withBudget(payload, 1234) as Record<string, unknown>;
+		expect(fitted.max_completion_tokens).toBe(1234);
+		expect(fitted.max_tokens).toBeUndefined();
+		expect(fitted.model).toBe("m1");
+		expect(fitted.temperature).toBe(0.3);
+		expect(payload.max_completion_tokens).toBe(8000);
+	});
+
+	it("lowers a thinking budget that shared the ceiling, by pi's own room rule", () => {
+		// pi's clamp lowers thinking_token_budget to the same room it leaves
+		// the ceiling. A Fit that lowered only the ceiling would leave a
+		// thinking budget above the ceiling it just wrote, which is what
+		// vLLM and SGLang read as an invalid request.
+		const payload = { messages: [], max_tokens: 32_768, thinking_token_budget: 16_000 };
+		const fitted = withBudget(payload, 8000) as Record<string, unknown>;
+		expect(fitted.max_tokens).toBe(8000);
+		expect(fitted.thinking_token_budget).toBe(8000 - PI_MIN_ANSWER_TOKENS);
+	});
+
+	it("lowers a thinking budget carried in chat-template kwargs and in Anthropic's thinking block", () => {
+		const kwargs = { chat_template_kwargs: { thinking_budget: 12_000, min_tokens: 5000 }, thinking: { budget_tokens: 9000, type: "enabled" } };
+		const fitted = withBudget({ messages: [], max_tokens: 32_768, ...kwargs }, 8000) as Record<string, unknown>;
+		expect((fitted.chat_template_kwargs as Record<string, unknown>).thinking_budget).toBe(8000 - PI_MIN_ANSWER_TOKENS);
+		expect((fitted.thinking as Record<string, unknown>).budget_tokens).toBe(8000 - PI_MIN_ANSWER_TOKENS);
+		// A kwarg that does not name a reasoning budget is not the Fit's to touch.
+		expect((fitted.chat_template_kwargs as Record<string, unknown>).min_tokens).toBe(5000);
+		// The kwargs object itself is copied, not mutated.
+		expect(kwargs.chat_template_kwargs.thinking_budget).toBe(12_000);
+	});
+
+	it("leaves a thinking budget that already fits the lowered ceiling alone", () => {
+		const payload = { messages: [], max_tokens: 32_768, thinking_token_budget: 1000 };
+		const fitted = withBudget(payload, 8000) as Record<string, unknown>;
+		expect(fitted.thinking_token_budget).toBe(1000);
+	});
+
+	it("drops a thinking budget its own room rule leaves with nothing", () => {
+		// A ceiling fitted at pi's floor leaves no thinking room. pi drops the
+		// field in that case rather than sending a zero budget, and the Fit
+		// follows it.
+		const payload = { messages: [], max_tokens: 32_768, thinking_token_budget: 16_000 };
+		const fitted = withBudget(payload, PI_OUTPUT_FLOOR) as Record<string, unknown>;
+		expect(fitted.max_tokens).toBe(PI_OUTPUT_FLOOR);
+		expect(fitted.thinking_token_budget).toBeUndefined();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// The report lines
+// ---------------------------------------------------------------------------
+
+describe("fitLine", () => {
+	const facts: OverrunFacts = { provider: "strata", modelId: "model", window: 200_000, estimate: 172_862, budget: 32_768, fitted: 23_042 };
+
+	it("is one line naming the Corrected estimate, the Effective window, and the budget it fitted", () => {
+		expect(fitLine(facts)).toBe(
+			"output overrun: fitted budget (strata/model): context estimate 172862, Effective window 200000, output budget 32768 -> 23042",
+		);
+	});
+
+	it("is one line, and never an em dash", () => {
+		const line = fitLine(facts);
+		expect(line).not.toContain("\n");
+		expect(line).not.toContain("\u2014");
+	});
+});
+
+describe("the two refusals read as one line", () => {
+	const overrunFacts: OverrunFacts = { provider: "llama.cpp", modelId: "m1", window: 200_000, estimate: 200_011, budget: 9_042 };
+
+	it("refuses an overrun that leaves no answer room with the line the collapsed budget is refused with", () => {
+		// The spec's rule: this branch refuses exactly as the guard refuses
+		// today, so the transcript carries one refusal shape to learn.
+		expect(starvationLine(overrunFacts)).toBe(
+			"output starvation: refused (llama.cpp/m1): context estimate 200011, Effective window 200000, output budget 9042",
+		);
+	});
+
+	it("tells the two refusals apart by the figures it names, not by new words", () => {
+		// Output starvation names pi's floor as the budget; Output overrun
+		// names the budget pi chose and an estimate the window cannot pay for.
+		const starved = starvationLine({ ...overrunFacts, estimate: 162_182, budget: PI_OUTPUT_FLOOR });
+		expect(starved).toContain(`output budget ${PI_OUTPUT_FLOOR}`);
+		expect(starvationLine(overrunFacts)).not.toContain(`output budget ${PI_OUTPUT_FLOOR}`);
+		// And neither refusal line is the fit line: a Fit is reported as what
+		// it is, and an operator who sees one reads both.
+		expect(fitLine({ ...overrunFacts, fitted: 23_042 })).toContain("output overrun: fitted budget");
+		expect(fitLine({ ...overrunFacts, fitted: 23_042 })).not.toContain("refused");
+	});
+});
+
+describe("reserveDisagreementLine", () => {
+	const facts: ReserveFacts = { provider: "strata", modelId: "model", reserve: 16_384, ceiling: 32_768 };
+
+	it("names both figures and the setting to change, once, in one line", () => {
+		expect(reserveDisagreementLine(facts)).toBe(
+			"output starvation: reserve disagreement (strata/model): compaction reserve 16384, model output ceiling 32768; set compaction.reserveTokens to 32768 or more",
+		);
+	});
+
+	it("changes nothing in its own words: it names a setting, it does not write one", () => {
+		const line = reserveDisagreementLine(facts);
+		expect(line).not.toContain("\n");
+		expect(line).not.toContain("\u2014");
+		expect(line).toContain("compaction.reserveTokens");
 	});
 });

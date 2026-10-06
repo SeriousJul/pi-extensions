@@ -6,7 +6,9 @@
  * shows a two-state checkbox per resource; project mode shows inherited
  * global resources dimmed, and space cycles inherit, load, unload. Every
  * toggle writes the settings at once; one reload runs on close if anything
- * changed. Package resources appear dimmed and read-only.
+ * changed. Package rows carry a `(package)` label and toggle like any
+ * other row; a single-file package row is refused, because pi loads a
+ * single-file source unconditionally.
  *
  * The list and the resource picker (picker.ts) share the row building and
  * row rendering: every row has the state mark, display name, scope, and
@@ -16,9 +18,11 @@ import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tu
 import type { TUI } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import {
+  SelfRefusalError,
   effectiveEnabled,
   nextOverrideState,
   overrideToOp,
+  packageScopeEnabled,
   projectOverrideState,
   resourceLabel,
   scopeEnabled,
@@ -64,6 +68,7 @@ export const refOf = (r: ResourceInfo): ResourceRef => ({
   path: r.path,
   scope: r.scope,
   baseDir: r.baseDir,
+  packageSource: r.origin === "package" ? r.source : undefined,
 });
 
 /**
@@ -118,9 +123,9 @@ export function rowSuffix(row: ResourceRow, mode: WriteMode, theme: Theme): stri
 
 /**
  * The shared row renderer: the first line - state mark, display name,
- * scope, path - and the dimmed description line beneath. Rows without an
- * override are dimmed (inherited global rows and package rows), plus any
- * row the caller marks dim (the picker's no-op rows).
+ * scope, path - and the dimmed description line beneath. Inherited global
+ * rows are dimmed, plus any row the caller marks dim (the picker's no-op
+ * rows).
  */
 export function renderResourceRow(
   row: ResourceRow,
@@ -129,7 +134,7 @@ export function renderResourceRow(
     width: number;
     theme: Theme;
     mode: WriteMode;
-    /** Dims the row beyond the inherited and package rules. */
+    /** Dims the row beyond the inherited rule. */
     dim?: boolean;
   },
 ): string[] {
@@ -146,7 +151,15 @@ export function renderResourceRow(
   if (row.resource.description) {
     lines.push(truncateToWidth(theme.fg("dim", `  ${row.resource.description}`), opts.width));
   }
-  return row.inherited || row.packageRow || opts.dim ? lines.map((line) => theme.fg("dim", line)) : lines;
+  return row.inherited || opts.dim ? lines.map((line) => theme.fg("dim", line)) : lines;
+}
+
+/** The refusal for a single-file package row, shared by the list and the picker. */
+export function singleFileRefusalText(resource: ResourceInfo): string {
+  return (
+    `Refused: "${resource.displayName}" comes from a single-file package. ` +
+    "pi loads a single-file source unconditionally, so its state cannot be toggled."
+  );
 }
 
 export interface ResourceTuiDeps {
@@ -156,7 +169,7 @@ export interface ResourceTuiDeps {
   resources: ResourceInfo[];
   /** The settings arrays; the component keeps its own copy. */
   settings: SettingsState;
-  machine: { cwd: string; agentDir: string; configDir: string };
+  machine: MachineContext;
   /** Whether the project view is available (project trusted). */
   projectTrusted: boolean;
   /** Writes the prev-to-next diff into the settings files; resolves with the outcome. */
@@ -165,6 +178,22 @@ export interface ResourceTuiDeps {
   viewport: () => number;
   /** Leaves the list. Runs after the list closes. */
   close: (changed: boolean) => void;
+}
+
+/**
+ * The target of one space press in project mode. The cycle's base is what
+ * the resource inherits without a project override: the global state. For
+ * a package row the own state already reflects a project entry, so the
+ * global state is read separately.
+ */
+function projectTarget(ref: ResourceRef, row: ResourceRow, settings: SettingsState, machine: MachineContext): "inherit" | "load" | "unload" {
+  const own = scopeEnabled(settings, ref, machine);
+  const inheritedEnabled = ref.packageSource
+    ? packageScopeEnabled(settings, ref, "user", machine)
+    : row.resource.scope === "user"
+      ? own
+      : true;
+  return nextOverrideState(row.override, inheritedEnabled);
 }
 
 export function createResourceToggleTui(deps: ResourceTuiDeps) {
@@ -217,19 +246,29 @@ export function createResourceToggleTui(deps: ResourceTuiDeps) {
 
   const toggle = (): void => {
     const row = visible[cursor];
-    if (!row || row.packageRow || busy) return;
+    if (!row || busy) return;
+    if (row.resource.singleFilePackage) {
+      writeError = singleFileRefusalText(row.resource);
+      tui.requestRender();
+      return;
+    }
     busy = true;
     writeError = undefined;
     const ref = refOf(row.resource);
     let next: SettingsState;
-    if (mode === "global") {
-      const op: ToggleOp = row.enabled ? { op: "disable", mode: "global" } : { op: "enable", mode: "global" };
-      next = transition(settings, ref, op, deps.machine);
-    } else {
-      const own = scopeEnabled(settings, ref, deps.machine);
-      const inheritedEnabled = row.resource.scope === "user" ? own : true;
-      const target = nextOverrideState(row.override, inheritedEnabled);
-      next = transition(settings, ref, overrideToOp(target), deps.machine);
+    try {
+      next =
+        mode === "global"
+          ? transition(settings, ref, row.enabled ? { op: "disable", mode: "global" } : { op: "enable", mode: "global" }, deps.machine)
+          : transition(settings, ref, overrideToOp(projectTarget(ref, row, settings, deps.machine)), deps.machine);
+    } catch (error) {
+      if (error instanceof SelfRefusalError) {
+        busy = false;
+        writeError = error.message;
+        tui.requestRender();
+        return;
+      }
+      throw error;
     }
     const prev = settings;
     settings = next;

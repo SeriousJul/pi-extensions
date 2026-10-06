@@ -3,7 +3,7 @@
  *
  * A call's index is the nearest initialized ancestor of its anchor: the
  * call's working directory, or, when a file argument anchors the call
- * (`codegraph_node` file mode; see "Anchor" in the repository CONTEXT.md), that
+ * (`codegraph_node` file mode; see "Anchor" in the repository GLOSSARY.md), that
  * file's location.
  * A borrowed index is never served: inside a git worktree the root is always
  * the worktree itself, so an index that belongs to another worktree is
@@ -209,7 +209,7 @@ export function rootRelativeFile(
 /**
  * The directory root resolution starts from for a call: the call's own
  * directory, or the directory that holds its file argument (the anchor; see
- * "Anchor" in the repository CONTEXT.md). A file argument runs through the
+ * "Anchor" in the repository GLOSSARY.md). A file argument runs through the
  * path rule (`expandPathArg`), so `~` forms expand here too.
  */
 function anchorBaseDir(startDir: string, fileArg?: string): string {

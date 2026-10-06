@@ -13,7 +13,7 @@ import type { ExtensionAPI, ExtensionContext, Theme, ToolInfo } from "@earendil-
 import { getSettingsListTheme } from "@earendil-works/pi-coding-agent";
 import { Container, type SettingItem, SettingsList } from "@earendil-works/pi-tui";
 
-// User-only tools (CONTEXT.md, "Tool exposure", issue #72): the operator has
+// User-only tools (GLOSSARY.md, "Tool exposure", issue #72): the operator has
 // the capability as a command, so as agent tools they start inactive in
 // every new session and can be enabled per session through /tools. They pay
 // no context cost by default and a new session cannot reach them. The list

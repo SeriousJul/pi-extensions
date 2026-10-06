@@ -30,13 +30,15 @@
  * the clamped value the session actually holds.
  *
  * Budget: a selection gets one Attempt per Heal moment, two in total, and a
- * new selection re-arms both. A turn that ends `stopReason: "length"` with a
- * near-empty output may spend an unspent Attempt on an extra compare, and
- * can never re-arm one. A `/llama-window` command re-arms the pre-request
- * Attempt and runs one compare, because pi emits no `model_select` when the
- * same model is selected again, so a re-select cannot re-arm anything. A
- * refresh that fails or times out spends nothing, exactly as before, so the
- * second moment keeps the information the first one could not get.
+ * new selection re-arms both. A re-select of the model the session already
+ * holds is a selection event too: pi records it in the transcript even though
+ * it emits no `model_select` for an equal model, the wiring reads that record
+ * at the next turn start, and it re-arms both Attempts. A turn that ends
+ * `stopReason: "length"` with a near-empty output may spend an unspent Attempt
+ * on an extra compare, and can never re-arm one. A `/llama-window` command
+ * re-arms the pre-request Attempt and runs one compare on demand. A refresh
+ * that fails or times out spends nothing, exactly as before, so the second
+ * moment keeps the information the first one could not get.
  *
  * The core is engine-free: it names no pi or pi-ai runtime and every
  * observable dependency (the catalog refresh, the registry read-back, the
@@ -129,6 +131,13 @@ export interface LlamaRefresh {
 	onSessionStart(): void;
 	/** A new model selection: re-arms both Attempts for the selection and moves the selection's generation. */
 	onModelSelect(ref: ModelRef): void;
+	/**
+	 * A re-select of the model the session already holds. pi emits no
+	 * model_select for an equal model, so the wiring reads the selection from
+	 * the transcript and reports it here. It re-arms both Attempts and moves
+	 * the selection's generation, exactly like a new selection.
+	 */
+	onReSelect(ref: ModelRef): void;
 	/** The pre-request Heal moment (before the request is built): compare while the pre-request Attempt is unspent. */
 	onPreRequest(ref: ModelRef): Promise<RefreshDecision>;
 	/** The post-request Heal moment (the run has settled): compare while the post-request Attempt is unspent. */
@@ -195,6 +204,13 @@ export function createLlamaRefresh(deps: LlamaRefreshDeps): LlamaRefresh {
 		const state = spent.get(selection) ?? { preSpent: false, postSpent: false };
 		spent.set(selection, state);
 		return state;
+	};
+
+	// The re-arm one selection event performs: both Attempts go back to
+	// unspent and the selection's generation moves.
+	const rearm = (ref: ModelRef): void => {
+		generation += 1;
+		spent.set(key(ref), { preSpent: false, postSpent: false });
 	};
 
 	const compare = async (ref: ModelRef, moment: Moment, opts?: { timeoutMs?: number }): Promise<RefreshDecision> => {
@@ -316,12 +332,18 @@ export function createLlamaRefresh(deps: LlamaRefreshDeps): LlamaRefresh {
 			busy.clear();
 		},
 		onModelSelect(ref) {
-			// A new selection re-arms both Attempts. pi emits this event
-			// only for a different model (its modelsAreEqual compares id
-			// and provider), so a re-select of the same model re-arms
-			// nothing: that is why the command exists.
-			generation += 1;
-			spent.set(key(ref), { preSpent: false, postSpent: false });
+			// A new selection re-arms both Attempts. pi emits this event only
+			// for a different model (its modelsAreEqual compares id and
+			// provider), so the wiring reports a same-model re-select through
+			// onReSelect instead.
+			rearm(ref);
+		},
+		onReSelect(ref) {
+			// The operator selected the model the session already holds. It is
+			// a selection like any other: both Attempts re-arm, and the
+			// selection's generation moves so a compare that is already in
+			// flight cannot re-apply over the operator's choice.
+			rearm(ref);
 		},
 		async onPreRequest(ref) {
 			if (!isLlama(ref)) return { kind: "skip" };
@@ -362,9 +384,9 @@ export function createLlamaRefresh(deps: LlamaRefreshDeps): LlamaRefresh {
 		async onCommand(ref) {
 			if (!isLlama(ref)) return { kind: "skip" };
 			// The command re-arms exactly one Attempt - the pre-request
-			// one - in place, keeping the post Attempt's state. pi emits no
-			// model_select for a same-model re-select, so this is the only
-			// way a human re-runs the heal by hand.
+			// one - in place, keeping the post Attempt's state. It is the human
+			// re-run for a window the operator moved without re-selecting the
+			// model.
 			const state = stateFor(ref);
 			state.preSpent = false;
 			const run = compareExclusive(ref, "pre", { timeoutMs: REFRESH_TIMEOUT_MS });

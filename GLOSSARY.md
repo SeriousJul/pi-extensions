@@ -451,6 +451,28 @@ skill sync reports it until the user deletes it or accepts the rename.
 _Avoid_: stale skill (stale is a content word, this is a presence word),
 dangling skill, ghost
 
+### Skill migrate
+
+**Migration**:
+One named, incremental step of a Target repo's structure, from version N-1 to version N. Migrations run in strict order, so moving a repo from 1 to 3 runs migration 2 and then migration 3. A migration is defined once in the extension and applied to many repos.
+_Avoid_: upgrade (generic), version bump, skill sync (that merges upstream skill content), reindex
+
+**Migration record**:
+One entry of a Migration changelog: the version reached, the migration's name, the identity of the extension that applied it, and the UTC date time. Appended only after a migration fully applies, so a failed migration leaves no record.
+_Avoid_: log line, audit entry, stamp
+
+**Migration changelog**:
+The `.pi/skill-migrate_changelog.json` file committed in a Target repo: an append-only array of Migration records, written atomically and never rewritten. Its last record is the repo's Current version.
+_Avoid_: history, state file, ledger (the Output limits' per-message total), sync manifest (the Sync extension's file selection)
+
+**Target repo**:
+The one repo a run of skill-migrate operates on: the repo the CLI names, or the session's project root for the command.
+_Avoid_: underlying repo (the user's word), working repo, client repo
+
+**Current version**:
+The version of a Target repo's last Migration record, or void when the repo has no Migration changelog. Derived on every run, never stored twice.
+_Avoid_: schema version (a database word), repo version, migration level
+
 ### Usage
 
 **Usage event**:
@@ -551,6 +573,34 @@ send.
 _Avoid_: truncation (a cut that keeps an answer and loses its tail), length
 stop (the transcript record of a starved turn that went out), overflow
 (the window's state, not the budget's)
+
+**Output overrun**:
+The state of a request whose output budget cannot be paid for out of the room
+the Corrected estimate leaves in the Effective window, so the provider rejects
+the whole request instead of answering it. The name of what the guard Fits.
+_Avoid_: Output starvation (there the budget collapsed to pi's floor; here the
+budget is pi's full choice and the window is what will not pay for it),
+overflow (the window's state, not the budget's), 400 (the transport symptom,
+not the state)
+
+**Reported context**:
+The prompt size the provider itself counted for the last answer it gave, read
+from that answer's usage block. The anchor every honest context estimate
+starts from.
+_Avoid_: usage tokens, last usage (pi's field name for one response, not the
+session's anchor), prompt tokens (a wire field of one response)
+
+**Corrected estimate**:
+The Reported context plus an Inflation-corrected estimate of everything the
+provider has not counted yet. The figure pi's arithmetic is missing.
+_Avoid_: pi's estimate (that is the chars/4 figure), true count (it is still
+an estimate, anchored on one real count)
+
+**Fit**:
+A request's output budget lowered to the room the Corrected estimate leaves in
+the Effective window. One direction only: a Fit never raises a budget.
+_Avoid_: clamp (that names pi's arithmetic, which produced the bad budget),
+truncation, cap
 
 **Spill**:
 The lossless file copy of a result this extension cut, held under the agent

@@ -10,7 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { resourceDescription } from "../../extensions/resource-toggle/lib/description.ts";
 import { displayNameFor, machineContextFor, resolveResources } from "../../extensions/resource-toggle/lib/resolver.ts";
 import { writeSettings } from "../../extensions/resource-toggle/lib/writer.ts";
-import { emptyScopeArrays, type SettingsState } from "../../extensions/resource-toggle/lib/types.ts";
+import { emptyScopeState, type PackageEntry, type SettingsState } from "../../extensions/resource-toggle/lib/types.ts";
 
 const root = mkdtempSync(join(tmpdir(), "resource-toggle-resolver-"));
 const agentDir = join(root, "agent");
@@ -152,8 +152,8 @@ describe("resolveResources", () => {
 
 describe("writeSettings", () => {
   const from = (globalArrays?: Partial<SettingsState["global"]>, projectArrays?: Partial<SettingsState["project"]>): SettingsState => ({
-    global: { ...emptyScopeArrays(), ...(globalArrays ?? {}) },
-    project: { ...emptyScopeArrays(), ...(projectArrays ?? {}) },
+    global: { ...emptyScopeState(), ...(globalArrays ?? {}) },
+    project: { ...emptyScopeState(), ...(projectArrays ?? {}) },
   });
 
   it("writes only the changed arrays and keeps the rest of the file", async () => {
@@ -304,5 +304,107 @@ describe("resourceDescription", () => {
 
   it("an unreadable file gets no description", () => {
     expect(resourceDescription("extensions", join(agentDir, "extensions", "missing.ts"))).toBeUndefined();
+  });
+});
+
+describe("package resources", () => {
+  const pkgDir = join(root, "pkg");
+
+  beforeAll(() => {
+    mkdirSync(join(pkgDir, "extensions"), { recursive: true });
+    writeFileSync(join(pkgDir, "extensions", "quota.ts"), "export default function (pi) {}\n");
+    writeFileSync(join(pkgDir, "extensions", "other.ts"), "export default function (pi) {}\n");
+  });
+
+  const withGlobalPackages = (packages: PackageEntry[]): void => {
+    const global = readGlobal();
+    global.packages = packages;
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify(global, null, 2) + "\n");
+  };
+  const restoreGlobalPackages = (): void => {
+    const global = readGlobal();
+    delete global.packages;
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify(global, null, 2) + "\n");
+  };
+
+  it("lists a local package's resources with origin, source, and baseDir", async () => {
+    withGlobalPackages([pkgDir]);
+    try {
+      const { resources, settings } = await resolveResources({ cwd: project, agentDir, projectTrusted: true });
+      const quota = resources.find((r) => r.displayName === "quota.ts");
+      expect(quota?.origin).toBe("package");
+      expect(quota?.source).toBe(pkgDir);
+      expect(quota?.baseDir).toBe(pkgDir);
+      expect(quota?.scope).toBe("user");
+      expect(quota?.enabled).toBe(true);
+      expect(quota?.ownEnabled).toBe(true);
+      expect(quota?.singleFilePackage).toBeUndefined();
+      expect(settings.global.packages).toEqual([pkgDir]);
+    } finally {
+      restoreGlobalPackages();
+    }
+  });
+
+  it("marks a single-file local package source for refusal", async () => {
+    // HOME is sandboxed to the fixture root, so ~/single.ts is a fixture path.
+    const singleFile = join(root, "single.ts");
+    writeFileSync(singleFile, "export default function (pi) {}\n");
+    withGlobalPackages([pkgDir, "~/single.ts"]);
+    try {
+      const { resources } = await resolveResources({ cwd: project, agentDir, projectTrusted: true });
+      const single = resources.find((r) => r.path === singleFile);
+      expect(single?.origin).toBe("package");
+      expect(single?.source).toBe("~/single.ts");
+      expect(single?.singleFilePackage).toBe(true);
+      expect(resources.find((r) => r.displayName === "quota.ts")?.singleFilePackage).toBeUndefined();
+    } finally {
+      restoreGlobalPackages();
+    }
+  });
+
+  it("a packages filter disables the bundled extension in the resolution", async () => {
+    withGlobalPackages([{ source: pkgDir, extensions: ["-extensions/quota.ts"] }]);
+    try {
+      const { resources, settings } = await resolveResources({ cwd: project, agentDir, projectTrusted: true });
+      expect(resources.find((r) => r.displayName === "quota.ts")?.enabled).toBe(false);
+      expect(resources.find((r) => r.displayName === "other.ts")?.enabled).toBe(true);
+      expect(settings.global.packages).toEqual([{ source: pkgDir, extensions: ["-extensions/quota.ts"] }]);
+    } finally {
+      restoreGlobalPackages();
+    }
+  });
+
+  it("writeSettings lands the packages array in the right file", async () => {
+    const prev = { global: { ...emptyScopeState() }, project: { ...emptyScopeState() } };
+    const next = {
+      global: { ...emptyScopeState(), packages: [{ source: pkgDir, extensions: ["-extensions/quota.ts"] }] },
+      project: { ...emptyScopeState(), packages: [pkgDir] },
+    };
+    const outcome = await writeSettings({ cwd: project, agentDir, projectTrusted: true }, prev, next);
+    expect(outcome).toEqual({ ok: true });
+    expect(readGlobal().packages).toEqual([{ source: pkgDir, extensions: ["-extensions/quota.ts"] }]);
+    expect(readProject().packages).toEqual([pkgDir]);
+    // Restore.
+    const global = readGlobal();
+    delete global.packages;
+    const projectSettings = readProject();
+    delete projectSettings.packages;
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify(global, null, 2) + "\n");
+    writeFileSync(join(projectPi, "settings.json"), JSON.stringify(projectSettings, null, 2) + "\n");
+  });
+
+  it("writeSettings skips the packages setter when the array is unchanged", async () => {
+    const packages = [{ source: pkgDir, extensions: ["-extensions/quota.ts"] }];
+    withGlobalPackages(packages);
+    try {
+      const prev = { global: { ...emptyScopeState(), packages }, project: { ...emptyScopeState() } };
+      const next = { global: { ...emptyScopeState(), packages: [{ source: pkgDir, extensions: ["-extensions/quota.ts"] }] }, project: { ...emptyScopeState() } };
+      const before = readGlobal();
+      const outcome = await writeSettings({ cwd: project, agentDir, projectTrusted: true }, prev, next);
+      expect(outcome).toEqual({ ok: true });
+      expect(readGlobal()).toEqual(before);
+    } finally {
+      restoreGlobalPackages();
+    }
   });
 });

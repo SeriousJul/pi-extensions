@@ -17,8 +17,10 @@
  *   an action without a name relays the no-argument command so the picker
  *   opens for the user.
  *
- * State lives in pi's native settings override patterns, the same files and
- * format `pi config` uses (ADR 0012), so the two tools are interchangeable.
+ * State lives in pi's native settings, the same files and format `pi
+ * config` uses (ADR 0012): override patterns in the resource arrays for
+ * top-level resources, and the packages-array filter for package resources
+ * (ADR 0029). So the two tools are interchangeable.
  * Every change flushes the settings and then reloads the session, so the
  * effect is immediate and survives a restart.
  */
@@ -34,7 +36,7 @@ import {
 import { machineContextFor, resolveResources } from "./lib/resolver.ts";
 import { completionItems, matchResource } from "./lib/matcher.ts";
 import { writeSettings } from "./lib/writer.ts";
-import { projectOverrideState, resourceLabel, transition } from "./lib/state-machine.ts";
+import { SelfRefusalError, projectOverrideState, resourceLabel, topLevelRefsOf, transition } from "./lib/state-machine.ts";
 import { capDescription, globalViewRows, projectViewRows, renderResourceTable, shortPath } from "./lib/table.ts";
 import type {
   MachineContext,
@@ -67,7 +69,18 @@ export default function (pi: ExtensionAPI): void {
     state.projectTrusted = ctx.isProjectTrusted();
   });
 
-  const machine = (): MachineContext => machineContextFor(state.cwd, getAgentDir());
+  const machine = (): MachineContext => ({
+    ...machineContextFor(state.cwd, getAgentDir()),
+    selfPath: SELF_PATH,
+  });
+
+  /**
+   * The single-file refusal, shared by the command and tool paths: pi
+   * loads a single-file package source unconditionally, so a packages-
+   * array filter cannot change its state.
+   */
+  const singleFileRefusal = (resource: ResourceInfo): string =>
+    `Refused: "${resource.displayName}" comes from a single-file package. pi loads a single-file source unconditionally, so its state cannot be toggled; remove the package entry from the settings instead.`;
 
   const isSelf = (path: string): boolean => {
     const self = safeRealpath(SELF_PATH);
@@ -111,6 +124,9 @@ export default function (pi: ExtensionAPI): void {
       projectTrusted: state.projectTrusted,
       selfPath: SELF_PATH,
     }));
+    if (resource.singleFilePackage) {
+      return { ok: false, text: singleFileRefusal(resource), needsReload: false };
+    }
     if (op.op !== "enable" && isSelf(resource.path)) {
       return {
         ok: false,
@@ -118,8 +134,22 @@ export default function (pi: ExtensionAPI): void {
         needsReload: false,
       };
     }
-    const ref: ResourceRef = { type: resource.type, path: resource.path, scope: resource.scope, baseDir: resource.baseDir };
-    const next: SettingsState = transition(res.settings, ref, op, machine());
+    const ref: ResourceRef = {
+      type: resource.type,
+      path: resource.path,
+      scope: resource.scope,
+      baseDir: resource.baseDir,
+      packageSource: resource.origin === "package" ? resource.source : undefined,
+    };
+    let next: SettingsState;
+    try {
+      next = transition(res.settings, ref, op, { ...machine(), topLevelRefs: topLevelRefsOf(res.resources) });
+    } catch (error) {
+      if (error instanceof SelfRefusalError) {
+        return { ok: false, text: error.message, needsReload: false };
+      }
+      throw error;
+    }
     const outcome = await writeSettings(
       { cwd: state.cwd, agentDir: getAgentDir(), projectTrusted: state.projectTrusted },
       res.settings,
@@ -209,7 +239,13 @@ export default function (pi: ExtensionAPI): void {
     }
     const overrides = new Map<ResourceInfo, OverrideState>();
     for (const resource of resolved.resources) {
-      const ref: ResourceRef = { type: resource.type, path: resource.path, scope: resource.scope, baseDir: resource.baseDir };
+      const ref: ResourceRef = {
+        type: resource.type,
+        path: resource.path,
+        scope: resource.scope,
+        baseDir: resource.baseDir,
+        packageSource: resource.origin === "package" ? resource.source : undefined,
+      };
       overrides.set(resource, projectOverrideState(resolved.settings, ref, machineCtx));
     }
     return renderResourceTable(projectViewRows(resolved.resources, overrides));
@@ -233,7 +269,7 @@ export default function (pi: ExtensionAPI): void {
             theme,
             resources: resolved.resources,
             settings: resolved.settings,
-            machine: machine(),
+            machine: { ...machine(), topLevelRefs: topLevelRefsOf(resolved.resources) },
             projectTrusted: ctx.isProjectTrusted(),
             apply: (prev, next) =>
               writeSettings({ cwd: ctx.cwd, agentDir: getAgentDir(), projectTrusted: ctx.isProjectTrusted() }, prev, next),
@@ -295,9 +331,8 @@ export default function (pi: ExtensionAPI): void {
                 initialMode: viewMode,
                 resources: resolved.resources,
                 settings: resolved.settings,
-                machine: machine(),
+                machine: { ...machine(), topLevelRefs: topLevelRefsOf(resolved.resources) },
                 projectTrusted: ctx.isProjectTrusted(),
-                isSelf: (path) => isSelf(path),
                 // Rebuild the op at pick time: a Tab switch in the picker
                 // changes the mode a pick must apply in.
                 applyPick: (resource, pickMode) =>
@@ -382,7 +417,7 @@ export default function (pi: ExtensionAPI): void {
           cwd: state.cwd,
           agentDir: getAgentDir(),
           projectTrusted: state.projectTrusted,
-        selfPath: SELF_PATH,
+          selfPath: SELF_PATH,
         });
         const global = listText(resolved, "global");
         const project = state.projectTrusted ? `\nresources (project view)\n${listText(resolved, "project")}` : "";
@@ -399,7 +434,7 @@ export default function (pi: ExtensionAPI): void {
         // opens in TUI mode, and the resource table prints in the others.
         const flag = params.action !== "inherit" && params.scope === "project" ? " --project" : "";
         // expandPromptTemplates dispatches the command immediately; extension
-        // commands cannot be queued for delivery mid-turn.
+        // commands cannot be queued mid-turn.
         pi.sendUserMessage(`/${params.action}${flag}`, { expandPromptTemplates: true });
         return {
           content: [

@@ -32,6 +32,11 @@ import { defaultSessionsRoot } from "../shared/sessions.ts";
 export const JOBS_DIR_ENV = "PI_JOBS_DIR";
 /** The machine-level bound on concurrent running jobs. */
 export const MAX_RUNNING_JOBS = 8;
+/** How many jobs one listing names, newest first. A long-lived session
+ * accumulates job directories for weeks; a listing of every one of them is
+ * a wall of text that buries the jobs the caller asked about. The bound is
+ * a constant, not a setting: it protects the message, not a taste. */
+export const MAX_LISTED_JOBS = 20;
 /** Job directories older than this are removed when a new job starts. */
 export const STALE_JOB_MS = 7 * 24 * 60 * 60 * 1000;
 /** The default job_wait timeout, in seconds. */
@@ -185,12 +190,23 @@ export function listJobs(jobsRoot: string, now: number = Date.now()): JobInfo[] 
 	return jobs;
 }
 
-/** The running jobs as a line per job, for refusal and unknown-id errors. */
+/** The running jobs as a line per job, for refusal and unknown-id errors.
+ * Bounded like every other listing, with the same wording about what the
+ * bound left out. */
 export function formatLiveJobs(jobsRoot: string, now: number = Date.now()): string {
-	return listJobs(jobsRoot, now)
-		.filter((job) => job.status === "running")
-		.map((job) => formatJobLine(job))
-		.join("\n");
+	return formatJobListing(listJobs(jobsRoot, now).filter((job) => job.status === "running"), jobsRoot);
+}
+
+/** The listing: at most MAX_LISTED_JOBS jobs, newest first, and one line
+ * naming how many the bound left out and where the rest lives (the Job
+ * root). A caller that needs the rest reads the job directories there; the
+ * listing is not the index. */
+export function formatJobListing(jobs: JobInfo[], jobsRoot: string): string {
+	const listed = jobs.slice(0, MAX_LISTED_JOBS);
+	const lines = listed.map(formatJobLine);
+	const omitted = jobs.length - listed.length;
+	if (omitted > 0) lines.push(`${omitted} older job(s) not listed: the newest ${MAX_LISTED_JOBS} are shown; the full list is in ${jobsRoot}`);
+	return lines.join("\n");
 }
 
 /** Removes job directories older than the stale bound. Returns how many it

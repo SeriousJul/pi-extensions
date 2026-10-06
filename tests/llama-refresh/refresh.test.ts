@@ -211,6 +211,57 @@ describe("llama-refresh core", () => {
 		expect((await h.core.onPreRequest(REF)).kind).toBe("skip");
 	});
 
+	it("a same-model re-select re-arms both Attempts", async () => {
+		const h = makeHarness();
+		h.core.onSessionStart();
+		h.core.onModelSelect(REF);
+		await h.core.onPreRequest(REF);
+		await h.core.onPostRequest(REF);
+		expect(h.refreshCount()).toBe(2);
+		// Both Attempts of the selection are spent: a moment now skips.
+		expect((await h.core.onPreRequest(REF)).kind).toBe("skip");
+
+		// pi emits no model_select for an equal model, so the wiring reports
+		// the re-select it read from the transcript. It re-arms both Attempts
+		// exactly like a new selection.
+		h.core.onReSelect(REF);
+		h.onRefresh = () => {
+			h.registry.window = 160000;
+		};
+		expect(await h.core.onPreRequest(REF)).toEqual({ kind: "re-apply", from: 40192, to: 160000, model: model(160000) });
+		expect(h.refreshCount()).toBe(3);
+		expect((await h.core.onPostRequest(REF)).kind).toBe("unchanged");
+		expect(h.refreshCount()).toBe(4);
+		// The re-armed selection spends its budget again, so a re-select can
+		// never loop a compare on its own.
+		expect((await h.core.onPreRequest(REF)).kind).toBe("skip");
+	});
+
+	it("a re-select bumps the generation so an in-flight compare skips its re-apply", async () => {
+		const h = makeHarness();
+		h.core.onSessionStart();
+		h.core.onModelSelect(REF);
+		h.delayNext(20);
+		let reselected = false;
+		h.onRefresh = () => {
+			h.registry.window = 160000;
+			// The operator re-selects the model while the refresh is in flight.
+			if (!reselected) {
+				reselected = true;
+				h.core.onReSelect(REF);
+			}
+		};
+
+		const decision = await h.core.onPreRequest(REF);
+
+		// The re-select moved the selection: the in-flight compare skips its
+		// re-apply, and the re-armed selection re-evaluates from scratch.
+		expect(decision.kind).toBe("skip");
+		expect(h.applied()).toEqual([]);
+		expect(await h.core.onPreRequest(REF)).toEqual({ kind: "unchanged", window: 160000 });
+		expect(h.refreshCount()).toBe(2);
+	});
+
 	it("a failed refresh spends nothing, so the next moment retries", async () => {
 		const h = makeHarness();
 		h.core.onSessionStart();
