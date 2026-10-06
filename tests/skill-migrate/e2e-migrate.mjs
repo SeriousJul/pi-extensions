@@ -183,6 +183,39 @@ console.log("identity override");
 	}
 }
 
+// ---------------------------------------------------------------------------
+// 7. self-migration on a clone of the checkout: the tool's own source and
+//    test trees carry the old names as migration data and must survive
+// ---------------------------------------------------------------------------
+console.log("self-migration on a clone of the checkout");
+{
+	const clone = join(tmpdir(), `skill-migrate-e2e-self-${Date.now()}`);
+	execFileSync("git", ["clone", "--quiet", repoRoot, clone], { stdio: "ignore" });
+	const cloneHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd: clone, encoding: "utf8" }).trim();
+	const before = {
+		coreTest: readFileSync(join(clone, "tests", "skill-migrate", "core.test.ts"), "utf8"),
+		migrations: readFileSync(join(clone, "extensions", "skill-migrate", "migrations.ts"), "utf8"),
+		changelog: existsSync(join(clone, CHANGELOG)) ? JSON.parse(readFileSync(join(clone, CHANGELOG), "utf8")) : null,
+	};
+	try {
+		const result = run(["migrate"], clone);
+		check(result.code === 0, "exit 0");
+		check(existsSync(join(clone, "GLOSSARY.md")), "clone carries the new glossary");
+		check(!existsSync(join(clone, "CONTEXT.md")), "clone old glossary gone");
+		check(readFileSync(join(clone, "tests", "skill-migrate", "core.test.ts"), "utf8") === before.coreTest, "the tool's own test tree is untouched");
+		check(readFileSync(join(clone, "extensions", "skill-migrate", "migrations.ts"), "utf8") === before.migrations, "the tool's own source is untouched");
+		const after = JSON.parse(readFileSync(join(clone, CHANGELOG), "utf8"));
+		if (after.migrations.length > (before.changelog?.migrations.length ?? 0)) {
+			const fresh = after.migrations.slice(before.changelog?.migrations.length ?? 0);
+			check(fresh.every((r) => r.identity === cloneHead), `new records carry the clone's HEAD ${cloneHead.slice(0, 7)}`);
+		} else {
+			check(true, "clone was already current; no new records");
+		}
+	} finally {
+		rmSync(clone, { recursive: true, force: true });
+	}
+}
+
 if (failures > 0) {
 	console.error(`\n${failures} failure(s)`);
 	process.exit(1);

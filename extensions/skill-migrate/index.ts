@@ -21,7 +21,9 @@ import { MIGRATIONS } from "./migrations.ts";
 import { resolveIdentity } from "./identity.ts";
 
 const extensionDir = dirname(fileURLToPath(import.meta.url));
-const checkoutRoot = resolve(join(extensionDir, ".."));
+// The extension lives at <checkout>/extensions/skill-migrate, so the
+// checkout root is two levels up.
+const checkoutRoot = resolve(join(extensionDir, "..", ".."));
 
 function renderMigrate(result: { applied: { version: number; migration: string }[]; currentVersion: number; fromVersion: number }): string {
   if (result.applied.length === 0) {
