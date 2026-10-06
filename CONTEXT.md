@@ -451,6 +451,28 @@ skill sync reports it until the user deletes it or accepts the rename.
 _Avoid_: stale skill (stale is a content word, this is a presence word),
 dangling skill, ghost
 
+### Skill migrate
+
+**Migration**:
+One named, incremental step of a Target repo's structure, from version N-1 to version N. Migrations run in strict order, so moving a repo from 1 to 3 runs migration 2 and then migration 3. A migration is defined once in the extension and applied to many repos.
+_Avoid_: upgrade (generic), version bump, skill sync (that merges upstream skill content), reindex
+
+**Migration record**:
+One entry of a Migration changelog: the version reached, the migration's name, the identity of the extension that applied it, and the UTC date time. Appended only after a migration fully applies, so a failed migration leaves no record.
+_Avoid_: log line, audit entry, stamp
+
+**Migration changelog**:
+The `.pi/skill-migrate_changelog.json` file committed in a Target repo: an append-only array of Migration records, written atomically and never rewritten. Its last record is the repo's Current version.
+_Avoid_: history, state file, ledger (the Output limits' per-message total), sync manifest (the Sync extension's file selection)
+
+**Target repo**:
+The one repo a run of skill-migrate operates on: the repo the CLI names, or the session's project root for the command.
+_Avoid_: underlying repo (the user's word), working repo, client repo
+
+**Current version**:
+The version of a Target repo's last Migration record, or void when the repo has no Migration changelog. Derived on every run, never stored twice.
+_Avoid_: schema version (a database word), repo version, migration level
+
 ### Usage
 
 **Usage event**:
