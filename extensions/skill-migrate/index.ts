@@ -50,7 +50,10 @@ export default function (pi: ExtensionAPI): void {
             (result.upToDate ? ". Up to date." : ". Not up to date; run /migrate.");
         } else {
           const identity = resolveIdentity(checkoutRoot);
-          const excludedPaths = [extensionDir, join(checkoutRoot, "tests", "skill-migrate")];
+          // The old file names appear as migration data inside the skill-migrate
+          // tool's own source and test trees; a copy of the tool inside the
+          // target repo must not be rewritten into a broken tool.
+          const excludedPaths = [join(ctx.cwd, "extensions", "skill-migrate"), join(ctx.cwd, "tests", "skill-migrate")];
           text = renderMigrate(migrateToLatest(ctx.cwd, MIGRATIONS, { identity, ctx: { excludedPaths } }));
         }
       } catch (error) {

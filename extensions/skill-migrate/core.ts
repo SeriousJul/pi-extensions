@@ -49,8 +49,9 @@ export class MigrationError extends Error {
 export interface MigrationContext {
   /**
    * Absolute directory paths the reference rewrite must never touch. The
-   * CLI and command pass the running tool's own source and test trees: the
-   * old file names appear there as migration data, not as references.
+   * CLI and command pass the skill-migrate tool's own source and test trees
+   * inside the target repo: the old file names appear there as migration
+   * data, and rewriting a copy of the tool would break it.
    */
   excludedPaths?: string[];
 }

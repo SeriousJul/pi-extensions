@@ -100,8 +100,12 @@ export async function main(argv: string[], output: CliOutput = { out: console.lo
       output.out(renderStatus(status(repoRoot, MIGRATIONS)));
     } else {
       const identity = identityOverride ?? resolveIdentity(checkoutRoot);
-      const excludedPaths = [extensionDir, join(checkoutRoot, "tests", "skill-migrate")];
-      output.out(renderMigrate(migrateToLatest(repoRoot, MIGRATIONS, { identity, ctx: { excludedPaths } })));
+      const resolvedRoot = resolve(repoRoot);
+      // The old file names appear as migration data inside the skill-migrate
+      // tool's own source and test trees; a copy of the tool inside the
+      // target repo must not be rewritten into a broken tool.
+      const excludedPaths = [join(resolvedRoot, "extensions", "skill-migrate"), join(resolvedRoot, "tests", "skill-migrate")];
+      output.out(renderMigrate(migrateToLatest(resolvedRoot, MIGRATIONS, { identity, ctx: { excludedPaths } })));
     }
     return 0;
   } catch (error) {
