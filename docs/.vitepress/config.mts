@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitepress";
 
-// The glossary is generated from the repo-root CONTEXT.md, which is the
+// The glossary is generated from the repo-root GLOSSARY.md, which is the
 // file agents update. The gitignored generated file has no git history,
 // so give the glossary page the last commit time of the root file.
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -11,7 +11,7 @@ let glossaryLastUpdated: number | undefined;
 try {
   const seconds = execFileSync(
     "git",
-    ["log", "-1", "--format=%ct", "--", "CONTEXT.md"],
+    ["log", "-1", "--format=%ct", "--", "GLOSSARY.md"],
     {
       cwd: repoRoot,
       encoding: "utf8",
@@ -27,7 +27,7 @@ try {
 export default defineConfig({
   title: "pi-extensions",
   // git-based lastUpdated is null for the gitignored generated
-  // glossary.md, so the page gets the commit time of CONTEXT.md.
+  // glossary.md, so the page gets the commit time of GLOSSARY.md.
   transformPageData: (pageData) => {
     if (pageData.filePath === "glossary.md" && glossaryLastUpdated !== undefined) {
       return { lastUpdated: glossaryLastUpdated };
@@ -41,14 +41,14 @@ export default defineConfig({
   themeConfig: {
     // VitePress 1.x reads theme options from themeConfig, not the top level.
     editLink: {
-      // The glossary is generated from the repo-root CONTEXT.md, which is
+      // The glossary is generated from the repo-root GLOSSARY.md, which is
       // gitignored, so its edit link points at the root file. The function
       // form does not substitute :path (the string form does), so the page
       // path is spliced in here. The URLs stay inline: the function is
       // serialized by VitePress and keeps no closure.
       pattern: (page) =>
         page.filePath === "glossary.md"
-          ? "https://github.com/SeriousJul/pi-extensions/edit/main/CONTEXT.md"
+          ? "https://github.com/SeriousJul/pi-extensions/edit/main/GLOSSARY.md"
           : "https://github.com/SeriousJul/pi-extensions/edit/main/docs/" +
             page.filePath,
       text: "Edit this page",

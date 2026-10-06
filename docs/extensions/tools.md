@@ -9,7 +9,7 @@ name or file name), so you can see which extension provides each tool.
 
 ## User-only tools start inactive
 
-Two tools are **user-only** (CONTEXT.md, "Tool exposure"): the operator
+Two tools are **user-only** (GLOSSARY.md, "Tool exposure"): the operator
 gets the capability as a command, and the agent tool form should not pay
 a context cost by default. The extension carries a default-disabled list
 (`usage_report`, `resource_toggle`), applied on session start and branch
