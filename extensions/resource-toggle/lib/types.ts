@@ -121,6 +121,8 @@ export interface ResourceInfo {
    * with a clear message.
    */
   singleFilePackage?: boolean;
+  /** The one-line text of what the resource does, derived from the source file at list time (ADR 0030). Never stored. */
+  description?: string;
   /** Effective state: what pi loads right now, project overrides applied. */
   enabled: boolean;
   /** State in the resource's own scope: the global view of the list. */

@@ -26,6 +26,7 @@ import type {
   ScopeState,
   ResourceType,
 } from "./types.ts";
+import { resourceDescription } from "./description.ts";
 import { isLocalSource, resolvedLocalSource, scopeEnabled } from "./state-machine.ts";
 
 const SKIP_MISSING = async (): Promise<"skip"> => "skip";
@@ -198,6 +199,11 @@ export async function resolveResources(options: ResolveOptions): Promise<Resolve
   }
 
   merged.sort((a, b) => a.displayName.localeCompare(b.displayName) || a.path.localeCompare(b.path));
+  // The Resource description is derived from the source file at list time
+  // and never stored (ADR 0030); the self row gets it like any extension.
+  for (const info of merged) {
+    info.description = resourceDescription(info.type, info.path);
+  }
 
   return {
     resources: merged,

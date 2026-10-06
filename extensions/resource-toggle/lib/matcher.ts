@@ -13,6 +13,34 @@ export type NameMatch =
   | { status: "ambiguous"; candidates: ResourceInfo[] }
   | { status: "none" };
 
+/**
+ * One argument-completion item of a state command. `value` is what an
+ * accepted item inserts: the display name.
+ */
+export interface CompletionItem {
+  value: string;
+  label: string;
+  description?: string;
+}
+
+/**
+ * The argument-completion items for the state commands: display names,
+ * matched the same ways the named command resolves a name - a
+ * case-insensitive name prefix or a path fragment - each carrying the
+ * resource's Resource description. An empty prefix yields every resource.
+ */
+export function completionItems(resources: readonly ResourceInfo[], prefix: string): CompletionItem[] {
+  const query = prefix.trim().toLowerCase();
+  return resources
+    .filter(
+      (r) =>
+        query === "" ||
+        r.displayName.toLowerCase().startsWith(query) ||
+        r.path.toLowerCase().includes(query),
+    )
+    .map((r) => ({ value: r.displayName, label: r.displayName, description: r.description }));
+}
+
 export function matchResource(resources: readonly ResourceInfo[], name: string): NameMatch {
   const query = name.trim().toLowerCase();
   if (!query) return { status: "none" };

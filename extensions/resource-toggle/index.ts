@@ -6,9 +6,16 @@
  *   headless modes).
  * - /enable, /disable, /inherit change the state of one named resource; a
  *   scope flag selects global (default) or project mode, inherit is project
- *   mode only.
+ *   mode only. With no name they open the resource picker in TUI mode and
+ *   print the resource table in the other modes.
+ * - While typing a state command, matching names autocomplete with their
+ *   description.
+ * - Every surface shows the one-line description derived from the resource's
+ *   source file (ADR 0030); the table caps it at 60 characters.
  * - The resource_toggle tool lets the agent list resources and apply
- *   changes on request; with no arguments it opens the interactive list.
+ *   changes on request; with no arguments it opens the interactive list, and
+ *   an action without a name relays the no-argument command so the picker
+ *   opens for the user.
  *
  * State lives in pi's native settings, the same files and format `pi
  * config` uses (ADR 0012): override patterns in the resource arrays for
@@ -27,10 +34,10 @@ import {
   type ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import { machineContextFor, resolveResources } from "./lib/resolver.ts";
-import { matchResource } from "./lib/matcher.ts";
+import { completionItems, matchResource } from "./lib/matcher.ts";
 import { writeSettings } from "./lib/writer.ts";
 import { SelfRefusalError, projectOverrideState, resourceLabel, topLevelRefsOf, transition } from "./lib/state-machine.ts";
-import { globalViewRows, projectViewRows, renderResourceTable, shortPath } from "./lib/table.ts";
+import { capDescription, globalViewRows, projectViewRows, renderResourceTable, shortPath } from "./lib/table.ts";
 import type {
   MachineContext,
   OverrideState,
@@ -42,6 +49,7 @@ import type {
   WriteMode,
 } from "./lib/types.ts";
 import { createResourceToggleTui } from "./tui.ts";
+import { createResourcePickerTui } from "./picker.ts";
 
 /** The loaded path of this extension; disabling it is refused (self-guard). */
 const SELF_PATH = fileURLToPath(import.meta.url);
@@ -92,31 +100,30 @@ export default function (pi: ExtensionAPI): void {
     }
   };
 
+  /** The report a successful toggle prints, named call and picker alike. */
+  function reportText(op: ToggleOp, resource: ResourceInfo): string {
+    const verb = op.op === "enable" ? "Enabled" : op.op === "inherit" ? "Cleared the project override of" : "Disabled";
+    const scopeText = op.op === "inherit" ? "project" : op.mode;
+    return `${verb} ${resourceLabel(resource.type)} "${resource.displayName}" in ${scopeText} scope. Settings written; the session will reload. ${RELOAD_NOTE}`;
+  }
+
   /**
-   * The shared pipeline: resolve, match, self-guard, transition, write.
-   * Returns a human-readable report. The caller triggers the reload.
+   * The shared pipeline: self-guard, transition, write. Runs against a
+   * fresh resolution unless one was passed (the named path resolves once
+   * to match a name and reuses it). Returns a human-readable report; the
+   * caller triggers the reload.
    */
-  async function applyToggle(
+  async function applyResource(
     op: ToggleOp,
-    name: string,
+    resource: ResourceInfo,
+    resolved?: ResolvedResources,
   ): Promise<{ ok: boolean; text: string; resource?: ResourceInfo; needsReload: boolean }> {
-    const resolved: ResolvedResources = await resolveResources({
+    const res = resolved ?? (await resolveResources({
       cwd: state.cwd,
       agentDir: getAgentDir(),
       projectTrusted: state.projectTrusted,
       selfPath: SELF_PATH,
-    });
-    const match = matchResource(resolved.resources, name);
-    if (match.status === "none") {
-      return { ok: false, text: `No resource matches "${name}".`, needsReload: false };
-    }
-    if (match.status === "ambiguous") {
-      const list = match.candidates
-        .map((c) => `  ${c.displayName}  (${resourceLabel(c.type)}, ${c.scope === "user" ? "global" : "project"}, ${shortPath(c.path)})`)
-        .join("\n");
-      return { ok: false, text: `Ambiguous name "${name}". Candidates:\n${list}`, needsReload: false };
-    }
-    const resource = match.resource;
+    }));
     if (resource.singleFilePackage) {
       return { ok: false, text: singleFileRefusal(resource), needsReload: false };
     }
@@ -136,7 +143,7 @@ export default function (pi: ExtensionAPI): void {
     };
     let next: SettingsState;
     try {
-      next = transition(resolved.settings, ref, op, { ...machine(), topLevelRefs: topLevelRefsOf(resolved.resources) });
+      next = transition(res.settings, ref, op, { ...machine(), topLevelRefs: topLevelRefsOf(res.resources) });
     } catch (error) {
       if (error instanceof SelfRefusalError) {
         return { ok: false, text: error.message, needsReload: false };
@@ -145,16 +152,69 @@ export default function (pi: ExtensionAPI): void {
     }
     const outcome = await writeSettings(
       { cwd: state.cwd, agentDir: getAgentDir(), projectTrusted: state.projectTrusted },
-      resolved.settings,
+      res.settings,
       next,
     );
     if (!outcome.ok) {
       return { ok: false, text: outcome.error ?? "Settings write failed.", needsReload: false };
     }
-    const verb = op.op === "enable" ? "Enabled" : op.op === "inherit" ? "Cleared the project override of" : "Disabled";
-    const scopeText = op.op === "inherit" ? "project" : op.mode;
-    const text = `${verb} ${resourceLabel(resource.type)} "${resource.displayName}" in ${scopeText} scope. Settings written; the session will reload. ${RELOAD_NOTE}`;
-    return { ok: true, text, resource, needsReload: true };
+    return { ok: true, text: reportText(op, resource), resource, needsReload: true };
+  }
+
+  /**
+   * The shared pipeline for a named call: resolve, match, then apply.
+   * The ambiguous-name candidates carry their descriptions.
+   */
+  async function applyToggle(
+    op: ToggleOp,
+    name: string,
+  ): Promise<{ ok: boolean; text: string; resource?: ResourceInfo; needsReload: boolean }> {
+    const resolved = await resolveResources({
+      cwd: state.cwd,
+      agentDir: getAgentDir(),
+      projectTrusted: state.projectTrusted,
+      selfPath: SELF_PATH,
+    });
+    const match = matchResource(resolved.resources, name);
+    if (match.status === "none") {
+      return { ok: false, text: `No resource matches "${name}".`, needsReload: false };
+    }
+    if (match.status === "ambiguous") {
+      const list = match.candidates
+        .map((c) => {
+          const description = c.description ? ` - ${capDescription(c.description, 100)}` : "";
+          return `  ${c.displayName}  (${resourceLabel(c.type)}, ${c.scope === "user" ? "global" : "project"}, ${shortPath(c.path)})${description}`;
+        })
+        .join("\n");
+      return { ok: false, text: `Ambiguous name "${name}". Candidates:\n${list}`, needsReload: false };
+    }
+    return applyResource(op, match.resource, resolved);
+  }
+
+  /**
+   * The resource list for argument completion, cached briefly: completion
+   * offers names and descriptions, which toggles do not change, and the
+   * resolver is too slow to run on every keystroke.
+   */
+  let completionCache: { at: number; resources: ResourceInfo[] } | undefined;
+  const COMPLETION_TTL_MS = 30_000;
+  async function resourcesForCompletion(): Promise<ResourceInfo[]> {
+    const now = Date.now();
+    if (completionCache && now - completionCache.at < COMPLETION_TTL_MS) return completionCache.resources;
+    try {
+      const resolved = await resolveResources({
+        cwd: state.cwd,
+        agentDir: getAgentDir(),
+        projectTrusted: state.projectTrusted,
+        selfPath: SELF_PATH,
+      });
+      completionCache = { at: now, resources: resolved.resources };
+      return resolved.resources;
+    } catch {
+      // A resolution failure leaves completion empty; the named call reports
+      // the real error when it runs.
+      return [];
+    }
   }
 
   /** Parse `/disable name --project` style arguments. */
@@ -239,25 +299,60 @@ export default function (pi: ExtensionAPI): void {
   const registerStateCommand = (op: "enable" | "disable" | "inherit", description: string): void => {
     pi.registerCommand(op, {
       description,
+      getArgumentCompletions: async (prefix) => completionItems(await resourcesForCompletion(), prefix),
       async handler(args, ctx) {
         const parsed = parseArgs(args);
         if (parsed.error) {
           report(ctx, parsed.error, false);
           return;
         }
-        if (!parsed.name) {
-          report(ctx, `Usage: /${op} <name> [--global | --project]`, false);
+        if (op === "inherit" && parsed.mode === "global") {
+          report(ctx, "inherit is project mode only; it has no --global flag.", false);
           return;
         }
-        let operation: ToggleOp;
-        if (op === "inherit") {
-          if (parsed.mode === "global") {
-            report(ctx, "inherit is project mode only; it has no --global flag.", false);
+        const operation: ToggleOp = op === "inherit" ? { op: "inherit" } : { op, mode: parsed.mode ?? "global" };
+        if (!parsed.name) {
+          // No name: the resource picker in TUI mode, the resource table
+          // of the mode the flags select in the other modes.
+          const resolved = await resolveResources({
+            cwd: ctx.cwd,
+            agentDir: getAgentDir(),
+            projectTrusted: ctx.isProjectTrusted(),
+            selfPath: SELF_PATH,
+          });
+          const viewMode: WriteMode = op === "inherit" ? "project" : (operation as { mode: WriteMode }).mode;
+          if (ctx.hasUI && ctx.mode === "tui") {
+            let pick: { text: string } | null | undefined;
+            await ctx.ui.custom((tui, theme, _keybindings, done) =>
+              createResourcePickerTui({
+                tui,
+                theme,
+                operation,
+                initialMode: viewMode,
+                resources: resolved.resources,
+                settings: resolved.settings,
+                machine: { ...machine(), topLevelRefs: topLevelRefsOf(resolved.resources) },
+                projectTrusted: ctx.isProjectTrusted(),
+                // Rebuild the op at pick time: a Tab switch in the picker
+                // changes the mode a pick must apply in.
+                applyPick: (resource, pickMode) =>
+                  applyResource(operation.op === "inherit" ? operation : { op: operation.op, mode: pickMode }, resource),
+                viewport: () => Math.max(5, tui.terminal.rows - 8),
+                close: (result) => {
+                  pick = result;
+                  done(undefined);
+                },
+              }),
+            );
+            if (pick) {
+              report(ctx, pick.text, true);
+              await ctx.reload();
+            }
             return;
           }
-          operation = { op: "inherit" };
-        } else {
-          operation = { op, mode: parsed.mode ?? "global" };
+          const text = `Pick a resource and run /${op} <name>:\nresources (${viewMode} view)\n${listText(resolved, viewMode)}`;
+          report(ctx, text, true);
+          return;
         }
         const result = await applyToggle(operation, parsed.name);
         report(ctx, result.text, result.ok);
@@ -268,9 +363,9 @@ export default function (pi: ExtensionAPI): void {
     });
   };
 
-  registerStateCommand("enable", "Enable a resource by name: /enable <name> [--global | --project]");
-  registerStateCommand("disable", "Disable a resource by name: /disable <name> [--global | --project]");
-  registerStateCommand("inherit", "Clear the project override of a resource so it inherits the global state: /inherit <name>");
+  registerStateCommand("enable", "Enable a resource: /enable [name] [--global | --project]; with no name opens the resource picker");
+  registerStateCommand("disable", "Disable a resource: /disable [name] [--global | --project]; with no name opens the resource picker");
+  registerStateCommand("inherit", "Clear the project override of a resource so it inherits the global state: /inherit [name]");
 
   // The tool path cannot trigger a reload itself, so the reload rides on
   // this internal command, queued as a follow-up.
@@ -285,7 +380,7 @@ export default function (pi: ExtensionAPI): void {
     name: "resource_toggle",
     label: "Resource Toggle",
     description:
-      "List or change the state of pi resources (extensions, skills, prompt templates, themes) in the running session. With no arguments it opens the interactive resource list for the user. With action 'list' it returns a text table. With 'enable', 'disable', or 'inherit' plus a name it applies the change, writes the settings, and queues the session reload.",
+      "List or change the state of pi resources (extensions, skills, prompt templates, themes) in the running session. With no arguments it opens the interactive resource list for the user. With action 'list' it returns a text table. With 'enable', 'disable', or 'inherit' plus a name it applies the change, writes the settings, and queues the session reload. With an action but no name it relays the no-argument command, so the resource picker opens for the user (or the resource table prints in the non-TUI modes).",
     promptSnippet: "Enable or disable extensions, skills, prompt templates, and themes in the session",
     parameters: Type.Object({
       action: Type.Optional(
@@ -303,7 +398,9 @@ export default function (pi: ExtensionAPI): void {
     ],
     async execute(_toolCallId, params) {
       if (params.action === undefined && (params.name === undefined || params.name === "")) {
-        pi.sendUserMessage("/resources", { deliverAs: "followUp" });
+        // expandPromptTemplates dispatches the command immediately; extension
+        // commands cannot be queued for delivery mid-turn.
+        pi.sendUserMessage("/resources", { expandPromptTemplates: true });
         return {
           content: [{ type: "text", text: "Opened the interactive resource list in the terminal for the user." }],
           details: {},
@@ -320,7 +417,7 @@ export default function (pi: ExtensionAPI): void {
           cwd: state.cwd,
           agentDir: getAgentDir(),
           projectTrusted: state.projectTrusted,
-        selfPath: SELF_PATH,
+          selfPath: SELF_PATH,
         });
         const global = listText(resolved, "global");
         const project = state.projectTrusted ? `\nresources (project view)\n${listText(resolved, "project")}` : "";
@@ -329,11 +426,25 @@ export default function (pi: ExtensionAPI): void {
           details: {},
         };
       }
-      if (params.name === undefined || params.name === "") {
-        return { content: [{ type: "text", text: `action ${params.action} requires a name.` }], details: {} };
-      }
       if (params.action === "inherit" && params.scope === "global") {
         return { content: [{ type: "text", text: "inherit is project mode only; it has no global scope." }], details: {} };
+      }
+      if (params.name === undefined || params.name === "") {
+        // Relay the no-argument command as a follow-up: the resource picker
+        // opens in TUI mode, and the resource table prints in the others.
+        const flag = params.action !== "inherit" && params.scope === "project" ? " --project" : "";
+        // expandPromptTemplates dispatches the command immediately; extension
+        // commands cannot be queued mid-turn.
+        pi.sendUserMessage(`/${params.action}${flag}`, { expandPromptTemplates: true });
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Relayed /${params.action} with no name: the resource picker opens for the user in TUI mode; in the other modes the resource table prints.`,
+            },
+          ],
+          details: {},
+        };
       }
       const operation: ToggleOp =
         params.action === "inherit"
@@ -343,7 +454,7 @@ export default function (pi: ExtensionAPI): void {
       if (!result.ok) {
         return { content: [{ type: "text", text: result.text }], details: {} };
       }
-      pi.sendUserMessage("/resource-reload", { deliverAs: "followUp" });
+      pi.sendUserMessage("/resource-reload", { expandPromptTemplates: true });
       const text = `${result.text} A session reload is queued; when it runs, the ${result.resource ? resourceLabel(result.resource.type) : "resource"} ${
         operation.op === "enable" ? "rejoins" : operation.op === "inherit" ? "returns to the global state" : "stops contributing tools, commands, and event behavior"
       } the live session.`;

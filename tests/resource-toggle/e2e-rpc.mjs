@@ -31,7 +31,11 @@
  *      expand the leading tilde, and the project-mode rewrite lands the
  *      real relative path.
  *   7. a single-file local package is loaded unconditionally by pi, so
- *      the toggle is refused with a clear message and nothing is written.
+ *      the toggle is refused with a clear message and nothing is written;
+ *   8. a state command without a name prints the resource table, with the
+ *      DESCRIPTION column, in the headless modes;
+ *   9. a resource_toggle tool action without a name relays the
+ *      no-argument command, so the table prints for the user.
  *
  *   Deliberate deviation from the spec's Seam 2: the spec pins a local
  *   install of this repository with the real quota extension and an
@@ -53,6 +57,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const piCli = join(repoRoot, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "bundle", "cli.js");
 const extensionPath = join(repoRoot, "extensions", "resource-toggle", "index.ts");
+const probePath = join(repoRoot, "tests", "shared", "e2e-scripted-probe.ts");
 const TIMEOUT_MS = 60_000;
 
 function fail(message) {
@@ -64,6 +69,7 @@ function fail(message) {
 // --- sandbox ------------------------------------------------------------------
 
 const sandbox = mkdtempSync(join(tmpdir(), "resource-toggle-e2e-"));
+const caseFile = join(sandbox, "e2e-case.json");
 const agentDir = join(sandbox, "agent");
 const project = join(sandbox, "project");
 const globalSettingsPath = join(agentDir, "settings.json");
@@ -128,10 +134,10 @@ const readProject = () => JSON.parse(readFileSync(projectSettingsPath, "utf8"));
 function startRpc() {
 	const child = spawn(
 		process.execPath,
-		[piCli, "--mode", "rpc", "--extension", extensionPath],
+		[piCli, "--mode", "rpc", "--extension", extensionPath, "--extension", probePath],
 		{
 			cwd: project,
-			env: { ...process.env, HOME: sandbox, PI_CODING_AGENT_DIR: agentDir },
+			env: { ...process.env, HOME: sandbox, PI_CODING_AGENT_DIR: agentDir, E2E_CASE_FILE: caseFile },
 			stdio: ["pipe", "pipe", "pipe"],
 		},
 	);
@@ -193,7 +199,7 @@ function startRpc() {
 async function waitFor(predicate, what, getStderr) {
 	const deadline = Date.now() + 30_000;
 	for (;;) {
-		const found = predicate();
+		const found = await predicate();
 		if (found) return found;
 		if (Date.now() > deadline) fail(`no ${what} within 30s; stderr:\n${getStderr()}`);
 		await new Promise((resolve) => setTimeout(resolve, 250));
@@ -512,6 +518,61 @@ try {
 		fail(`/resources does not show quota.ts as an enabled package resource:\n${note.message}`);
 	}
 	console.log("ok: the headless table agrees with the live session");
+	// --- Phase 9: no-argument state commands -------------------------------------
+
+	seen = rpc.notifies.length;
+	await rpc.request("prompt", { message: "/disable" });
+	note = await waitFor(
+		() => rpc.notifies.slice(seen).find((n) => (n.message ?? "").startsWith("Pick a resource and run /disable")),
+		"no-name table",
+		rpc.getStderr,
+	);
+	if (!note.message.includes("DESCRIPTION")) fail(`no-name table missing the DESCRIPTION column:\n${note.message}`);
+	const selfLine = (note.message ?? "").split("\n").find((l) => l.startsWith("resource-toggle")) ?? "";
+	if (!selfLine.includes("resource-toggle: enable and disable extensions")) {
+		fail(`no-name table missing the resource-toggle description:\n${note.message}`);
+	}
+	const dummyRow = (note.message ?? "").split("\n").find((l) => l.startsWith("dummy.ts")) ?? "";
+	if (!dummyRow.includes("enabled")) fail(`no-name table missing the dummy.ts state:\n${note.message}`);
+	console.log("ok: /disable with no name prints the resource table with the DESCRIPTION column");
+
+	seen = rpc.notifies.length;
+	await rpc.request("prompt", { message: "/inherit" });
+	note = await waitFor(
+		() => rpc.notifies.slice(seen).find((n) => (n.message ?? "").startsWith("Pick a resource and run /inherit")),
+		"no-name inherit table",
+		rpc.getStderr,
+	);
+	if (!note.message.includes("project view")) fail(`inherit table not the project view:\n${note.message}`);
+	console.log("ok: /inherit with no name prints the project view table");
+
+	// --- Phase 10: the agent tool relays a no-name action -------------------------
+
+	const setModel = await rpc.request("set_model", { provider: "e2efa", modelId: "e2e-1" });
+	if (!setModel.success) fail(`set_model: ${JSON.stringify(setModel)}\nstderr:\n${rpc.getStderr()}`);
+	writeFileSync(
+		caseFile,
+		JSON.stringify({ runId: 1, toolCall: { id: "relay", name: "resource_toggle", arguments: { action: "disable" } } }),
+	);
+	seen = rpc.notifies.length;
+	await rpc.request("prompt", { message: "please run the relay case" });
+	note = await waitFor(
+		() => rpc.notifies.slice(seen).find((n) => (n.message ?? "").startsWith("Pick a resource and run /disable")),
+		"relayed no-name table",
+		rpc.getStderr,
+	);
+	if (!note.message.includes("DESCRIPTION")) fail(`relayed table missing the DESCRIPTION column:\n${note.message}`);
+	await waitFor(
+		async () => {
+			const messages = (await rpc.request("get_messages")).data.messages;
+			return messages.find(
+				(m) => m.role === "toolResult" && m.toolCallId === "relay" && JSON.stringify(m.content).includes("Relayed /disable"),
+			);
+		},
+		"relay tool result",
+		rpc.getStderr,
+	);
+	console.log("ok: a no-name tool action relays the no-argument command to the user");
 } finally {
 	if (rpc.extensionErrors.length > 0) fail(`extension_error events: ${JSON.stringify(rpc.extensionErrors)}`);
 	rpc.close();
