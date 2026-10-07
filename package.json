@@ -71,7 +71,7 @@
     "skills:add": "node scripts/skills/add.mjs"
   },
   "dependencies": {
-    "@colbymchenry/codegraph": "^1.6.0",
+    "@colbymchenry/codegraph": "^1.6.2",
     "jiti": "^2.7.0"
   },
   "overrides": {
