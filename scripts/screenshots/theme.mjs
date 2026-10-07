@@ -22,8 +22,13 @@ const BG_KEYS = new Set([
 	"toolErrorBg",
 ]);
 
+// pi's own resolver (theme.js): a value is a literal color when it is a
+// number (256-color index), empty (terminal default), a hex value, or an
+// OKLCH / OKHSL function value; anything else names a "vars" entry.
+const COLOR_LITERAL = /^ok(lch|hsl)\(/i;
+
 function resolveVarRefs(value, vars, visited = new Set()) {
-	if (typeof value === "number" || value === "" || value.startsWith("#")) return value;
+	if (typeof value === "number" || value === "" || value.startsWith("#") || COLOR_LITERAL.test(value)) return value;
 	if (visited.has(value)) throw new Error(`circular theme variable: ${value}`);
 	if (!(value in vars)) throw new Error(`theme variable not found: ${value}`);
 	visited.add(value);

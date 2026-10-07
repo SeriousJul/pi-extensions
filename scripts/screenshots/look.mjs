@@ -5,8 +5,10 @@
  * render - local or CI - uses these exact values, so a committed screenshot
  * is byte-stable across machines and a drift check can compare bytes.
  */
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { colorToHex, parseColor } from "@earendil-works/pi-tui";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -17,6 +19,32 @@ export function darkThemePath() {
 	const entry = fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"));
 	return join(dirname(entry), "modes", "interactive", "theme", "dark.json");
 }
+
+/**
+ * Resolve one dark.json color value to the hex the PNG renderer draws.
+ *
+ * A value is a var name (followed through "vars"), or a literal color: hex,
+ * OKLCH, or OKHSL. pi's theme loader turns the same value into a truecolor
+ * SGR, and colorToHex reports the same RGB it puts in that escape, so the
+ * pinned background and default foreground match what pi actually paints.
+ */
+function themeHex(value, json) {
+	let current = value;
+	while (typeof current === "string" && Object.hasOwn(json.vars ?? {}, current)) {
+		current = json.vars[current];
+	}
+	if (typeof current !== "string" || current === "") {
+		throw new Error(`dark.json color value is not a resolvable color: ${JSON.stringify(value)}`);
+	}
+	return colorToHex(parseColor(current));
+}
+
+const darkJson = JSON.parse(readFileSync(darkThemePath(), "utf8"));
+
+/** pi's dark theme export.pageBg, as the hex the renderer fills the page with. */
+const PAGE_BG = themeHex(darkJson.export?.pageBg, darkJson);
+/** pi's dark theme "text" color, as the hex the renderer draws default text with. */
+const TEXT_FG = themeHex(darkJson.colors.text, darkJson);
 
 export const LOOK = {
 	/** The terminal grid every screenshot renders into. */
@@ -48,11 +76,11 @@ export const LOOK = {
 	/** Baseline offset from the top of a cell, in px. */
 	baseline: 12.6,
 	/** pi's dark theme export.pageBg: the terminal background. */
-	background: "#18181e",
+	background: PAGE_BG,
 	/** pi's dark theme "text" color: the default foreground. */
-	defaultFg: "#d4d4d4",
+	defaultFg: TEXT_FG,
 	/** The default background (cells with no explicit bg). */
-	defaultBg: "#18181e",
+	defaultBg: PAGE_BG,
 	/** PNG pixel size of one screenshot. */
 	widthPx: Math.round(100 * 7.8),
 	heightPx: Math.round(30 * 17),
