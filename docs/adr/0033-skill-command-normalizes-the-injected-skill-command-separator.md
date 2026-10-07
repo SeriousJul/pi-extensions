@@ -1,0 +1,20 @@
+# Skill command normalizes the injected skill command separator
+
+pi expands a `/skill:name args` command by parsing the name up to the **first space** in the text, then looking the name up in its skill list. A skill command whose name and arguments are separated by a **newline** - the shape injected prompts arrive in, because the factory's consultation templates put the command on its own line and the body below it - therefore fails the lookup: the parsed "name" is the name plus the newlines plus the start of the argument text, nothing matches, and pi passes the text through unexpanded. The recorded user message still starts with the literal `/skill:` line. When the skill also carries `disable-model-invocation: true` (as `grill-with-docs` does), it is absent from the system prompt's skills section as well, so the model gets no pointer to the skill at all and must hunt the filesystem for the SKILL.md before it can follow the injected instructions (issue #126, session 01a112ff).
+
+We decided: a small extension, skill-command, registers an `input` handler - the event pi fires on every submitted prompt, before its own skill and template expansion - and performs exactly one rewrite. When the text starts with `/skill:name` and the separator between the name and the arguments contains a newline, the separator becomes a single space; the arguments keep their remaining bytes. pi's built-in expansion then runs on the normalized text and stays the owner of the expansion: the lookup, the SKILL.md read, the frontmatter strip, the `<skill name=... location=...>` block, and the error path. The extension never reads a SKILL.md itself.
+
+## Considered options
+
+- **Expand the skill command inside the extension** (read the SKILL.md, strip the frontmatter, build the block). Rejected because it duplicates pi's expansion and would drift silently from pi's format; it also needs a skill list the extension context does not expose, so it could not resolve skills pi resolves.
+- **Change the factory's templates to a space-separated command** (`/skill:name <body>` on one line). Rejected because the templates are multi-line documents where the command is the first line; cramming the body onto that line is unreadable, and the break is in the parser's tolerance, not in the document's shape. It also fixes only this one producer, while any other newline injection (an operator pasting a multi-line command into the TUI) would still break.
+- **Patch pi upstream.** The one-line parser fix belongs upstream and may land there; this extension makes the injection shape work on the pi versions in use today, and it degrades to a no-op on any future pi that accepts newline separators.
+- **Drop `disable-model-invocation` from the affected skills.** Rejected because the flag is the upstream's deliberate choice (the skill is a command, not an auto-selected one), and the expansion failure happens for every injected command, flagged or not: the flag only decides whether the model can find the file as a fallback, not whether the command expands.
+
+## Consequences
+
+- Every prompt that starts with `/skill:name` followed by a newline separator is rewritten before expansion, in every session the package is installed in, whatever the source (interactive, rpc, extension).
+- The rewrite is whitespace-only in its visible effect: pi trims the arguments when it expands, so the recorded message is byte-identical to what a space-separated command would have produced.
+- Commands pi already parses (space separator, bare name) and all non-skill text pass through untouched; an unknown skill name with a newline separator is normalized but still fails pi's lookup and passes through, as before.
+- A tab-only separator is out of scope: no producer injects it, and normalizing it would touch input pi does not claim.
+- If pi upstream ever accepts newline separators natively, the extension's rewrite becomes invisible: it rewrites the input to the form pi parses today, which a more tolerant pi still parses.
