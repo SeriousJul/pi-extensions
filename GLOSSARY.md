@@ -459,6 +459,14 @@ skill sync reports it until the user deletes it or accepts the rename.
 _Avoid_: stale skill (stale is a content word, this is a presence word),
 dangling skill, ghost
 
+**Local tweak**:
+An edit made to a tracked skill copy in this repo rather than upstream. A
+skill sync merges against it, so an upstream change to a tweaked region
+comes back as a conflict, never as a silent overwrite.
+_Avoid_: patch (patch files are the mechanism ADR-0013 rejected), fork
+(the copy stays one directory deep in the tree), override (the
+resource-toggle word)
+
 ### Skill migrate
 
 **Migration**:
