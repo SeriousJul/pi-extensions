@@ -51,3 +51,4 @@ list with `pi list`.
 | [bash-no-match](/extensions/bash-no-match) | Returns a no-match search (`rg`/`grep` exit 1 with an empty stream) to the agent as a normal result with a "(no matches)" note, instead of an error. |
 | [background-jobs](/extensions/background-jobs) | `bash_bg`, `job_wait`, `job_status`: run long commands in the background and wait on them once, instead of sleep-and-tail loops. |
 | [safe-branch-summary](/extensions/safe-branch-summary) | Writes the `/tree` branch summary against a safe budget (Effective window over the Inflation factor) so code-heavy branches no longer die with `exceed_context_size_error`. |
+| [skill-command](/extensions/skill-command) | Normalizes a newline-separated `/skill:` command to the single-space form pi expands, so injected skill commands are recognized. |

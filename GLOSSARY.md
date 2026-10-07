@@ -731,6 +731,16 @@ _Avoid_: safety factor (too generic), padding, overhead, divisor
 The Safe branch summary failure mode in which the navigation completes without a branch summary entry, with a notice. The abandoned branch stays reachable through `/tree`.
 _Avoid_: fallback (implies a summary was produced by another path), cancel (that is the abort outcome), skip (hides the navigation outcome)
 
+### Skill command
+
+**Skill command**:
+User input that starts with `/skill:` followed by a skill name, optionally with arguments after it: pi's explicit way to force-load one skill. The name and the arguments are separated by whitespace, and pi's built-in expansion owns the lookup and the `<skill>` block it records.
+_Avoid_: skill invocation (pi's word is command), skill prompt, slash skill
+
+**Separator**:
+The whitespace between a skill command's name and its arguments. pi's expansion parses the name up to the first space, so a separator that contains a newline breaks the parse and the command passes through unexpanded; the skill-command extension rewrites that one shape to a single space and leaves every other input untouched.
+_Avoid_: delimiter (too generic), separator character (there is a run of them, not one), whitespace (whitespace is also what separates name from arguments in the form pi parses)
+
 ### Background jobs
 
 **Background job**:
