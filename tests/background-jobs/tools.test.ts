@@ -16,7 +16,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionToolContext, Theme } from "@earendil-works/pi-coding-agent";
 import registerBackgroundJobs, { registerTools } from "../../extensions/background-jobs/index";
 import { paintBashBgCallLine } from "../../extensions/background-jobs/render";
 import { MAX_LISTED_JOBS, formatLiveJobs } from "../../extensions/background-jobs/core.ts";
@@ -47,10 +47,10 @@ function makeHarness(): Harness {
 	registerTools(pi);
 
 	const sessionFile = join(sessionsRoot, "project", "session.jsonl");
-	const ctx: ExtensionContext = {
+	const ctx: ExtensionToolContext = {
 		cwd: projectCwd,
 		sessionManager: { getSessionFile: () => sessionFile },
-	} as unknown as ExtensionContext;
+	} as unknown as ExtensionToolContext;
 
 	return {
 		sessionsRoot,
@@ -243,7 +243,7 @@ function makeHarnessSameRoot(sessionsRoot: string): Harness {
 	const ctx = {
 		cwd: join(sessionsRoot, "project"),
 		sessionManager: { getSessionFile: () => sessionFile },
-	} as unknown as ExtensionContext;
+	} as unknown as ExtensionToolContext;
 	return {
 		sessionsRoot,
 		call: async (tool, params) => {
