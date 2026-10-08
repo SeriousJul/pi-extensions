@@ -31,9 +31,9 @@
     "typebox": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-agent-core": "^0.87.1",
-    "@earendil-works/pi-coding-agent": "^0.87.1",
-    "@earendil-works/pi-tui": "^0.87.1",
+    "@earendil-works/pi-agent-core": "^1.0.2",
+    "@earendil-works/pi-coding-agent": "^1.0.2",
+    "@earendil-works/pi-tui": "^1.0.2",
     "@resvg/resvg-js": "^2.6.2",
     "@types/node": "^26.6.4",
     "@xterm/headless": "^6.0.0",
@@ -43,7 +43,7 @@
     "vitest": "^5.0.3"
   },
   "scripts": {
-    "postinstall": "node scripts/patch-codegraph.mjs && node scripts/patch-brace-expansion.mjs && node scripts/welcome.mjs",
+    "postinstall": "node scripts/patch-codegraph.mjs && node scripts/welcome.mjs",
     "docs:dev": "npm --prefix docs run dev",
     "docs:build": "npm --prefix docs run build",
     "docs:screenshots": "node scripts/screenshots/capture.mjs",
@@ -74,11 +74,6 @@
   "dependencies": {
     "@colbymchenry/codegraph": "^1.6.2",
     "jiti": "^2.7.0"
-  },
-  "overrides": {
-    "minimatch": {
-      "brace-expansion": "^5.0.12"
-    }
   },
   "allowScripts": {
     "esbuild@0.28.2": true

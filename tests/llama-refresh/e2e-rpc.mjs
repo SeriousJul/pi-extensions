@@ -88,12 +88,18 @@ function prepareAgentDir(url) {
 function startRpc(agentDir, extraArgs = []) {
 	// --no-extensions: on a machine where this repo is installed as a pi
 	// package, discovery loads a second copy of every extension and the
-	// duplicate flag registration stops the session starting.
-	const child = spawn(process.execPath, [piCli, "--mode", "rpc", "--no-extensions", "--extension", refreshExtension, ...extraArgs], {
-		cwd: agentDir,
-		env: { ...process.env, PI_CODING_AGENT_DIR: agentDir },
-		stdio: ["pipe", "pipe", "pipe"],
-	});
+	// duplicate flag registration stops the session starting. It also turns
+	// off pi's built-in extensions, and since pi 1.0 the llama.cpp provider
+	// is one, so the run re-enables exactly that built-in.
+	const child = spawn(
+		process.execPath,
+		[piCli, "--mode", "rpc", "--no-extensions", "--extension", "builtin:llama.cpp", "--extension", refreshExtension, ...extraArgs],
+		{
+			cwd: agentDir,
+			env: { ...process.env, PI_CODING_AGENT_DIR: agentDir },
+			stdio: ["pipe", "pipe", "pipe"],
+		},
+	);
 	let buffer = "";
 	const pending = new Map();
 	let nextId = 1;

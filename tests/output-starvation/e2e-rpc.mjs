@@ -200,10 +200,22 @@ function prebuildStaleSession(agentDir) {
 function startRpc(agentDir, extraArgs = [], extraExtensions = [], { guard = true } = {}) {
 	// --no-extensions: on a machine where this repo is installed as a pi
 	// package, discovery loads a second copy of every extension and the
-	// duplicate flag registration stops the session starting.
+	// duplicate flag registration stops the session starting. It also turns
+	// off pi's built-in extensions, and since pi 1.0 the llama.cpp provider
+	// is one, so the run re-enables exactly that built-in.
 	const child = spawn(
 		process.execPath,
-		[piCli, "--mode", "rpc", "--no-extensions", ...(guard ? ["--extension", guardExtension] : []), ...extraExtensions, ...extraArgs],
+		[
+			piCli,
+			"--mode",
+			"rpc",
+			"--no-extensions",
+			"--extension",
+			"builtin:llama.cpp",
+			...(guard ? ["--extension", guardExtension] : []),
+			...extraExtensions,
+			...extraArgs,
+		],
 		{
 			cwd: agentDir,
 			env: { ...process.env, PI_CODING_AGENT_DIR: agentDir },

@@ -405,18 +405,26 @@ _Avoid_: metadata (generic), manifest (clashes with Sync manifest), state
 
 **Skill tree**:
 The package's `skills/` directory, laid out as
-`skills/<source-slug>/<upstream bucket>/<name>` for tracked skills and
+`skills/<source-slug>/<upstream path>` for tracked skills and
 `skills/local/<name>` for Local-only skills. The layout mirrors each
 upstream repo, so a tracked skill's upstream path is read off its local
-path.
+path. The upstream path carries whatever buckets the source itself uses:
+`engineering/tdd` for one source, `antislop-ui` for another.
 _Avoid_: pool (generic), skillset, bundle (a bundle is a pi package)
 
 **Skill source**:
-One upstream git repo whose skills are tracked: a repo URL, a local root
-in the Skill tree, and one Source pin. Matt Pocock's skills repo is the
-only source today.
+One upstream git repo whose skills are tracked: a repo URL, an Upstream
+root, a local root in the Skill tree, and one Source pin. Matt Pocock's
+skills repo and the antislop repo are the sources today.
 _Avoid_: provider (names the vendor, not the tracked unit), upstream
 (too generic), feed
+
+**Upstream root**:
+The directory inside a Skill source's repo that its local root mirrors,
+`skills/` by default. Skills sit at any depth below it, so a source may
+bucket its skills (mattpocock) or hold them flat (antislop).
+_Avoid_: source root (names the local side), local root (the other side of
+the mirror), upstream path (the segment below the Upstream root)
 
 **Source pin**:
 The last upstream commit at which every tracked skill of one source is
@@ -450,6 +458,14 @@ at its upstream path. Its pin holds, the skill keeps working, and every
 skill sync reports it until the user deletes it or accepts the rename.
 _Avoid_: stale skill (stale is a content word, this is a presence word),
 dangling skill, ghost
+
+**Local tweak**:
+An edit made to a tracked skill copy in this repo rather than upstream. A
+skill sync merges against it, so an upstream change to a tweaked region
+comes back as a conflict, never as a silent overwrite.
+_Avoid_: patch (patch files are the mechanism ADR-0013 rejected), fork
+(the copy stays one directory deep in the tree), override (the
+resource-toggle word)
 
 ### Skill migrate
 

@@ -4,12 +4,14 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 export type CapParse = { ok: true; cap: number } | { ok: false; error: string };
 
 /**
- * ProviderModelConfig plus samplingParams. The installed pi type omits the
- * field, but pi's composer spreads the whole definition object into the new
- * model, so the value survives re-registration at runtime. Without it, base
- * per-model sampling defaults would be lost on capping.
+ * The chat-model member of pi's ProviderModelConfig.
+ *
+ * pi's public model-config union also covers image and classifier models,
+ * which carry no contextWindow, reasoning, or samplingParams. A capped
+ * registry model is always a chat model, so the replacement definitions are
+ * narrowed to that member.
  */
-export type CappedModelConfig = ProviderModelConfig & { samplingParams?: Record<string, unknown> };
+export type CappedModelConfig = Extract<ProviderModelConfig, { type?: "chat" }>;
 
 /** Parse a cap value from the --context-window flag or PI_CONTEXT_WINDOW env var. */
 export function parseCap(raw: string): CapParse {
