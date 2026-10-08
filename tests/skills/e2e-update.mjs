@@ -11,6 +11,8 @@
  *   - both-sides conflict (git conflict markers, pin held)
  *   - resolve-then-resync (pin advances)
  *   - new-skill offer and adopt (adopted skill tracked by the next sync)
+ *   - a bucket-less second source: offers printed as <slug>/<name>, adopted
+ *     by skills:add, rejected without the slug
  *   - orphan report (skill kept, pin held, cleared when the local dir goes)
  *   - local-only skills under skills/local never read, merged, or reported
  *   - failed fetch leaves the tree and the pin untouched
@@ -46,8 +48,10 @@ function check(cond, label) {
 
 const sandbox = mkdtempSync(join(tmpdir(), "skills-e2e-"));
 const upstream = join(sandbox, "upstream");
+const upstreamFlat = join(sandbox, "upstream-flat");
 const root = join(sandbox, "repo");
 const localRoot = join(root, "skills", "fixture");
+const localFlatRoot = join(root, "skills", "flat");
 const localOnly = join(root, "skills", "local", "myskill", "SKILL.md");
 
 console.log(`sandbox: ${sandbox}`);
@@ -57,15 +61,15 @@ function git(args) {
 	return execFileSync("git", args, { encoding: "utf8" }).trim();
 }
 
-function commitUpstream(message, files) {
+function commitUpstream(message, files, repo = upstream) {
 	for (const [rel, content] of Object.entries(files ?? {})) {
-		const abs = join(upstream, rel);
+		const abs = join(repo, rel);
 		mkdirSync(dirname(abs), { recursive: true });
 		writeFileSync(abs, content);
 	}
-	git(["-C", upstream, "add", "-A"]);
-	git(["-C", upstream, "-c", "user.name=fixture", "-c", "user.email=fixture@local", "commit", "--quiet", "-m", message]);
-	return git(["-C", upstream, "rev-parse", "HEAD"]);
+	git(["-C", repo, "add", "-A"]);
+	git(["-C", repo, "-c", "user.name=fixture", "-c", "user.email=fixture@local", "commit", "--quiet", "-m", message]);
+	return git(["-C", repo, "rev-parse", "HEAD"]);
 }
 
 function runTool(script, args = []) {
@@ -109,6 +113,15 @@ const c1 = commitUpstream("initial", {
 	"LICENSE": "MIT License (fixture)\n",
 });
 
+// A second, bucket-less upstream repo: its skills sit directly under its
+// skills/ root, so its local paths carry no bucket segment.
+execFileSync("git", ["init", "--quiet", "-b", "main", upstreamFlat], { encoding: "utf8" });
+const c1b = commitUpstream("initial", {
+	"skills/one/SKILL.md": "one v1\n",
+	"skills/two/SKILL.md": "two v1\n",
+	"LICENSE": "MIT License (flat fixture)\n",
+}, upstreamFlat);
+
 mkdirSync(root, { recursive: true });
 writeFileSync(join(root, "skills-manifest.json"), JSON.stringify({
 	fixture: {
@@ -116,6 +129,12 @@ writeFileSync(join(root, "skills-manifest.json"), JSON.stringify({
 		root: "skills/fixture",
 		upstreamRoot: "skills",
 		pin: c1,
+	},
+	flat: {
+		repo: upstreamFlat,
+		root: "skills/flat",
+		upstreamRoot: "skills",
+		pin: c1b,
 	},
 }, null, 2) + "\n");
 
@@ -125,19 +144,35 @@ const archive = execFileSync("git", ["-C", upstream, "archive", c1, "skills"], {
 execFileSync("tar", ["-x", "-C", stage], { input: archive });
 mkdirSync(join(root, "skills"), { recursive: true });
 renameSync(join(stage, "skills"), localRoot);
+
+// Adopt only `one` from the flat source at the start; `two` stays an offer
+// so the first run can be checked for its offer form.
+const flatStage = join(sandbox, "flat-stage");
+mkdirSync(flatStage, { recursive: true });
+const flatArchive = execFileSync("git", ["-C", upstreamFlat, "archive", c1b, "skills/one"], { encoding: "buffer" });
+execFileSync("tar", ["-x", "-C", flatStage], { input: flatArchive });
+mkdirSync(localFlatRoot, { recursive: true });
+renameSync(join(flatStage, "skills", "one"), join(localFlatRoot, "one"));
+rmSync(flatStage, { recursive: true, force: true });
+
 mkdirSync(dirname(localOnly), { recursive: true });
 writeFileSync(localOnly, "local only skill\n");
 const localOnlyContent = readFileSync(localOnly, "utf8");
 
-// 1. first run: everything agrees, no writes, pin stays.
-console.log("\n1. first run (no-op)");
+// 1. first run: everything agrees, no writes, pin stays, the unadopted
+// flat skill is offered as <slug>/<name>.
+console.log("\n1. first run (no-op, one offer)");
 {
 	const r = runTool("update.mjs");
 	check(r.status === 0, `exit 0 (got ${r.status})`);
-	check(manifest().fixture.pin === c1, "pin unchanged");
-	for (const name of ["engineering/alpha: unchanged", "engineering/beta: unchanged", "productivity/gamma: unchanged"]) {
+	check(manifest().fixture.pin === c1, "fixture pin unchanged");
+	check(manifest().flat.pin === c1b, "flat pin unchanged");
+	for (const name of ["engineering/alpha: unchanged", "engineering/beta: unchanged", "productivity/gamma: unchanged", "one: unchanged"]) {
 		check(r.stdout.includes(`  ${name}`), `reports ${name}`);
 	}
+	check(r.stdout.includes("offers (adopt with skills:add):"), "offers header printed");
+	check(r.stdout.includes("    flat/two"), "bucket-less offer printed as <slug>/<name>");
+	check(!existsSync(join(localFlatRoot, "two")), "offer never adopted on its own");
 }
 
 // 2. re-run with no changes anywhere: still a no-op.
@@ -197,27 +232,40 @@ console.log("\n6. resolve-then-resync");
 	check(manifest().fixture.pin === c4, "pin advanced past the conflict");
 }
 
-// 7. new upstream skill offered, adopted, then tracked.
+// 7. new upstream skills offered in the add form, adopted, then tracked.
+// Covers both shapes: a bucketed skill on the bucketed source and a
+// bucket-less skill on the flat source.
 console.log("\n7. offer and adopt");
 {
 	c5 = commitUpstream("add delta", { "skills/engineering/delta/SKILL.md": "delta v1\n" });
 	const r = runTool("update.mjs");
 	check(r.status === 0, `exit 0 (got ${r.status})`);
-	check(r.stdout.includes("engineering/delta") && r.stdout.includes("offer"), "delta listed as an offer");
+	check(r.stdout.includes("    fixture/engineering/delta"), "bucketed offer printed as <slug>/<bucket>/<name>");
+	check(r.stdout.includes("    flat/two"), "bucket-less offer still printed as <slug>/<name>");
 	check(!existsSync(join(localRoot, "engineering/delta")), "offer never adopted on its own");
 	check(manifest().fixture.pin === c5, "pin advances past an offer");
 
-	const a = runTool("add.mjs", ["engineering/delta"]);
+	const a = runTool("add.mjs", ["fixture/engineering/delta"]);
 	check(a.status === 0, `skills:add exit 0 (got ${a.status})`);
 	check(readFileSync(join(localRoot, "engineering/delta/SKILL.md"), "utf8") === "delta v1\n", "adopted skill copied at the mirrored path");
 
-	const again = runTool("add.mjs", ["engineering/delta"]);
+	const flatAdd = runTool("add.mjs", ["flat/two"]);
+	check(flatAdd.status === 0, `skills:add on a bucket-less skill exit 0 (got ${flatAdd.status})`);
+	check(readFileSync(join(localFlatRoot, "two/SKILL.md"), "utf8") === "two v1\n", "bucket-less skill adopted at the mirrored path");
+
+	const bare = runTool("add.mjs", ["two"]);
+	check(bare.status === 1, "a bare bucket-less name is rejected");
+	const unslugged = runTool("add.mjs", ["engineering/delta"]);
+	check(unslugged.status === 1, "a bucketed path without its source slug is rejected");
+
+	const again = runTool("add.mjs", ["fixture/engineering/delta"]);
 	check(again.status === 1, "re-adopting an existing skill fails");
 
 	c6 = commitUpstream("delta v2", { "skills/engineering/delta/SKILL.md": "delta v2\n" });
 	const r2 = runTool("update.mjs");
 	check(r2.status === 0, `exit 0 (got ${r2.status})`);
 	check(readFileSync(join(localRoot, "engineering/delta/SKILL.md"), "utf8") === "delta v2\n", "adopted skill tracked by the next sync");
+	check(readFileSync(join(localFlatRoot, "two/SKILL.md"), "utf8") === "two v1\n", "flat adopted skill untouched by the sync");
 	check(manifest().fixture.pin === c6, "pin advanced");
 }
 

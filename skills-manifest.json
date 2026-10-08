@@ -4,5 +4,11 @@
     "root": "skills/mattpocock",
     "upstreamRoot": "skills",
     "pin": "4588b32ecab9ecc9fc8cc6b6c5e7d675b6004b0d"
+  },
+  "anti-slop": {
+    "repo": "https://github.com/miqdadbadjuber/Anti-Slop.git",
+    "root": "skills/anti-slop",
+    "upstreamRoot": "skills",
+    "pin": "388cbe3b6c37d5175b9f460015bb092ef9e34894"
   }
 }
