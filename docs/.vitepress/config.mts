@@ -89,6 +89,7 @@ export default defineConfig({
         text: "Development",
         items: [
           { text: "Develop", link: "/develop" },
+          { text: "Skill tree", link: "/skills" },
           { text: "ADR", link: "/adr/" },
           { text: "Glossary", link: "/glossary" },
         ],

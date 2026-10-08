@@ -21,7 +21,7 @@ VitePress from the [`docs/`](docs/) folder.
 - **bash-no-match** - returns a no-match search (rg/grep exit 1 with an empty stream) to the agent as a normal result with a "(no matches)" note, instead of an error.
 - **background-jobs** - `bash_bg`, `job_wait`, `job_status`: run long commands in the background and wait on them once, instead of sleep-and-tail loops.
 - **skill-migrate** - deterministic repo-structure migrations with a committed changelog: a `status`/`migrate` CLI and a `/migrate` command. The first step records the adoption, the second migrates the domain docs to the GLOSSARY file layout and rewrites every reference to the old file names.
-- **skills** - a curated skill tree loaded by pi from the package's `skills/` directory, with `npm run skills:update` to three-way-merge upstream changes into the copies. The `mattpocock/` skills come from [mattpocock/skills](https://github.com/mattpocock/skills), MIT licensed (the upstream `LICENSE` ships at `skills/mattpocock/LICENSE`).
+- **skills** - a curated skill tree loaded by pi from the package's `skills/` directory, with `npm run skills:update` to three-way-merge upstream changes into the copies. The `mattpocock/` skills come from [mattpocock/skills](https://github.com/mattpocock/skills) and the `anti-slop/` skills from [miqdadbadjuber/Anti-Slop](https://github.com/miqdadbadjuber/Anti-Slop); both are MIT licensed (the upstream `LICENSE` ships at `skills/mattpocock/LICENSE` and `skills/anti-slop/LICENSE`).
 
 See the [pi packages docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md) and the [extensions docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md).
 
@@ -57,16 +57,22 @@ manifest is present). Layout is the manifest:
 - `skills/mattpocock/<bucket>/<name>` - skills tracked against the upstream
   [mattpocock/skills](https://github.com/mattpocock/skills) repo, mirroring
   its `skills/<bucket>/<name>` layout.
+- `skills/anti-slop/<name>` - the antislop suite tracked against the
+  upstream [miqdadbadjuber/Anti-Slop](https://github.com/miqdadbadjuber/Anti-Slop)
+  repo, mirroring its flat `skills/<name>` layout.
 - `skills/local/<name>` - local-only skills. Sync never reads, merges, or
   reports them.
 
-Tweaking a skill is editing the file in this repo. `skills-manifest.json`
-holds one entry per skill source: repo URL, local root, and the Source pin
-(the upstream commit the whole tree last agreed on).
+Tweaking a skill is editing the file in this repo: a skill sync merges
+against the tweak, so an upstream change to a tweaked region comes back as
+a conflict, never as a silent overwrite. `skills-manifest.json` holds one
+entry per skill source: repo URL, local root, the upstream root it
+mirrors, and the Source pin (the upstream commit the whole tree last
+agreed on).
 
 ```
-npm run skills:update            # fetch upstream, three-way-merge tracked skills
-npm run skills:add -- <bucket>/<name>   # adopt a new upstream skill
+npm run skills:update                # fetch upstream, three-way-merge tracked skills
+npm run skills:add -- <slug>/<path>  # adopt a new upstream skill, e.g. anti-slop/antislop-ui
 ```
 
 `skills:update` merges every tracked file with `git merge-file` (base = the
@@ -78,8 +84,22 @@ upstream skills are listed as offers and adopted only by `skills:add`.
 The Source pin advances only when a sync completes with no conflict and no
 orphan. The tool never commits, pushes, deletes, or renames.
 
+The vendored antislop core is edited once for a tracked tree
+([ADR-0034](https://seriousjul.github.io/pi-extensions/adr/0034-the-vendored-antislop-copy-is-edited-for-a-tracked-tree.html)):
+the install wizard and update sections are cut, and an unresolved usage
+mode resolves to `during` with the notice `antislop active: during
+(package default).` instead of a question, so an unattended session never
+stalls on it. An operator who wants `after` pins it the upstream way:
+`npx antislop-ai --mode after` for the machine, or say so for one session.
+The suite ships available, not active: no prompt template or
+initial-context injection turns it on.
+
 The tree also stays compatible with `npx skills@latest add
 SeriousJul/pi-extensions`.
+
+The [Skill tree page](https://seriousjul.github.io/pi-extensions/skills.html)
+on the docs site documents the sources, their licenses, and the local-tweak
+policy.
 
 ## Layout
 
@@ -106,8 +126,8 @@ SeriousJul/pi-extensions`.
 ├── GLOSSARY.md        # the domain glossary, single source (published on the site)
 ├── scripts/          # postinstall patch for the embedded codegraph library
 │   └── skills/       # skill sync (skills:update) and adopt (skills:add) tools
-├── skills/           # the skill tree pi loads from the package (mattpocock/ + local/)
-├── skills-manifest.json  # one entry per skill source: repo, local root, Source pin
+├── skills/           # the skill tree pi loads from the package (mattpocock/ + anti-slop/ + local/)
+├── skills-manifest.json  # one entry per skill source: repo, upstream root, local root, Source pin
 └── tests/            # vitest suite
 ```
 
