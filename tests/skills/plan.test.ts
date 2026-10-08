@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { planSource, type SkillTree } from "../../scripts/skills/core.mjs";
+import { parseAddTarget, planSource, type SkillTree } from "../../scripts/skills/core.mjs";
+
+import type { SkillSource } from "../../scripts/skills/core.d.mts";
 
 /**
  * Deterministic stand-in for git merge-file: a side that is unchanged from
@@ -35,6 +37,42 @@ function plan(partial: Partial<{ pin: string; fetched: string; localSkills: Skil
 		mergeFile: fakeMerge,
 	});
 }
+
+const twoSources: Record<string, SkillSource> = {
+	mattpocock: { repo: "r", root: "skills/mattpocock", pin: "p" },
+	"anti-slop": { repo: "r", root: "skills/anti-slop", pin: "p" },
+};
+
+describe("parseAddTarget", () => {
+	it("parses a bucketed skill with its source slug", () => {
+		expect(parseAddTarget("mattpocock/engineering/tdd", twoSources)).toEqual({ slug: "mattpocock", path: "engineering/tdd" });
+	});
+
+	it("parses a bucket-less skill with its source slug", () => {
+		expect(parseAddTarget("anti-slop/antislop-ui", twoSources)).toEqual({ slug: "anti-slop", path: "antislop-ui" });
+	});
+
+	it("still demands the slug with a single-source manifest", () => {
+		expect(parseAddTarget("fixture/engineering/alpha", { fixture: { repo: "r", root: "skills/fixture", pin: "p" } })).toEqual({ slug: "fixture", path: "engineering/alpha" });
+	});
+
+	it("rejects a bare bucket-less name", () => {
+		expect(() => parseAddTarget("antislop-ui", twoSources)).toThrow(/usage/);
+	});
+
+	it("rejects a bucketed path without a source slug", () => {
+		expect(() => parseAddTarget("engineering/tdd", twoSources)).toThrow(/unknown source engineering/);
+	});
+
+	it("rejects an unknown source slug", () => {
+		expect(() => parseAddTarget("nosuch/antislop-ui", twoSources)).toThrow(/unknown source nosuch/);
+	});
+
+	it("rejects empty segments", () => {
+		expect(() => parseAddTarget("anti-slop//antislop-ui", twoSources)).toThrow(/usage/);
+		expect(() => parseAddTarget("anti-slop/", twoSources)).toThrow(/usage/);
+	});
+});
 
 describe("planSource", () => {
 	it("reports unchanged and writes nothing when all sides agree", () => {
@@ -81,6 +119,18 @@ describe("planSource", () => {
 		expect(p.skills[0].status).toBe("conflict");
 		expect(p.writes["engineering/tdd"]["SKILL.md"]).toBe("<<<<<<< local\nours\n=======\ntheirs\n>>>>>>> upstream");
 		expect(p.advancePin).toBe(false);
+	});
+
+	it("names offers by upstream path so the CLI can prefix the source slug", () => {
+		const p = plan({
+			localSkills: {},
+			pinTree: {},
+			fetchedTree: treeOf(
+				["antislop-ui", { "SKILL.md": "flat" }],
+				["engineering/tdd", { "SKILL.md": "bucketed" }],
+			),
+		});
+		expect(p.offers).toEqual(["antislop-ui", "engineering/tdd"]);
 	});
 
 	it("lists a new upstream skill as an offer and never adds it", () => {

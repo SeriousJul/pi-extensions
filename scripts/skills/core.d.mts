@@ -65,3 +65,11 @@ export declare function scanLocalSkills(rootDir: string): SkillTree;
 
 export declare function gitMergeFile(base: string | null, ours: string | null, theirs: string | null): MergeFileResult;
 export declare function planSource(input: PlanSourceInput): Plan;
+
+/** The add.mjs target form: <slug>/<path>, slug resolved against the manifest keys. */
+export interface AddTarget {
+	slug: string;
+	path: string;
+}
+
+export declare function parseAddTarget(arg: string, manifest: Record<string, SkillSource>): AddTarget;

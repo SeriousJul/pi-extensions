@@ -71,6 +71,30 @@ export function saveManifest(repoRoot, manifest) {
 	writeFileSync(join(repoRoot, MANIFEST_NAME), JSON.stringify(manifest, null, 2) + "\n");
 }
 
+// --- add target ------------------------------------------------------------
+
+/**
+ * Parse a skills:add target: <slug>/<path>. The first segment is resolved
+ * against the manifest keys and names the source; the remaining one or
+ * more segments are the upstream path (bucketed or bucket-less). Every
+ * offer skills:update prints is in exactly this form.
+ *
+ * @param {string} arg
+ * @param {Record<string, object>} manifest
+ * @returns {{slug: string, path: string}}
+ */
+export function parseAddTarget(arg, manifest) {
+	const parts = arg.split("/");
+	if (parts.length < 2 || parts.some((part) => part === "")) {
+		throw new Error("usage: npm run skills:add -- <slug>/<path>");
+	}
+	const slug = parts[0];
+	if (!manifest[slug]) {
+		throw new Error(`unknown source ${slug}`);
+	}
+	return { slug, path: parts.slice(1).join("/") };
+}
+
 // --- upstream cache -------------------------------------------------------
 
 /**

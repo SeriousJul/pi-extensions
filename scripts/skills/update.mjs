@@ -108,8 +108,10 @@ function syncSource(repoRoot, slug, source) {
 		for (const note of skill.notes) console.log(`    note: ${note}`);
 	}
 	if (plan.offers.length > 0) {
+		// Each offer is printed in exactly the form skills:add accepts:
+		// <slug>/<upstream path>.
 		console.log("  offers (adopt with skills:add):");
-		for (const name of plan.offers) console.log(`    ${name}`);
+		for (const name of plan.offers) console.log(`    ${slug}/${name}`);
 	}
 	if (plan.orphans.length > 0) {
 		console.log("  orphans (upstream deleted or renamed; kept in place):");

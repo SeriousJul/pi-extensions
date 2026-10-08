@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-// Adopt a new upstream skill into the tree (npm run skills:add <bucket>/<name>).
+// Adopt a new upstream skill into the tree (npm run skills:add <slug>/<path>).
 //
 // Copies the chosen skill from the upstream repo at its fetched commit into
-// the local root at the mirrored path, so the next sync tracks it. A source
-// slug prefix is accepted when the manifest holds more than one source:
-// <slug>/<bucket>/<name>.
+// the local root at the mirrored path, so the next sync tracks it. The first
+// segment is the source slug from the manifest; the rest is the upstream
+// path, bucketed (<slug>/<bucket>/<name>) or bucket-less (<slug>/<name>).
+// skills:update prints its offers in exactly this form.
 //
 // The tool never commits, pushes, or overwrites a skill that is already in
 // the tree.
@@ -12,7 +13,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { CACHE_DIR_NAME, git, loadManifest, MAX_BUFFER, refreshCache } from "./core.mjs";
+import { CACHE_DIR_NAME, git, loadManifest, MAX_BUFFER, parseAddTarget, refreshCache } from "./core.mjs";
 
 function fail(message) {
 	console.error(`skill add: ${message}`);
@@ -29,21 +30,15 @@ try {
 }
 
 const args = process.argv.slice(2);
-if (args.length !== 1 || args[0].startsWith("--")) {
-	fail("usage: npm run skills:add -- <bucket>/<name>");
-}
-const parts = args[0].split("/");
 let slug;
 let path;
-if (Object.keys(manifest).length === 1 && parts.length === 2) {
-	[slug] = Object.keys(manifest);
-	path = args[0];
-} else if (parts.length === 3) {
-	slug = parts[0];
-	path = parts.slice(1).join("/");
-	if (!manifest[slug]) fail(`unknown source ${slug}`);
-} else {
-	fail("usage: npm run skills:add -- <bucket>/<name>");
+try {
+	if (args.length !== 1 || args[0].startsWith("--")) {
+		throw new Error("usage: npm run skills:add -- <slug>/<path>");
+	}
+	({ slug, path } = parseAddTarget(args[0], manifest));
+} catch (err) {
+	fail(err.message);
 }
 const source = manifest[slug];
 let commit;
