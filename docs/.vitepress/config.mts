@@ -83,6 +83,7 @@ export default defineConfig({
           { text: "output-limits", link: "/extensions/output-limits" },
           { text: "resource-toggle", link: "/extensions/resource-toggle" },
           { text: "edit-assist", link: "/extensions/edit-assist" },
+          { text: "skill-tool", link: "/extensions/skill-tool" },
         ],
       },
       {

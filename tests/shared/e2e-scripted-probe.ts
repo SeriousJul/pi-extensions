@@ -1,15 +1,17 @@
 /**
  * E2E probe for the scripted tool-call e2es (shared by edit assist, ticket
- * #84, and bash no-match, ticket #113). Runs inside the real pi process and
- * registers a scripted provider ("e2efa") so the e2e can drive real tool
- * calls without a live LLM.
+ * #84, bash no-match, ticket #113, resource toggle, and skill tool, ticket
+ * #143). Runs inside the real pi process and registers a scripted provider
+ * ("e2efa") so the e2e can drive real tool calls without a live LLM.
  *
  * The driver script is a file on disk (path in the E2E_CASE_FILE env var):
- * { runId, toolCall: { id, name, arguments } }. The first model call of a
- * runId answers with that tool call; every later call of the run answers
- * with a plain "done" text so the turn ends. The driver rewrites the file
- * between cases, so the probe re-reads it on every call and re-arms when
- * the runId changes.
+ * { runId, toolCall: { id, name, arguments } } or { runId, calls: [...] }.
+ * The first model call of a runId answers with those tool calls: a single
+ * toolCall is shorthand for one call, and a calls array of several is
+ * answered in one assistant message, so the case drives pi's real parallel
+ * batch. Every later call of the run answers with a plain "done" text so
+ * the turn ends. The driver rewrites the file between cases, so the probe
+ * re-reads it on every call and re-arms when the runId changes.
  */
 import { readFileSync } from "node:fs";
 import {
@@ -25,9 +27,18 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 const PROVIDER = "e2efa";
 const MODEL_ID = "e2e-1";
 
+interface ScriptedCall {
+	id: string;
+	name: string;
+	arguments: JsonObject;
+}
+
 interface ScriptedCase {
 	runId: number;
-	toolCall: { id: string; name: string; arguments: JsonObject };
+	/** One tool call in the run's first answer (shorthand). */
+	toolCall?: ScriptedCall;
+	/** Several tool calls, answered in one assistant message. */
+	calls?: ScriptedCall[];
 }
 
 let lastRunId: number | null = null;
@@ -109,13 +120,18 @@ export default function (pi: ExtensionAPI): void {
 			const callNumber = callsInRun;
 			callsInRun += 1;
 			if (callNumber === 0) {
-				const toolCall: ToolCall = {
-					type: "toolCall",
-					id: nextCase.toolCall.id,
-					name: nextCase.toolCall.name,
-					arguments: nextCase.toolCall.arguments,
-				};
-				return scriptedStream(assistantMessage([toolCall], "toolUse"), options);
+				const scripted = nextCase.calls ?? (nextCase.toolCall ? [nextCase.toolCall] : []);
+				const blocks = scripted.map(
+					(call): ToolCall => ({
+						type: "toolCall",
+						id: call.id,
+						name: call.name,
+						arguments: call.arguments,
+					}),
+				);
+				if (blocks.length > 0) {
+					return scriptedStream(assistantMessage(blocks, "toolUse"), options);
+				}
 			}
 			return scriptedStream(assistantMessage([{ type: "text", text: "done" }], "stop"), options);
 		},
