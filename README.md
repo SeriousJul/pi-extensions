@@ -21,7 +21,7 @@ VitePress from the [`docs/`](docs/) folder.
 - **bash-no-match** - returns a no-match search (rg/grep exit 1 with an empty stream) to the agent as a normal result with a "(no matches)" note, instead of an error.
 - **background-jobs** - `bash_bg`, `job_wait`, `job_status`: run long commands in the background and wait on them once, instead of sleep-and-tail loops.
 - **skill-migrate** - deterministic repo-structure migrations with a committed changelog: a `status`/`migrate` CLI and a `/migrate` command. The first step records the adoption, the second migrates the domain docs to the GLOSSARY file layout and rewrites every reference to the old file names.
-- **skills** - a curated skill tree loaded by pi from the package's `skills/` directory, with `npm run skills:update` to three-way-merge upstream changes into the copies. The `mattpocock/` skills come from [mattpocock/skills](https://github.com/mattpocock/skills) and the `anti-slop/` skills from [miqdadbadjuber/Anti-Slop](https://github.com/miqdadbadjuber/Anti-Slop); both are MIT licensed (the upstream `LICENSE` ships at `skills/mattpocock/LICENSE` and `skills/anti-slop/LICENSE`).
+- **skills** - a curated skill tree loaded by pi from the package's `skills/` directory, with `npm run skills:update` to three-way-merge upstream changes into the copies. The `addyosmani/` skills come from [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills), mirrored from the repo root along with the `references/` directory its skills link into, and the `anti-slop/` skills from [miqdadbadjuber/Anti-Slop](https://github.com/miqdadbadjuber/Anti-Slop); both are MIT licensed (the upstream `LICENSE` ships at `skills/addyosmani/LICENSE` and `skills/anti-slop/LICENSE`).
 
 See the [pi packages docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md) and the [extensions docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md).
 
@@ -54,9 +54,13 @@ The package ships a skill tree under `skills/`; pi loads it through the
 installed (convention directories are not auto-discovered while a `pi`
 manifest is present). Layout is the manifest:
 
-- `skills/mattpocock/<bucket>/<name>` - skills tracked against the upstream
-  [mattpocock/skills](https://github.com/mattpocock/skills) repo, mirroring
-  its `skills/<bucket>/<name>` layout.
+- `skills/addyosmani/skills/<name>` - the addyosmani suite tracked against
+  the upstream
+  [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills)
+  repo, mirrored from its root: the skills nest under the source's own
+  `skills/` directory, and the repo-level `references/` directory the
+  skills link into mirrors as a shared directory at
+  `skills/addyosmani/references/`.
 - `skills/anti-slop/<name>` - the antislop suite tracked against the
   upstream [miqdadbadjuber/Anti-Slop](https://github.com/miqdadbadjuber/Anti-Slop)
   repo, mirroring its flat `skills/<name>` layout.
@@ -67,8 +71,8 @@ Tweaking a skill is editing the file in this repo: a skill sync merges
 against the tweak, so an upstream change to a tweaked region comes back as
 a conflict, never as a silent overwrite. `skills-manifest.json` holds one
 entry per skill source: repo URL, local root, the upstream root it
-mirrors, and the Source pin (the upstream commit the whole tree last
-agreed on).
+mirrors, any shared directories it mirrors, and the Source pin (the
+upstream commit the whole tree last agreed on).
 
 ```
 npm run skills:update                # fetch upstream, three-way-merge tracked skills
@@ -126,7 +130,7 @@ policy.
 ├── GLOSSARY.md        # the domain glossary, single source (published on the site)
 ├── scripts/          # postinstall patch for the embedded codegraph library
 │   └── skills/       # skill sync (skills:update) and adopt (skills:add) tools
-├── skills/           # the skill tree pi loads from the package (mattpocock/ + anti-slop/ + local/)
+├── skills/           # the skill tree pi loads from the package (addyosmani/ + anti-slop/ + local/)
 ├── skills-manifest.json  # one entry per skill source: repo, upstream root, local root, Source pin
 └── tests/            # vitest suite
 ```

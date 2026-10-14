@@ -408,43 +408,59 @@ The package's `skills/` directory, laid out as
 `skills/<source-slug>/<upstream path>` for tracked skills and
 `skills/local/<name>` for Local-only skills. The layout mirrors each
 upstream repo, so a tracked skill's upstream path is read off its local
-path. The upstream path carries whatever buckets the source itself uses:
-`engineering/tdd` for one source, `antislop-ui` for another.
+path. The upstream path carries whatever shape the source's own repo
+gives it: `skills/test-driven-development` for one source, `antislop-ui`
+for another.
 _Avoid_: pool (generic), skillset, bundle (a bundle is a pi package)
 
 **Skill source**:
 One upstream git repo whose skills are tracked: a repo URL, an Upstream
-root, a local root in the Skill tree, and one Source pin. Matt Pocock's
-skills repo and the antislop repo are the sources today.
+root, a local root in the Skill tree, and one Source pin. The Addy
+Osmani agent-skills repo and the antislop repo are the sources today.
 _Avoid_: provider (names the vendor, not the tracked unit), upstream
 (too generic), feed
 
 **Upstream root**:
 The directory inside a Skill source's repo that its local root mirrors,
 `skills/` by default. Skills sit at any depth below it, so a source may
-bucket its skills (mattpocock) or hold them flat (antislop).
+root its mirror in its own skills directory (antislop) or in the repo
+root (addyosmani).
 _Avoid_: source root (names the local side), local root (the other side of
 the mirror), upstream path (the segment below the Upstream root)
 
+**Shared directory**:
+A directory inside a mirrored upstream root that a skill references but
+that is not itself a skill: the repo-level `references/` of shared
+checklists the addyosmani skills link into with relative paths. A source
+names its shared directories in the manifest; the local root mirrors each
+at the same relative path, and a skill sync three-way-merges its files
+like a skill's files. Files that are neither skill nor shared directory
+(the `LICENSE` at a source root) stay unmirrored.
+_Avoid_: shared files (too generic), support directory, asset directory,
+reference (that is one file inside one)
+
 **Source pin**:
-The last upstream commit at which every tracked skill of one source is
-in agreement with the local copy. A skill sync advances it only when it
-completes with no unresolved conflict, so the pin always names a commit
-where the whole tree merged. It is the merge base of the next sync.
+The last upstream commit at which every tracked unit of one source (its
+skills and shared directories) is in agreement with the local copy. A
+skill sync advances it only when it completes with no unresolved
+conflict, so the pin always names a commit where the whole tree merged.
+It is the merge base of the next sync.
 _Avoid_: tag, version, sync stamp, base state (the Sync extension's per-file
 record; the pin is one commit per source)
 
 **Skill sync**:
 One run of the update over one source: fetch upstream, three-way merge
-every tracked skill (base = the Source pin, theirs = the fetched commit,
-ours = the local copy), apply clean merges, report conflicts with marked
-hunks, and advance the pin when everything is clean or finalized.
+every tracked skill and shared directory (base = the Source pin, theirs
+= the fetched commit, ours = the local copy), apply clean merges,
+report conflicts with marked hunks, and advance the pin when everything
+is clean or finalized.
 _Avoid_: pull (git's one-way word), refresh (too generic), update (the user's
 word for the whole chore, not one pass)
 
 **Adopt**:
-Taking a new upstream skill into the Skill tree by the user's choice.
-A skill sync reports new upstream skills but never adopts one on its own.
+Taking a new upstream skill or shared directory into the Skill tree by
+the user's choice. A skill sync reports new upstream units but never
+adopts one on its own.
 _Avoid_: install (the package word), import, subscribe
 
 **Local-only skill**:
