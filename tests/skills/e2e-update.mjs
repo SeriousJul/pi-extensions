@@ -13,6 +13,11 @@
  *   - new-skill offer and adopt (adopted skill tracked by the next sync)
  *   - a bucket-less second source: offers printed as <slug>/<name>, adopted
  *     by skills:add, rejected without the slug
+ *   - a root-mirrored third source (upstreamRoot "."): skills nested in the
+ *     source's own skills directory, a shared references directory merged
+ *     like a skill, non-shared root files never mirrored
+ *   - a shared directory offered and adopted by skills:add, tracked by the
+ *     next sync
  *   - orphan report (skill kept, pin held, cleared when the local dir goes)
  *   - local-only skills under skills/local never read, merged, or reported
  *   - failed fetch leaves the tree and the pin untouched
@@ -49,9 +54,11 @@ function check(cond, label) {
 const sandbox = mkdtempSync(join(tmpdir(), "skills-e2e-"));
 const upstream = join(sandbox, "upstream");
 const upstreamFlat = join(sandbox, "upstream-flat");
+const upstreamDot = join(sandbox, "upstream-dot");
 const root = join(sandbox, "repo");
 const localRoot = join(root, "skills", "fixture");
 const localFlatRoot = join(root, "skills", "flat");
+const localDotRoot = join(root, "skills", "dot");
 const localOnly = join(root, "skills", "local", "myskill", "SKILL.md");
 
 console.log(`sandbox: ${sandbox}`);
@@ -84,7 +91,7 @@ function runTool(script, args = []) {
 	});
 }
 
-let c2, c3, c4, c5, c6, c7b;
+let c2, c3, c4, c5, c6, c7b, cDot2, cDot3, cFlat2, cFlat3;
 
 function manifest() {
 	return JSON.parse(readFileSync(join(root, "skills-manifest.json"), "utf8"));
@@ -114,13 +121,30 @@ const c1 = commitUpstream("initial", {
 });
 
 // A second, bucket-less upstream repo: its skills sit directly under its
-// skills/ root, so its local paths carry no bucket segment.
+// skills/ root, so its local paths carry no bucket segment. It also carries
+// a shared directory (notes) that is mirrored and merged like a skill, and
+// a second shared directory (draft) that appears upstream later so a sync
+// can offer it.
 execFileSync("git", ["init", "--quiet", "-b", "main", upstreamFlat], { encoding: "utf8" });
 const c1b = commitUpstream("initial", {
 	"skills/one/SKILL.md": "one v1\n",
 	"skills/two/SKILL.md": "two v1\n",
+	"skills/notes/tips.md": "tips v1\n",
 	"LICENSE": "MIT License (flat fixture)\n",
 }, upstreamFlat);
+
+// A third upstream repo mirrored from its root (upstreamRoot "."): its
+// skills nest under its own skills/ directory, its skills link into a
+// repo-level references/ directory tracked as a shared directory, and its
+// other root entries (extra/, LICENSE) are neither skills nor shared, so
+// they never mirror.
+execFileSync("git", ["init", "--quiet", "-b", "main", upstreamDot], { encoding: "utf8" });
+const cDot1 = commitUpstream("initial", {
+	"skills/omega/SKILL.md": "omega v1\n",
+	"references/guide.md": "guide v1\n",
+	"extra/stray.md": "stray v1\n",
+	"LICENSE": "MIT License (dot fixture)\n",
+}, upstreamDot);
 
 mkdirSync(root, { recursive: true });
 writeFileSync(join(root, "skills-manifest.json"), JSON.stringify({
@@ -134,7 +158,15 @@ writeFileSync(join(root, "skills-manifest.json"), JSON.stringify({
 		repo: upstreamFlat,
 		root: "skills/flat",
 		upstreamRoot: "skills",
+		shared: ["notes", "draft"],
 		pin: c1b,
+	},
+	dot: {
+		repo: upstreamDot,
+		root: "skills/dot",
+		upstreamRoot: ".",
+		shared: ["references"],
+		pin: cDot1,
 	},
 }, null, 2) + "\n");
 
@@ -155,24 +187,48 @@ mkdirSync(localFlatRoot, { recursive: true });
 renameSync(join(flatStage, "skills", "one"), join(localFlatRoot, "one"));
 rmSync(flatStage, { recursive: true, force: true });
 
+// Adopt the flat source's shared notes directory at the start; draft stays
+// upstream-only so a later run can offer it.
+const notesStage = join(sandbox, "notes-stage");
+mkdirSync(notesStage, { recursive: true });
+const notesArchive = execFileSync("git", ["-C", upstreamFlat, "archive", c1b, "skills/notes"], { encoding: "buffer" });
+execFileSync("tar", ["-x", "-C", notesStage], { input: notesArchive });
+renameSync(join(notesStage, "skills", "notes"), join(localFlatRoot, "notes"));
+rmSync(notesStage, { recursive: true, force: true });
+
+// Adopt the dot source's skill and its shared references directory at the
+// start; extra/ and LICENSE are never mirrored.
+const dotStage = join(sandbox, "dot-stage");
+mkdirSync(dotStage, { recursive: true });
+const dotArchive = execFileSync("git", ["-C", upstreamDot, "archive", cDot1, "skills", "references"], { encoding: "buffer" });
+execFileSync("tar", ["-x", "-C", dotStage], { input: dotArchive });
+mkdirSync(localDotRoot, { recursive: true });
+renameSync(join(dotStage, "skills"), join(localDotRoot, "skills"));
+renameSync(join(dotStage, "references"), join(localDotRoot, "references"));
+rmSync(dotStage, { recursive: true, force: true });
+
 mkdirSync(dirname(localOnly), { recursive: true });
 writeFileSync(localOnly, "local only skill\n");
 const localOnlyContent = readFileSync(localOnly, "utf8");
 
-// 1. first run: everything agrees, no writes, pin stays, the unadopted
-// flat skill is offered as <slug>/<name>.
+// 1. first run: everything agrees, no writes, pins stay, the unadopted
+// flat skill is offered as <slug>/<name>, and the dot source's skill and
+// shared directory both report.
 console.log("\n1. first run (no-op, one offer)");
 {
 	const r = runTool("update.mjs");
 	check(r.status === 0, `exit 0 (got ${r.status})`);
 	check(manifest().fixture.pin === c1, "fixture pin unchanged");
 	check(manifest().flat.pin === c1b, "flat pin unchanged");
-	for (const name of ["engineering/alpha: unchanged", "engineering/beta: unchanged", "productivity/gamma: unchanged", "one: unchanged"]) {
+	check(manifest().dot.pin === cDot1, "dot pin unchanged");
+	for (const name of ["engineering/alpha: unchanged", "engineering/beta: unchanged", "productivity/gamma: unchanged", "one: unchanged", "notes: unchanged", "skills/omega: unchanged", "references: unchanged"]) {
 		check(r.stdout.includes(`  ${name}`), `reports ${name}`);
 	}
 	check(r.stdout.includes("offers (adopt with skills:add):"), "offers header printed");
 	check(r.stdout.includes("    flat/two"), "bucket-less offer printed as <slug>/<name>");
 	check(!existsSync(join(localFlatRoot, "two")), "offer never adopted on its own");
+	check(!existsSync(join(localDotRoot, "extra")), "non-shared upstream directory never mirrored");
+	check(!existsSync(join(localDotRoot, "LICENSE")), "non-shared upstream file never mirrored");
 }
 
 // 2. re-run with no changes anywhere: still a no-op.
@@ -194,6 +250,9 @@ console.log("\n3. clean upstream change");
 	check(readFileSync(join(localRoot, "engineering/alpha/SKILL.md"), "utf8") === "alpha v2\n", "alpha updated to upstream content");
 	check(manifest().fixture.pin === c2, "pin advanced to the fetched commit");
 	check(r.stdout.includes("engineering/alpha: clean"), "alpha reported clean");
+	const onDisk = JSON.parse(readFileSync(join(root, "skills-manifest.json"), "utf8"));
+	check(!("shared" in onDisk.fixture), "empty shared list omitted from the saved manifest");
+	check(onDisk.flat.shared.join(",") === "notes,draft", "non-empty shared list kept in the saved manifest");
 }
 
 // 4. local-only change preserved while an unrelated upstream file moves.
@@ -311,6 +370,56 @@ console.log("\n10. failed fetch");
 	check(readFileSync(manifestPath, "utf8") === JSON.stringify(m, null, 2) + "\n", "manifest untouched");
 	check(treeFingerprint() === before, "tree untouched");
 	writeFileSync(manifestPath, original);
+}
+
+// 11. root-mirrored source: the shared directory merges like a skill file,
+// the nested skill tracks, non-shared root entries stay unmirrored.
+console.log("\n11. dot source: shared directory tracked, non-shared files ignored");
+{
+	cFlat2 = commitUpstream("tips v2", { "skills/notes/tips.md": "tips v2\n" }, upstreamFlat);
+	cDot2 = commitUpstream("omega v2, guide v2, stray v2", {
+		"skills/omega/SKILL.md": "omega v2\n",
+		"references/guide.md": "guide v2\n",
+		"extra/stray.md": "stray v2\n",
+	}, upstreamDot);
+	const r = runTool("update.mjs");
+	check(r.status === 0, `exit 0 (got ${r.status})`);
+	check(readFileSync(join(localFlatRoot, "notes/tips.md"), "utf8") === "tips v2\n", "flat shared file updated");
+	check(readFileSync(join(localDotRoot, "skills/omega/SKILL.md"), "utf8") === "omega v2\n", "dot skill updated");
+	check(readFileSync(join(localDotRoot, "references/guide.md"), "utf8") === "guide v2\n", "dot shared file updated");
+	check(manifest().flat.pin === cFlat2, "flat pin advanced");
+	check(manifest().dot.pin === cDot2, "dot pin advanced");
+	check(!existsSync(join(localDotRoot, "extra")), "non-shared directory still never mirrored");
+	check(!r.stdout.toLowerCase().includes("stray"), "no report line for the non-shared file");
+}
+
+// 12. offers on the root-mirrored source (slug/skills/name form) and a
+// shared-directory offer, both adopted by skills:add and tracked by the
+// next sync.
+console.log("\n12. dot and shared-directory offers, adopted, then tracked");
+{
+	cDot3 = commitUpstream("add omega2", { "skills/omega2/SKILL.md": "omega2 v1\n" }, upstreamDot);
+	cFlat3 = commitUpstream("add draft", { "skills/draft/d.md": "draft v1\n" }, upstreamFlat);
+	const r = runTool("update.mjs");
+	check(r.status === 0, `exit 0 (got ${r.status})`);
+	check(r.stdout.includes("    dot/skills/omega2"), "dot offer printed as <slug>/skills/<name>");
+	check(r.stdout.includes("    flat/draft"), "shared-directory offer printed as <slug>/<dir>");
+	check(!existsSync(join(localDotRoot, "skills/omega2")), "skill offer never adopted on its own");
+	check(!existsSync(join(localFlatRoot, "draft")), "shared offer never adopted on its own");
+	check(manifest().dot.pin === cDot3, "dot pin advances past an offer");
+	const a = runTool("add.mjs", ["dot/skills/omega2"]);
+	check(a.status === 0, `skills:add on the dot source exit 0 (got ${a.status})`);
+	check(readFileSync(join(localDotRoot, "skills/omega2/SKILL.md"), "utf8") === "omega2 v1\n", "dot skill adopted at the mirrored path");
+
+	const b = runTool("add.mjs", ["flat/draft"]);
+	check(b.status === 0, `skills:add on a shared directory exit 0 (got ${b.status})`);
+	check(readFileSync(join(localFlatRoot, "draft/d.md"), "utf8") === "draft v1\n", "shared directory adopted at the mirrored path");
+
+	const r2 = runTool("update.mjs");
+	check(r2.status === 0, `exit 0 (got ${r2.status})`);
+	check(readFileSync(join(localFlatRoot, "draft/d.md"), "utf8") === "draft v1\n", "adopted shared directory tracked by the next sync");
+	check(!r2.stdout.toLowerCase().includes("offer"), "no offers once everything is adopted");
+	check(manifest().dot.pin === cDot3 && manifest().flat.pin === cFlat3, "pins stay where the tree agreed");
 }
 
 if (failures > 0) {

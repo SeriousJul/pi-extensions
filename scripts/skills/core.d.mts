@@ -5,6 +5,8 @@ export interface SkillSource {
 	root: string;
 	pin: string;
 	upstreamRoot?: string;
+	/** Upstream directories (relative to upstreamRoot) mirrored and merged like skills. */
+	shared?: string[];
 }
 
 export type SkillTree = Record<string, { files: Record<string, string> }>;
@@ -60,8 +62,8 @@ export declare function saveManifest(repoRoot: string, manifest: Record<string, 
 export declare function refreshCache(cacheDir: string, repo: string): { commit: string; branch: string };
 export declare function ensureCommitCached(cacheDir: string, commit: string): void;
 
-export declare function readUpstreamTree(cacheDir: string, commit: string, upstreamRoot: string): SkillTree;
-export declare function scanLocalSkills(rootDir: string): SkillTree;
+export declare function readUpstreamTree(cacheDir: string, commit: string, upstreamRoot: string, shared?: string[]): SkillTree;
+export declare function scanLocalSkills(rootDir: string, shared?: string[]): SkillTree;
 
 export declare function gitMergeFile(base: string | null, ours: string | null, theirs: string | null): MergeFileResult;
 export declare function planSource(input: PlanSourceInput): Plan;

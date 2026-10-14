@@ -42,10 +42,10 @@ export function git(args, options = {}) {
 
 /**
  * Load the skill manifest (one entry per Skill source: repo, local root,
- * upstream root, Source pin).
+ * upstream root, shared directories, Source pin).
  *
  * @param {string} repoRoot
- * @returns {Record<string, {repo: string, root: string, upstreamRoot: string, pin: string}>}
+ * @returns {Record<string, {repo: string, root: string, upstreamRoot: string, shared: string[], pin: string}>}
  */
 export function loadManifest(repoRoot) {
 	const path = join(repoRoot, MANIFEST_NAME);
@@ -57,18 +57,30 @@ export function loadManifest(repoRoot) {
 			throw new Error(`manifest entry ${slug} must have repo, root, and pin`);
 		}
 		if (!source.upstreamRoot) source.upstreamRoot = "skills";
+		if (source.shared === undefined) source.shared = [];
+		const badShared = !Array.isArray(source.shared) ||
+			source.shared.some((dir) => typeof dir !== "string" || dir === "" || dir.startsWith("/") || dir.split("/").includes(".."));
+		if (badShared) {
+			throw new Error(`manifest entry ${slug}: shared must be an array of upstream directory paths inside the upstream root`);
+		}
 	}
 	return manifest;
 }
 
 /**
  * Save the skill manifest, pretty-printed with a trailing newline.
+ * An empty shared list is the same as an absent one and is omitted.
  *
  * @param {string} repoRoot
  * @param {Record<string, object>} manifest
  */
 export function saveManifest(repoRoot, manifest) {
-	writeFileSync(join(repoRoot, MANIFEST_NAME), JSON.stringify(manifest, null, 2) + "\n");
+	const out = {};
+	for (const [slug, source] of Object.entries(manifest)) {
+		out[slug] = { ...source };
+		if (Array.isArray(out[slug].shared) && out[slug].shared.length === 0) delete out[slug].shared;
+	}
+	writeFileSync(join(repoRoot, MANIFEST_NAME), JSON.stringify(out, null, 2) + "\n");
 }
 
 // --- add target ------------------------------------------------------------
@@ -151,19 +163,24 @@ export function ensureCommitCached(cacheDir, commit) {
  * @param {string} cacheDir
  * @param {string} commit
  * @param {string} upstreamRoot - the upstream directory mirrored by the local root
- * @returns {Record<string, {files: Record<string, string>}>} keyed by skill path
+ * @param {string[]} shared - upstream directories mirrored like skills
+ * @returns {Record<string, {files: Record<string, string>}>} keyed by skill or shared-directory path
  */
-export function readUpstreamTree(cacheDir, commit, upstreamRoot) {
-	try {
-		git(["-C", cacheDir, "cat-file", "-e", `${commit}:${upstreamRoot}`], { stdio: "pipe" });
-	} catch {
-		return {};
+export function readUpstreamTree(cacheDir, commit, upstreamRoot, shared = []) {
+	// `git cat-file -e` rejects the path form `commit:.` for the repo root;
+	// the root of a commit always exists, so only probe a real sub-path.
+	if (upstreamRoot !== ".") {
+		try {
+			git(["-C", cacheDir, "cat-file", "-e", `${commit}:${upstreamRoot}`], { stdio: "pipe" });
+		} catch {
+			return {};
+		}
 	}
 	const dir = mkdtempSync(join(tmpdir(), "skill-tree-"));
 	try {
 		const archive = git(["-C", cacheDir, "archive", commit, upstreamRoot], { encoding: "buffer" });
 		execFileSync("tar", ["-x", "-C", dir], { input: archive, maxBuffer: MAX_BUFFER });
-		return scanLocalSkills(join(dir, upstreamRoot));
+		return scanLocalSkills(join(dir, upstreamRoot), shared);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -171,13 +188,16 @@ export function readUpstreamTree(cacheDir, commit, upstreamRoot) {
 
 /**
  * Scan a skills root. A skill is any directory that contains a SKILL.md;
- * every file under it (references, scripts) belongs to it. Files outside
- * any skill (for example the LICENSE at a source root) are ignored.
+ * every file under it (references, scripts) belongs to it. A file outside
+ * any skill but inside a declared shared directory belongs to that shared
+ * directory. Files outside both (for example the LICENSE at a source root)
+ * are ignored.
  *
  * @param {string} rootDir
- * @returns {Record<string, {files: Record<string, string>}>} keyed by skill path relative to rootDir
+ * @param {string[]} shared - directory paths (relative to rootDir) mirrored like skills
+ * @returns {Record<string, {files: Record<string, string>}>} keyed by skill or shared-directory path relative to rootDir
  */
-export function scanLocalSkills(rootDir) {
+export function scanLocalSkills(rootDir, shared = []) {
 	if (!existsSync(rootDir)) return {};
 	const rels = new Set();
 	const walk = (dir, rel) => {
@@ -199,14 +219,27 @@ export function scanLocalSkills(rootDir) {
 		}
 		return dir;
 	};
+	const sharedOf = (fileRel) => {
+		for (const dir of shared) {
+			if (fileRel.startsWith(`${dir}/`)) return dir;
+		}
+		return null;
+	};
 
 	const tree = {};
 	for (const rel of rels) {
-		const key = skillOf(rel);
-		if (key === null) continue;
-		const skillRel = key === "" ? rel : rel.slice(key.length + 1);
-		tree[key] ??= { files: {} };
-		tree[key].files[skillRel] = readFileSync(join(rootDir, rel), "utf8");
+		const skill = skillOf(rel);
+		if (skill !== null) {
+			const skillRel = skill === "" ? rel : rel.slice(skill.length + 1);
+			tree[skill] ??= { files: {} };
+			tree[skill].files[skillRel] = readFileSync(join(rootDir, rel), "utf8");
+			continue;
+		}
+		const dir = sharedOf(rel);
+		if (dir === null) continue;
+		const sharedRel = rel.slice(dir.length + 1);
+		tree[dir] ??= { files: {} };
+		tree[dir].files[sharedRel] = readFileSync(join(rootDir, rel), "utf8");
 	}
 	return tree;
 }
