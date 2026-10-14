@@ -39,17 +39,13 @@ function plan(partial: Partial<{ pin: string; fetched: string; localSkills: Skil
 }
 
 const twoSources: Record<string, SkillSource> = {
-	addyosmani: { repo: "r", root: "skills/addyosmani", upstreamRoot: ".", shared: ["references"], pin: "p" },
+	mattpocock: { repo: "r", root: "skills/mattpocock", pin: "p" },
 	"anti-slop": { repo: "r", root: "skills/anti-slop", pin: "p" },
 };
 
 describe("parseAddTarget", () => {
-	it("parses a skill nested in the source's own skills directory", () => {
-		expect(parseAddTarget("addyosmani/skills/test-driven-development", twoSources)).toEqual({ slug: "addyosmani", path: "skills/test-driven-development" });
-	});
-
-	it("parses a shared directory with its source slug", () => {
-		expect(parseAddTarget("addyosmani/references", twoSources)).toEqual({ slug: "addyosmani", path: "references" });
+	it("parses a bucketed skill with its source slug", () => {
+		expect(parseAddTarget("mattpocock/engineering/tdd", twoSources)).toEqual({ slug: "mattpocock", path: "engineering/tdd" });
 	});
 
 	it("parses a bucket-less skill with its source slug", () => {
@@ -65,7 +61,7 @@ describe("parseAddTarget", () => {
 	});
 
 	it("rejects a bucketed path without a source slug", () => {
-		expect(() => parseAddTarget("skills/test-driven-development", twoSources)).toThrow(/unknown source skills/);
+		expect(() => parseAddTarget("engineering/tdd", twoSources)).toThrow(/unknown source engineering/);
 	});
 
 	it("rejects an unknown source slug", () => {
@@ -236,37 +232,5 @@ describe("planSource", () => {
 			),
 		});
 		expect(p.skills.map((s) => s.name)).toEqual(["engineering/a", "misc/b"]);
-	});
-
-	it("tracks a shared directory like a skill unit: clean upstream change applies", () => {
-		const p = plan({
-			localSkills: treeOf(["references", { "checklist.md": "base" }]),
-			pinTree: treeOf(["references", { "checklist.md": "base" }]),
-			fetchedTree: treeOf(["references", { "checklist.md": "upstream" }]),
-		});
-		expect(p.skills[0].status).toBe("clean");
-		expect(p.writes).toEqual({ references: { "checklist.md": "upstream" } });
-		expect(p.advancePin).toBe(true);
-	});
-
-	it("holds the pin when a shared directory upstream deleted comes back locally changed", () => {
-		const p = plan({
-			localSkills: treeOf(["references", { "checklist.md": "tweaked" }]),
-			pinTree: treeOf(["references", { "checklist.md": "base" }]),
-			fetchedTree: {},
-		});
-		expect(p.orphans).toEqual(["references"]);
-		expect(p.advancePin).toBe(false);
-	});
-
-	it("reports a declared shared directory absent locally as an offer for skills:add", () => {
-		const p = plan({
-			localSkills: {},
-			pinTree: {},
-			fetchedTree: treeOf(["references", { "checklist.md": "new" }]),
-		});
-		expect(p.offers).toEqual(["references"]);
-		expect(p.skills.find((s) => s.name === "references")?.status).toBe("offer");
-		expect(p.advancePin).toBe(true);
 	});
 });

@@ -1,8 +1,7 @@
 # The skill tree tracks upstream sources with per-source pins
 
 The package ships a skill tree of full skill copies. Tracked skills come
-from upstream repos (the Addy Osmani agent-skills repo today, MIT
-licensed; ADR-0035 swapped it in for the Matt Pocock repo). Local
+from upstream repos (Matt Pocock's skills repo today, MIT licensed). Local
 tweaks are edits to the copies in place. A skill sync three-way-merges each
 tracked file - base is the file at the Source pin, theirs is the file at
 the fetched commit, ours is the local copy - and advances the pin only when

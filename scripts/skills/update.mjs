@@ -3,9 +3,9 @@
 //
 // For every Skill source in the manifest: fetch the upstream repo, read the
 // upstream tree at the Source pin and at the fetched commit, scan the local
-// root, plan the three-way merge of every tracked skill and shared
-// directory, apply the writes, report per unit, and advance the Source pin
-// iff the sync completed with no conflict and no orphan.
+// root, plan the three-way merge of every tracked skill, apply the writes,
+// report per skill, and advance the Source pin iff the sync completed with
+// no conflict and no orphan.
 //
 // The tool never commits, pushes, deletes, or renames. A failed run (bad
 // repo, network) exits 1 and leaves the tree and the pin untouched.
@@ -58,10 +58,10 @@ function syncSource(repoRoot, slug, source) {
 	const head = refreshCache(cacheDir, source.repo);
 	ensureCommitCached(cacheDir, source.pin);
 
-	const pinTree = readUpstreamTree(cacheDir, source.pin, source.upstreamRoot, source.shared);
-	const fetchedTree = readUpstreamTree(cacheDir, head.commit, source.upstreamRoot, source.shared);
+	const pinTree = readUpstreamTree(cacheDir, source.pin, source.upstreamRoot);
+	const fetchedTree = readUpstreamTree(cacheDir, head.commit, source.upstreamRoot);
 	const localRoot = join(repoRoot, source.root);
-	const localSkills = scanLocalSkills(localRoot, source.shared);
+	const localSkills = scanLocalSkills(localRoot);
 
 	const plan = planSource({
 		pin: source.pin,
