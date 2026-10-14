@@ -1,14 +1,25 @@
 # Pi Extensions
 
-Extensions for the pi coding agent. Nine today: Codegraph (semantic code
-search over the current project), Quota (subscription quota monitor), Model
-router (automatic recovery from quota exhaustion), Llama refresh (self-heal
-of the context window for a lazily loaded local model), Sync (device file
-sync), Usage (token and cost reporting across all sessions), Compress
-(request-time compression of finished turns), Pruning (two-level context
-control: request-time pruning of large tool outputs in front of native
-compaction), and Edit assist (corrects and diagnoses failing edit calls
-around the built-in edit tool). The package also ships a Skill tree, kept in
+Extensions for the pi coding agent. Twenty-one today: Codegraph (semantic
+search over the current project's symbols), Tools (enable and disable tools
+per session), Context cap (cap the context window so compaction fires
+early), Model router (automatic recovery from quota exhaustion), Llama
+refresh (self-heal of the context window for a lazily loaded local model),
+Quota (subscription quota monitor), Resource toggle (enable and disable
+extensions, skills, prompts, and themes from inside a session), Usage
+(token and cost reporting across all sessions), Sync (device file sync),
+Compress (request-time compression of finished turns), Pruning (two-level
+context control in front of native compaction), Output limits (bound tool
+results against the session's headroom, losslessly), Output starvation
+(refuse a collapsed output budget), Edit assist (corrects and diagnoses
+failing edit calls around the built-in edit tool), Bash no-match (a
+no-match search as a normal result), Background jobs (run long commands in
+the background and wait on them), Initial context (the token breakdown of
+the agent's initial context), Safe branch summary (a branch summary that
+fits the window the server serves), Skill command (keep newline-separated
+/skill: commands expandable), Skill migrate (deterministic repo-structure
+migrations with a committed changelog), and Skill tool (load a skill
+another skill names, by name). The package also ships a Skill tree, kept in
 step with upstream repos by the skill sync script.
 
 ## Language
@@ -466,6 +477,15 @@ comes back as a conflict, never as a silent overwrite.
 _Avoid_: patch (patch files are the mechanism ADR-0013 rejected), fork
 (the copy stays one directory deep in the tree), override (the
 resource-toggle word)
+
+**Skill tool**:
+The `skill` tool the skill-tool extension registers: it loads one skill
+by name and returns the same block pi's `/skill:` expansion records.
+Skills reference each other by name, and the tool resolves the name
+against the list pi loaded into the run, so the model never re-types a
+skill's install path.
+_Avoid_: skill loader (generic), Skill command (pi's word for the /skill:
+input), skill invocation
 
 ### Skill migrate
 

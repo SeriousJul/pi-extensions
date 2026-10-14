@@ -61,6 +61,17 @@ Tweaking a skill is editing the file in this repo. A skill sync merges
 against the tweak, so an upstream change to a tweaked region comes back
 as a conflict, never as a silent overwrite.
 
+## Calling a skill from a skill
+
+The tracked skills reference each other by name ("call the Skill tool
+for 'grilling'"). pi has no Skill tool, so the [skill tool
+extension](/extensions/skill-tool) registers one: `skill` takes a name
+and loads that skill from the list pi itself resolved, returning the
+same block shape the `/skill:` expansion records. The model never
+re-types a skill's install path, and a name pi does not know comes back
+with the loaded names to correct against (issue #143,
+[ADR 0035](/adr/0035-the-skill-tool-loads-referenced-skills-by-name)).
+
 The vendored antislop core carries one deliberate local tweak
 ([ADR-0034](/adr/0034-the-vendored-antislop-copy-is-edited-for-a-tracked-tree)):
 the First-Run Install Wizard and the update section are cut, and the mode
