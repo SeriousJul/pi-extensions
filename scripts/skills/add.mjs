@@ -1,13 +1,10 @@
 #!/usr/bin/env node
-// Adopt a new upstream skill or shared directory into the tree
-// (npm run skills:add <slug>/<path>).
+// Adopt a new upstream skill into the tree (npm run skills:add <slug>/<path>).
 //
 // Copies the chosen skill from the upstream repo at its fetched commit into
 // the local root at the mirrored path, so the next sync tracks it. The first
 // segment is the source slug from the manifest; the rest is the upstream
-// path, bucketed (<slug>/<bucket>/<name>), rooted (<slug>/skills/<name>), or
-// bucket-less (<slug>/<name>). Shared directories named in the manifest's
-// `shared` list are copied whole, the same way a skill directory is.
+// path, bucketed (<slug>/<bucket>/<name>) or bucket-less (<slug>/<name>).
 // skills:update prints its offers in exactly this form.
 //
 // The tool never commits, pushes, or overwrites a skill that is already in
@@ -44,18 +41,16 @@ try {
 	fail(err.message);
 }
 const source = manifest[slug];
-const isShared = (source.shared ?? []).includes(path);
 let commit;
 try {
 	const cacheDir = join(repoRoot, CACHE_DIR_NAME, slug);
 	({ commit } = refreshCache(cacheDir, source.repo));
 
-	const upstreamPath = source.upstreamRoot === "." ? path : `${source.upstreamRoot}/${path}`;
+	const upstreamPath = `${source.upstreamRoot}/${path}`;
 	try {
-		const probe = isShared ? upstreamPath : `${upstreamPath}/SKILL.md`;
-		git(["-C", cacheDir, "cat-file", "-e", `${commit}:${probe}`], { stdio: "pipe" });
+		git(["-C", cacheDir, "cat-file", "-e", `${commit}:${upstreamPath}/SKILL.md`], { stdio: "pipe" });
 	} catch {
-		fail(`no ${isShared ? "shared directory" : "skill"} ${path} in ${slug} at ${commit.slice(0, 10)}`);
+		fail(`no skill ${path} in ${slug} at ${commit.slice(0, 10)}`);
 	}
 
 	const localTarget = join(repoRoot, source.root, path);
@@ -68,7 +63,7 @@ try {
 		const archive = git(["-C", cacheDir, "archive", commit, upstreamPath], { encoding: "buffer" });
 		execFileSync("tar", ["-x", "-C", stage], { input: archive, maxBuffer: MAX_BUFFER });
 		const staged = join(stage, ...upstreamPath.split("/"));
-		if (!isShared && !existsSync(join(staged, "SKILL.md"))) fail(`adoption of ${path} did not land a SKILL.md`);
+		if (!existsSync(join(staged, "SKILL.md"))) fail(`adoption of ${path} did not land a SKILL.md`);
 		mkdirSync(dirname(localTarget), { recursive: true });
 		renameSync(staged, localTarget);
 	} finally {
