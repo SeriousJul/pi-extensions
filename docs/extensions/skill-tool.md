@@ -23,7 +23,10 @@ mangled directory name - and the read dies with ENOENT
 - A hit returns the skill's body with the frontmatter stripped, wrapped
   in the same block shape pi's `/skill:` expansion records: the tag with
   the name and the file location, and the line that names the base
-  directory the skill's relative file references resolve against.
+  directory the skill's relative file references resolve against. pi
+  normalizes a file's line endings before it parses the frontmatter, and
+  the tool mirrors that, so a CRLF file returns the same body pi
+  records.
 - A miss - a name pi does not know - comes back as an error carrying
   every loaded name, so the model corrects itself in one retry.
 - A file that vanished after the run started (a `/reload` race) reports

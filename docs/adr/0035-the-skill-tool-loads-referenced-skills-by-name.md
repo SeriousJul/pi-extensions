@@ -2,7 +2,7 @@
 
 The shipped skills reference each other by name: `grill-with-docs` says
 "call the Skill tool twice, for 'grilling' and 'domain-modeling'", and
-fourteen more skills in the tracked suite carry the same shape. The
+ten more skills in the tracked suite carry the same shape. The
 wording comes from the upstream's home environment, where a Skill tool
 exists. pi has no such tool: the model learns where a skill lives from
 the skills section of the system prompt, so a name reference makes it
@@ -29,7 +29,7 @@ the model.
 ## Considered options
 
 - **Edit the vendored skill text to point at file paths.** Rejected: the
-  suite carries the cross-reference in roughly fifteen files, so the
+  suite carries the cross-reference in eleven files, so the
   edits scatter across tracked upstream copies; repo-root-relative paths
   do not resolve in the "references are relative to the skill directory"
   context the injection declares; and the next skill sync merges every
@@ -61,4 +61,6 @@ the model.
   as a user-invoked skill's instructions may direct.
 - The tool's result is byte-for-byte the shape of pi's expansion block,
   so a session that loaded a skill by name reads to the model like a
-  session that commanded it.
+  session that commanded it. The tool normalizes a file's BOM and line
+  endings the way pi does before it parses the frontmatter, so the
+  comparison holds on a CRLF checkout, not only on an LF one.

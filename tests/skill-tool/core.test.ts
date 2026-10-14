@@ -1,10 +1,18 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { Skill } from "@earendil-works/pi-coding-agent";
 
-import { formatSkillLoaded, formatSkillUnknown, loadSkillText, lookUpSkill, stripFrontmatter } from "../../extensions/skill-tool/core";
+import {
+	formatSkillLoaded,
+	formatSkillUnknown,
+	loadSkillText,
+	lookUpSkill,
+	normalizeSkillText,
+	stripFrontmatter,
+} from "../../extensions/skill-tool/core";
 
 const fixtureRoot = join(fileURLToPath(new URL(".", import.meta.url)), "fixture", "skills");
 
@@ -96,6 +104,12 @@ describe("formatSkillLoaded", () => {
 	});
 });
 
+describe("normalizeSkillText", () => {
+	it("strips a BOM and folds CRLF and lone CR to LF, like pi's frontmatter parse", () => {
+		expect(normalizeSkillText("\uFEFFa\r\nb\rc\n")).toBe("a\nb\nc\n");
+	});
+});
+
 describe("formatSkillUnknown", () => {
 	it("names the failed lookup and the loaded skills", () => {
 		expect(formatSkillUnknown("nope", ["a", "b"])).toBe(`Skill "nope" is not loaded in this session. Loaded skills: a, b.`);
@@ -135,6 +149,32 @@ describe("loadSkillText", () => {
 		if (!outcome.ok) {
 			expect(outcome.text).toContain(ghost.filePath);
 			expect(outcome.text).toContain("/reload");
+		}
+	});
+
+	it("normalizes a CRLF file to the same LF body pi's expansion records", () => {
+		const dir = mkdtempSync(join(tmpdir(), "skill-tool-crlf-"));
+		const file = join(dir, "SKILL.md");
+		writeFileSync(file, "---\r\nname: crlf\r\ndescription: fixture crlf\r\n---\r\n# Body\r\nline two\r\n");
+		try {
+			const s = skill("crlf", file, dir);
+			const outcome = loadSkillText([s], "crlf");
+			expect(outcome.ok).toBe(true);
+			if (outcome.ok) {
+				expect(outcome.text).not.toContain("\r");
+				expect(outcome.text).toBe(
+					[
+						`<skill name="crlf" location="${file}">`,
+						`References are relative to ${dir}.`,
+						"",
+						"# Body",
+						"line two",
+						"</skill>",
+					].join("\n"),
+				);
+			}
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 });

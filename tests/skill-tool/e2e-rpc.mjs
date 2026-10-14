@@ -10,10 +10,11 @@
  * sibling path the ticket's model guessed does not exist.
  *
  * Spawns a real pi process in RPC mode in a throwaway directory with the
- * fixture tree loaded and no live LLM: a probe extension registers a
- * scripted provider that stands in for the model following the skill's
- * instructions. The agent dir is a throwaway, so the skill registry is
- * exactly the fixture tree: every known name is one of the three fixtures.
+ * fixture tree loaded and no live LLM: the shared scripted probe
+ * (tests/shared/e2e-scripted-probe.ts) registers a scripted provider that
+ * stands in for the model following the skill's instructions. The agent
+ * dir is a throwaway, so the skill registry is exactly the fixture tree:
+ * every known name is one of the three fixtures.
  *
  *   extension run:
  *     1. /skill:grill-docs expands, and both referenced skills load by
@@ -38,7 +39,7 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const piCli = join(repoRoot, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "bundle", "cli.js");
 const extensionPath = join(repoRoot, "extensions", "skill-tool", "index.ts");
 const noopPath = join(repoRoot, "tests", "skill-tool", "noop-extension.ts");
-const probePath = join(repoRoot, "tests", "skill-tool", "e2e-probe.ts");
+const probePath = join(repoRoot, "tests", "shared", "e2e-scripted-probe.ts");
 const fixtureRoot = join(repoRoot, "tests", "skill-tool", "fixture", "skills");
 const grillingPath = join(fixtureRoot, "a-bucket", "grilling", "SKILL.md");
 const domainModelingPath = join(fixtureRoot, "a-bucket", "domain-modeling", "SKILL.md");
@@ -87,7 +88,8 @@ function startRpc(label, extensionPath) {
 				if (record.type === "response" && record.id && pending.has(record.id)) {
 					const waiter = pending.get(record.id);
 					pending.delete(record.id);
-					waiter(record);
+					clearTimeout(waiter.timer);
+					waiter.resolve(record);
 				}
 			} catch {
 				// Non-JSONL startup noise; the protocol is JSONL after that.
@@ -97,6 +99,18 @@ function startRpc(label, extensionPath) {
 	child.stderr.on("data", (chunk) => {
 		stderr += chunk.toString("utf8");
 	});
+	child.stdin.on("error", () => {
+		// A write after the child died is an EPIPE, not a driver bug; the
+		// exit handler below fails every pending request with the stderr.
+	});
+	child.on("exit", (code, signal) => {
+		const detail = `pi exited before it answered (code=${code}, signal=${signal})\nstderr:\n${stderr}`;
+		for (const [id, waiter] of [...pending]) {
+			clearTimeout(waiter.timer);
+			pending.delete(id);
+			waiter.reject(new Error(detail));
+		}
+	});
 	const request = (command, fields = {}) =>
 		new Promise((resolve, reject) => {
 			const id = `req-${nextId++}`;
@@ -104,10 +118,7 @@ function startRpc(label, extensionPath) {
 				pending.delete(id);
 				reject(new Error(`timed out waiting for ${command}\nstderr:\n${stderr}`));
 			}, TIMEOUT_MS);
-			pending.set(id, (record) => {
-				clearTimeout(timer);
-				resolve(record);
-			});
+			pending.set(id, { timer, resolve, reject });
 			child.stdin.write(JSON.stringify({ id, type: command, ...fields }) + "\n");
 		});
 	// pi writes sessions under `<agentDir>/sessions/--<cwd slug>--/<id>.jsonl`.
@@ -195,12 +206,28 @@ function allResultTexts(file) {
 		);
 }
 
+/**
+ * Poll until the session answers a command. Commands written before the
+ * session is ready sit buffered in the pipe, so no fixed sleep is needed:
+ * a fast machine pays one round trip, a slow one simply waits longer, and
+ * a startup crash fails fast through the exit handler.
+ */
+async function waitForReady(rpc) {
+	const deadline = Date.now() + TIMEOUT_MS;
+	for (;;) {
+		const record = await rpc.request("get_state");
+		if (record.success) return;
+		if (Date.now() > deadline) fail(`timed out waiting for the session to become ready: ${JSON.stringify(record)}`);
+		await new Promise((resolve) => setTimeout(resolve, 250));
+	}
+}
+
 /** Drive the cases through one pi process, then run each case's asserts. */
 async function runCases(label, extensionPath, cases) {
 	const rpc = startRpc(label, extensionPath);
 	try {
-		await new Promise((resolve) => setTimeout(resolve, 6000)); // session start has run by now
-		const setModel = await rpc.request("set_model", { provider: "e2st", modelId: "e2e-1" });
+		await waitForReady(rpc);
+		const setModel = await rpc.request("set_model", { provider: "e2efa", modelId: "e2e-1" });
 		if (!setModel.success) fail(`set_model: ${JSON.stringify(setModel)}\nevents:\n${lastStderr(rpc)}`);
 		for (const [index, test] of cases.entries()) {
 			writeFileSync(rpc.caseFile, JSON.stringify({ runId: index + 1, calls: test.calls }));
@@ -273,7 +300,7 @@ await runCases(
 			},
 		},
 	],
-);
+).catch((error) => fail(String(error)));
 
 // 3-4: control run documents the gap the extension closes
 await runCases(
@@ -302,6 +329,6 @@ await runCases(
 			},
 		},
 	],
-);
+).catch((error) => fail(String(error)));
 
 console.log("skill-tool E2E passed");

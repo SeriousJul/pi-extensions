@@ -28,7 +28,9 @@ export default function (pi: ExtensionAPI): void {
 	let skills: readonly Skill[] = [];
 
 	pi.on("before_agent_start", (event) => {
-		skills = event.systemPromptOptions.skills;
+		// Older pi versions lack the field; an empty registry degrades the
+		// tool to a lookup that only ever reports the (empty) loaded list.
+		skills = event.systemPromptOptions.skills ?? [];
 	});
 
 	pi.registerTool({

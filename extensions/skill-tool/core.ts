@@ -62,6 +62,17 @@ export function formatSkillUnknown(name: string, known: string[]): string {
 	return `Skill "${name}" is not loaded in this session. Loaded skills: ${known.join(", ")}.`;
 }
 
+/**
+ * Mirror pi's own input pipeline for a skill file: pi strips a BOM and
+ * normalizes line endings before it parses the frontmatter (see pi's
+ * `extractFrontmatter`), so the tool does the same. A CRLF or BOM checkout
+ * then yields the same LF body pi's `/skill:` expansion records, and the
+ * byte-for-byte claim in ADR 0035 holds on every checkout, not only LF.
+ */
+export function normalizeSkillText(text: string): string {
+	return text.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
 export type SkillLoadOutcome = { ok: true; text: string } | { ok: false; text: string };
 
 /**
@@ -82,5 +93,7 @@ export function loadSkillText(skills: readonly Skill[], name: string): SkillLoad
 			text: `Skill "${name}" points at ${lookup.skill.filePath}, which cannot be read (${reason}). Run /reload if the skill tree changed since this run started.`,
 		};
 	}
-	return { ok: true, text: formatSkillLoaded(lookup.skill, raw) };
+	// Normalize before the frontmatter strip so a CRLF file returns the
+	// same LF body pi's /skill: expansion records.
+	return { ok: true, text: formatSkillLoaded(lookup.skill, normalizeSkillText(raw)) };
 }
