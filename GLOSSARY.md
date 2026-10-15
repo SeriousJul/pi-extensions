@@ -368,11 +368,25 @@ _Avoid_: enabled flag (only two of the states), on/off (hides the override layer
 A plain path plus a `+` or `-` pattern for the same path, written together into the project settings. It re-registers a global resource at project scope, where it wins over the global copy, so the project decides the resource's state without touching the global file.
 _Avoid_: alias (implies the path stays one resource), per-project copy, override rule
 
+### Package install
+
+**Install root**:
+The directory one pi package was installed into: a clone under pi's git directory, a copy under pi's npm root, or the checkout itself for a local install. Pi's "package root" seen from the installed side, and the anchor every path a tool prints to the user resolves against.
+_Avoid_: package root (pi's word for the source layout), install dir, checkout root (the same directory under skill-migrate's internal name), agent dir (holds every install, not one)
+
 ### Sync
 
 **Sync wizard**:
-The guided first run that makes a device useful: secure a Gist-only token, then create the shared tree or join an existing one, preview the local changes, confirm them, and report. Re-running it with no id on a joined device is always a plain error. Re-running it with a gist id on a joined device re-joins the tree behind the preview confirm; --force skips only that confirm.
+The guided first run that makes a device useful: secure a Gist-only token, then create the shared tree or join an existing one, preview the local changes, confirm them, and report. Re-running it with no id on a joined device is always a plain error. Re-running it with a gist id on a joined device re-joins the tree behind the preview confirm; --force skips only that confirm. Its account-level counterpart is Account setup.
 _Avoid_: setup (generic), install, first run
+
+**Account setup**:
+Making one GitHub account's OAuth client id known to a device, so the device flow can run there. It happens once per account, before any device joins a tree. The Account setup script is one way to perform it; the client id environment variable is another, for scripted and CI runs.
+_Avoid_: onboarding (the whole first-run path, Account setup and the Sync wizard together), OAuth setup (too narrow), client id config (the file, not the act)
+
+**Account setup script**:
+The one-time, per-account program that performs Account setup: it walks the GitHub OAuth app form and stores the resulting client id. It is the file `scripts/setup-sync-wizard.sh`, inside the package's Install root.
+_Avoid_: setup wizard (reads as the Sync wizard), onboarding script, OAuth wizard, wizard (unqualified, and taken by the /wizard skill)
 
 **Pairing**:
 Joining a device to a shared tree that already exists: the device fetches the tree, the user confirms what arrives, and the device records which tree it belongs to. Its counterpart is the first device creating the tree. "Join" is the verb for the act; "pairing" is the noun.
@@ -838,6 +852,80 @@ one machine do not stampede it with detached work.
 _Avoid_: job limit (does not say concurrent or machine-level),
 rate limit (that is a per-time cap, this is a simultaneous one)
 
+### LSP
+
+**Language server**:
+The long-lived process that answers code-intelligence questions for one
+project root over the Language Server Protocol. The extension starts it,
+never installs it, and closes it with the session. A language with no
+server binary on the machine is simply absent.
+_Avoid_: LSP server (in prose; the LSP is the protocol), daemon (codegraph
+rejects that word for its own process), analyzer (names one language's
+server, not the role)
+
+**Server registry**:
+The table that maps a language to the command that starts its Language
+server, its file extensions, and the markers that identify a project root.
+Built-in defaults, overridable by settings. It never downloads or builds a
+server.
+_Avoid_: language map (says nothing about starting a server), provider
+(pi's word for a model API), config table
+
+**Document sync**:
+Keeping a Language server's copy of a file equal to the file on disk
+before any answer is served from it. Disk is the only truth: an edit made
+by a script, another tool, or another agent is picked up the same way as
+an edit made by pi's edit tool.
+_Avoid_: file watch (a watcher is one possible mechanism, not the
+contract), buffer mirror (pi holds no buffer), hot reload
+
+**Diagnostics**:
+What a Language server reports about a file it has open: errors, warnings,
+and hints, each at a range with a message. They exist only for files the
+server has open, and they arrive as a notification, not as a reply.
+_Avoid_: errors (hides the severities), lint output, problems (the IDE's
+word for the panel that shows them)
+
+**Post-edit diagnostics**:
+The Diagnostics a Language server reports for a file the agent just
+changed, attached to the result of the call that changed it, so the agent
+sees them without deciding to ask.
+_Avoid_: lint (names a tool, not this loop), type check (one server's
+internal job), auto-check (generic)
+
+**Open document**:
+A file a Language server holds in memory. Diagnostics exist only for Open
+documents. The set per server is bounded and least-recently-used, and
+eviction sends `didClose`, which drops that file's Diagnostics.
+_Avoid_: open file (a file handle is a different thing), buffer (pi holds
+no buffer), loaded file
+
+**Diagnostic baseline**:
+The Diagnostics last reported for one file, kept so only new ones reach the
+model. Without it the same pre-existing errors ride every turn.
+_Avoid_: dedup set (names the mechanism, not the role), last errors, cache
+
+**Changed set**:
+The paths the watcher has seen change since the last pass. It decides what
+to look at; it never decides what is current.
+_Avoid_: dirty files (git's word means something else here), events (an
+event is the signal, the set is the record)
+
+**Sweep**:
+The turn-end pass that catches edits made outside pi's edit tools: the
+Changed set and the Open documents are re-checked, and new errors are
+reported once, as a message the agent reads at the start of its next turn.
+_Avoid_: scan (the Usage extension owns that word for session files),
+resync, poll, reconcile (codegraph rebuilds an index; a sweep only
+re-checks and reports)
+
+**Concurrent server bound**:
+The cap of four Language servers per session. Eviction takes the idlest
+server and its Open documents, so several languages in one session cannot
+start a memory stampede.
+_Avoid_: server limit (does not say concurrent or per-session), pool (a
+pool implies idle ones are reused)
+
 ### TUI
 
 **Tool row**:
@@ -847,6 +935,14 @@ from the tool's `renderCall` slot, with the result block from the
 `ToolExecutionComponent`.
 _Avoid_: agent turn view (a turn view holds the whole turn, not one call),
 tool call (that is the LLM-side record), row (too generic)
+
+**Tool row header**:
+The one line a Tool row draws above its call line to name the tool, as a
+label set in a rule. It is the row's frame label, never part of the call
+line, and it carries no argument and no result state: the call line owns
+the argument and the row's background owns the state.
+_Avoid_: fieldset (an HTML element, not this line), tool title (pi's word
+for the bold name inside the call line), row label (too generic), banner
 
 ### Docs
 
