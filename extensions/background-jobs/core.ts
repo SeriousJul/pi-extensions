@@ -150,11 +150,18 @@ export function tailOfFile(path: string, lines: number): string {
 	return all.slice(-lines).join("\n");
 }
 
-/** True while any process of the job is alive: the wrapper pid normally,
- * the child pid once the wrapper is gone, and the watcher pid while it
- * polls. A job directory is never removed while this holds, so the
- * processes a record covers can never become unmanageable. */
+/** True while the job's processes may still be alive: the wrapper pid
+ * normally, the child pid once the wrapper is gone, and the watcher pid
+ * while it polls. A finished job is never counted alive: the exit code
+ * file (the job completed on its own) or the stopped marker (the agent
+ * died and the watcher stopped the group) is the completion signal, and
+ * an old recorded pid may have been reused by an unrelated process -
+ * pids wrap on macOS at 99999 - so a pid check could hold a finished
+ * directory hostage forever. A job directory is never removed while this
+ * holds, so the processes a live record covers can never become
+ * unmanageable. */
 function jobProcessesAlive(dir: string): boolean {
+	if (fileExists(join(dir, "exitcode")) || fileExists(join(dir, "stopped"))) return false;
 	let wrapperPid: number | null = null;
 	try {
 		wrapperPid = Number.parseInt(JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")).pid, 10);
@@ -162,6 +169,15 @@ function jobProcessesAlive(dir: string): boolean {
 		wrapperPid = null;
 	}
 	return isPidAlive(wrapperPid) || isPidAlive(readNumberFile(join(dir, "child.pid"))) || isPidAlive(readNumberFile(join(dir, "watcher.pid")));
+}
+
+/** True when the file exists. */
+function fileExists(path: string): boolean {
+	try {
+		return statSync(path).isFile();
+	} catch {
+		return false;
+	}
 }
 
 /** True when the record carries the stopped marker (the agent died and
@@ -264,13 +280,15 @@ export function formatJobListing(jobs: JobInfo[], jobsRoot: string): string {
 	return lines.join("\n");
 }
 
-/** Removes job directories older than the stale bound, except the records
- * of jobs whose processes are still alive: a long-running job never
- * refreshes its directory's mtime (the wrapper writes only on exit), so
- * age alone would delete the record of a live job and leave its processes
- * unmanageable (issue #139). Returns how many it removed. Called when a
- * new job starts, so cleanup rides on real usage and never runs on a
- * schedule. */
+/** Removes job directories older than the stale bound. The record of a
+ * live job is never removed: a long-running job never refreshes its
+ * directory's mtime (the wrapper writes only on exit), so age alone would
+ * delete the record of a live job and leave its processes unmanageable
+ * (issue #139). A finished job is always removable, whatever its recorded
+ * pids say: the exit code file or the stopped marker is the completion
+ * signal, and the pids may have been reused. Returns how many it removed.
+ * Called when a new job starts, so cleanup rides on real usage and never
+ * runs on a schedule. */
 export function cleanupStaleJobs(jobsRoot: string, now: number = Date.now()): number {
 	let names: string[];
 	try {

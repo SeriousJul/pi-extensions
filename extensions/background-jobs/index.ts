@@ -10,7 +10,9 @@
  * suite, keeps working on other files, and waits once at the end.
  *
  * Job state lives on disk under pi's agent state root, one directory per
- * job, so jobs outlive the session that started them (ADR 0023). The three
+ * job (ADR 0023): the record, log, and exit code stay on disk for a new
+ * session to read, but a live job dies with the agent process that started
+ * it (ADR 0037). The three
  * tools are agent tools, active by default: the capability replaces a
  * workaround the agent would otherwise improvise, and the prompt cost is
  * three short descriptions, so they are not in the /tools default-disabled

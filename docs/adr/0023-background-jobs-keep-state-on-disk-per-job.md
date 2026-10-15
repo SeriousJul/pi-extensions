@@ -1,5 +1,10 @@
 # Background jobs keep state on disk, per job
 
+Superseded by [ADR 0037](/adr/0037-a-job-dies-with-the-agent-process)
+on its outlive-the-session and cross-session-wait decisions; the rest
+stands, including the on-disk job state, the exit code file, the
+machine-level concurrent bound, and the stale cleanup.
+
 pi's bash tool is synchronous, so a command that takes minutes blocks the
 agent for its whole duration. The agents worked around it with nohup,
 sleep, and pgrep loops: 19 minutes of pure waiting, plus the context the

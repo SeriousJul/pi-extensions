@@ -260,6 +260,36 @@ describe("job state on disk", () => {
 		expect(list).toContain("jb-long");
 		await settle(h, jobId);
 	});
+
+	it("a finished job older than the stale bound is removed even when its recorded pid was reused", async () => {
+		const h = makeHarness();
+		const root = jobsRootOf(h);
+		mkdirSync(root, { recursive: true });
+		// Both job directories are older than the stale bound, and both
+		// record a pid that is alive right now: this test process. On macOS
+		// pids wrap at 99999, so a long-finished job can carry a reused pid
+		// in real operation. The completion files, not the pids, are the
+		// exit authority, so cleanup must remove both directories.
+		const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+		const dirs: Record<string, string> = {
+			"jb-finished": "0",
+			"jb-stopped": "agent-exited",
+		};
+		for (const [jobId, marker] of Object.entries(dirs)) {
+			const dir = join(root, jobId);
+			mkdirSync(dir);
+			writeFileSync(join(dir, "manifest.json"), JSON.stringify({ jobId, command: `echo ${jobId}`, cwd: root, pid: process.pid, startedAt: new Date().toISOString() }));
+			if (jobId === "jb-finished") writeFileSync(join(dir, "exitcode"), "0");
+			else writeFileSync(join(dir, "stopped"), marker);
+			utimesSync(dir, eightDaysAgo, eightDaysAgo);
+		}
+		expect(isPidAlive(process.pid)).toBe(true);
+
+		const start = await h.call("bash_bg", { command: "echo after cleanup" });
+		const jobId = startedJobId(start);
+		for (const name of Object.keys(dirs)) expect(existsSync(join(root, name)), `${name} survived cleanup through its reused pid`).toBe(false);
+		await settle(h, jobId);
+	});
 });
 
 // ---------------------------------------------------------------------------
