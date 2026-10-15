@@ -18,6 +18,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionToolContext, Theme } from "@earendil-works/pi-coding-agent";
 import registerBackgroundJobs, { registerTools } from "../../extensions/background-jobs/index";
 import { paintBashBgCallLine } from "../../extensions/background-jobs/render";
@@ -337,7 +338,7 @@ describe("no process of a job outlives its record (issue #139)", () => {
 		const info = getJob(root, job.jobId);
 		expect(info?.status, "the job's processes are still alive, so the record must still say running").toBe("running");
 		const stopped = stopGroup(info?.pid, "SIGTERM");
-		await sleep(1000);
+		await sleep(3000);
 		expect(stopped, `stopping group ${info?.pid} failed`).toBe(true);
 		const alive = coveredPids(h, job).filter((pid) => isPidAlive(pid));
 		expect(alive, `processes ${alive.join(",")} survived the group stop`).toEqual([]);
@@ -351,7 +352,7 @@ describe("no process of a job outlives its record (issue #139)", () => {
 		const info = getJob(root, job.jobId);
 		expect(info?.status).toBe("running");
 		const stopped = stopGroup(info?.pid, "SIGTERM");
-		await sleep(1000);
+		await sleep(3000);
 		expect(stopped, `the reported pid ${info?.pid} is not a process group id, so the stop cannot reach the job's processes`).toBe(true);
 		const alive = coveredPids(h, job).filter((pid) => isPidAlive(pid));
 		expect(alive, `processes ${alive.join(",")} survived the documented stop`).toEqual([]);
@@ -367,11 +368,100 @@ describe("no process of a job outlives its record (issue #139)", () => {
 		const info = getJob(root, job.jobId);
 		expect(info?.status, `record says ${info?.status} while the job's processes are alive`).toBe("running");
 		const stopped = stopGroup(info?.pid, "SIGTERM");
-		await sleep(1000);
+		await sleep(3000);
 		expect(stopped).toBe(true);
 		const alive = coveredPids(h, job).filter((pid) => isPidAlive(pid));
 		expect(alive, `processes ${alive.join(",")} survived the group stop`).toEqual([]);
 		expect(getJob(root, job.jobId)?.status).toBe("exited");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// A job dies with the agent process (ADR 0037)
+// ---------------------------------------------------------------------------
+
+const FAKE_AGENT = fileURLToPath(new URL("fake-agent.mjs", import.meta.url));
+const CORE_PATH = fileURLToPath(new URL("../../extensions/background-jobs/core.ts", import.meta.url));
+
+/** A fake agent process: starts one real job through the real startJob,
+ * then idles. As the wrapper's parent it stands in for a live pi process. */
+function spawnFakeAgent(jobsRoot: string, command: string, cwd: string) {
+	return spawn(process.execPath, [FAKE_AGENT], {
+		env: { ...process.env, CORE_PATH, JOBS_ROOT: jobsRoot, JOB_CMD: command, JOB_CWD: cwd },
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+}
+
+async function fakeAgentJobId(agent: ReturnType<typeof spawnFakeAgent>): Promise<{ jobId: string; wrapperPid: number }> {
+	for await (const chunk of agent.stdout) {
+		const m = String(chunk).match(/JOB (jb-\S+) pid=(\d+)/);
+		if (m) return { jobId: m[1], wrapperPid: Number(m[2]) };
+	}
+	throw new Error("fake agent never started a job");
+}
+
+describe("a job dies with the agent process (ADR 0037)", () => {
+	it("a job stops shortly after the agent process that started it dies", async () => {
+		const h = makeHarness();
+		const root = jobsRootOf(h);
+		const workersPath = join(h.sessionsRoot, "lifetime-workers.pid");
+		const agent = spawnFakeAgent(root, bunLike(workersPath), h.sessionsRoot);
+		const { jobId, wrapperPid } = await fakeAgentJobId(agent);
+		for (let i = 0; i < 200; i += 1) {
+			if (existsSync(workersPath)) break;
+			await sleep(25);
+		}
+		if (!existsSync(workersPath)) throw new Error("workers file never written");
+		const childPid = Number.parseInt(readFileSync(join(root, jobId, "child.pid"), "utf8").trim(), 10);
+		const workers = readFileSync(workersPath, "utf8").trim().split(/\s+/).map(Number);
+		const covered = [wrapperPid, childPid, ...workers];
+		const alive = () => covered.filter((pid) => isPidAlive(pid));
+
+		// the agent is killed, the way a supervisor or the OOM killer would do it
+		if (agent.pid === undefined) throw new Error("fake agent has no pid");
+		process.kill(agent.pid, "SIGKILL");
+		await once(agent, "exit");
+		let cleared = false;
+		for (let i = 0; i < 40; i += 1) {
+			await sleep(250);
+			if (alive().length === 0) {
+				cleared = true;
+				break;
+			}
+		}
+		const survivors = alive();
+		// the wrapper's watcher stops the group, then kills it outright after
+		// a grace; give it the grace before asserting on the record
+		await sleep(3500);
+		const watcherPid = Number.parseInt((readFileSync(join(root, jobId, "watcher.pid"), "utf8").trim()), 10);
+		console.error(`[lifetime] agent killed; cleared=${cleared} survivors=[${survivors.join(",")}] watcher alive=${isPidAlive(watcherPid)} stopped=${getJob(root, jobId)?.stopped}`);
+		for (const pid of survivors) {
+			try {
+				process.kill(-wrapperPid, "SIGKILL");
+			} catch {
+				// group gone
+			}
+		}
+		expect(cleared, `job processes ${survivors.join(",")} outlived the agent process`).toBe(true);
+		expect(isPidAlive(watcherPid), "the wrapper's watcher outlived the job it watched").toBe(false);
+		const info = getJob(root, jobId);
+		expect(info?.stopped, "the record does not mark the job stopped by the agent's death").toBe(true);
+		expect(info?.status).toBe("exited");
+	});
+
+	it("a job that completes on its own leaves no stopped marker and no watcher behind", async () => {
+		const h = makeHarness();
+		const start = await h.call("bash_bg", { command: "echo done-lifetime" });
+		const jobId = startedJobId(start);
+		await settle(h, jobId);
+		const root = jobsRootOf(h);
+		expect(existsSync(join(root, jobId, "stopped")), "a completed job must not carry the stopped marker").toBe(false);
+		const watcherPid = Number.parseInt(readFileSync(join(root, jobId, "watcher.pid"), "utf8").trim(), 10);
+		expect(isPidAlive(watcherPid), "the wrapper's watcher outlived the job it watched").toBe(false);
+		const info = getJob(root, jobId);
+		expect(info?.status).toBe("exited");
+		expect(info?.exitCode).toBe(0);
+		expect(info?.stopped).toBe(false);
 	});
 });
 

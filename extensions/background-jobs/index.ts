@@ -51,7 +51,7 @@ export function registerTools(pi: ExtensionAPI): void {
 		name: "bash_bg",
 		label: "Bash background",
 		description:
-			"Start a long-running command in the background without blocking. The command runs detached through a shell; its stdout and stderr go to a per-job log file. Returns the job id, the pid, and the log path. A machine-level bound limits the number of concurrent running jobs.",
+			"Start a long-running command in the background without blocking. The command runs detached through a shell; its stdout and stderr go to a per-job log file. The job is stopped when the agent process exits or is killed; work that must outlive the agent belongs in nohup or a service manager. Returns the job id, the pid, and the log path. A machine-level bound limits the number of concurrent running jobs.",
 		promptSnippet: "Start a long command in the background; returns job id, pid, and log path.",
 		parameters: Type.Object({
 			command: Type.String({ description: "The command to run, as you would pass it to the bash tool." }),
@@ -113,7 +113,12 @@ export function registerTools(pi: ExtensionAPI): void {
 			const info = await waitJob(jobsRootFor(ctx), params.jobId, timeoutS * 1000);
 			const tail = tailOfFile(info.logPath, params.tailLines ?? DEFAULT_TAIL_LINES);
 			if (info.status === "exited") {
-				const code = info.exitCode === null ? "no exit code recorded" : `exit code: ${info.exitCode}`;
+				const code =
+					info.exitCode === null
+						? info.stopped
+							? "stopped when the agent process exited"
+							: "no exit code recorded"
+						: `exit code: ${info.exitCode}`;
 				return textResult(`job ${info.jobId} exited\n${code}\nlog: ${info.logPath}\ntail:\n${tail || "(no output)"}`);
 			}
 			return textResult(

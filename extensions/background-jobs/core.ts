@@ -10,14 +10,21 @@
  *                    start time, log path
  *     job.sh         the user command, written verbatim
  *     run.sh         the shell wrapper: runs job.sh with output to job.log,
- *                    records the child pid, and writes the exit code
+ *                    records the child pid, and writes the exit code. It
+ *                    also runs a watcher on the agent process's pid
  *     job.log        the child's stdout and stderr
  *     child.pid      the command's pid (for signalling it)
+ *     watcher.pid    the wrapper's agent-watcher subshell (for cleanup)
+ *     stopped        marker written when the agent died and the watcher
+ *                    stopped the job's process group
  *     exitcode       the child's exit code, written by the wrapper on exit
  *
  * The exit code file is the point of the wrapper: it makes the code
- * knowable to a process that did not start the job, so a new pi session can
- * wait on a job an old session started. Jobs outlive the session.
+ * knowable to a process that did not start the job. The record stays on
+ * disk for a new session to read, but a live job never outlives its agent
+ * (ADR 0037): the wrapper's watcher polls the agent's pid, and when the
+ * agent exits or is killed the watcher stops the job's process group
+ * (TERM, a grace, KILL) and writes the stopped marker.
  *
  * The job is one process group, led by the wrapper: detached makes the
  * wrapper the group leader, and the group id (the wrapper's pid) stays
@@ -27,7 +34,7 @@
  * of a job ever outlives the record (ADR 0036). The shell scripts install
  * no signal traps: dash and the bash versions that serve as /bin/sh
  * disagree on trap semantics, and bash 5.3 crashes on a `kill 0` group
- * kill inside a trap, so the group is managed from the Node side.
+ * kill inside a trap, so the group is managed with plain group signals.
  *
  * POSIX only: the wrapper is /bin/sh. The extension set targets the
  * operator's Linux and macOS machines.
@@ -81,6 +88,9 @@ export interface JobInfo {
 	/** The exit code once the wrapper recorded it. Null when the job is
 	 * still running, or when the wrapper died before recording one. */
 	exitCode: number | null;
+	/** True when the record's stopped marker says the agent process died
+	 * and the wrapper's watcher stopped the job's process group. */
+	stopped: boolean;
 	/** The job's process group id: the wrapper's pid. Stopping the job is a
 	 * signal to that group (`kill -- -<pid>`), which covers every process
 	 * of the job, the wrapper dead or not. */
@@ -141,9 +151,9 @@ export function tailOfFile(path: string, lines: number): string {
 }
 
 /** True while any process of the job is alive: the wrapper pid normally,
- * and the child pid once the wrapper is gone (an untrappable wrapper death
- * such as SIGKILL). A job directory is never removed while this holds, so
- * the processes a record covers can never become unmanageable. */
+ * the child pid once the wrapper is gone, and the watcher pid while it
+ * polls. A job directory is never removed while this holds, so the
+ * processes a record covers can never become unmanageable. */
 function jobProcessesAlive(dir: string): boolean {
 	let wrapperPid: number | null = null;
 	try {
@@ -151,7 +161,17 @@ function jobProcessesAlive(dir: string): boolean {
 	} catch {
 		wrapperPid = null;
 	}
-	return isPidAlive(wrapperPid) || isPidAlive(readNumberFile(join(dir, "child.pid")));
+	return isPidAlive(wrapperPid) || isPidAlive(readNumberFile(join(dir, "child.pid"))) || isPidAlive(readNumberFile(join(dir, "watcher.pid")));
+}
+
+/** True when the record carries the stopped marker (the agent died and
+ * the wrapper's watcher stopped the job). */
+function jobStopped(dir: string): boolean {
+	try {
+		return readFileSync(join(dir, "stopped"), "utf8").trim() === "agent-exited";
+	} catch {
+		return false;
+	}
 }
 
 function readNumberFile(path: string): number | null {
@@ -171,17 +191,19 @@ function commandHead(command: string): string {
 function jobInfoFromManifest(dir: string, manifest: JobManifest, now: number): JobInfo {
 	const exitCode = readNumberFile(join(dir, "exitcode"));
 	const childPid = readNumberFile(join(dir, "child.pid"));
+	const watcherPid = readNumberFile(join(dir, "watcher.pid"));
 	// The record covers the job while any of its processes is alive: the
-	// wrapper normally, the command's shell after an untrappable wrapper
-	// death such as SIGKILL. Then a session can still wait on, or stop
+	// wrapper normally, the command's shell and the watcher after an
+	// untrappable wrapper death. Then a session can still wait on, or stop
 	// (group signal), the surviving tree instead of reading a dead wrapper
 	// as an exit that never came (issue #139).
-	const running = exitCode === null && (isPidAlive(manifest.pid) || isPidAlive(childPid));
+	const running = exitCode === null && (isPidAlive(manifest.pid) || isPidAlive(childPid) || isPidAlive(watcherPid));
 	return {
 		jobId: manifest.jobId,
 		name: manifest.label ?? commandHead(manifest.command),
 		status: running ? "running" : "exited",
 		exitCode,
+		stopped: jobStopped(dir),
 		pid: manifest.pid || null,
 		startedAt: manifest.startedAt,
 		ageMs: Math.max(0, now - Date.parse(manifest.startedAt)),
@@ -317,13 +339,37 @@ export function startJob(input: {
 
 	const runScript = [
 		"set +e",
+		"agent=$PPID",
 		`sh ${shQuote(join(dir, "job.sh"))} > ${shQuote(manifest.logPath)} 2>&1 &`,
 		"cp=$!",
+		// The agent watcher (ADR 0037): a subshell in the job's own process
+		// group polls the agent process's pid. While the agent is alive the
+		// watcher only waits: the exit code file means the job finished on
+		// its own, and a dead child means the job was stopped and nothing
+		// is left to watch. When the agent dies, the watcher marks the
+		// record, then stops the job's process group (TERM, a grace, KILL).
+		// It ignores TERM so it survives the group signal it sends, and it
+		// is the only process allowed to write the stopped marker.
+		"(",
+		"trap '' TERM",
+		`while kill -0 "$agent" 2>/dev/null; do`,
+		`  [ -f ${shQuote(join(dir, "exitcode"))} ] && exit 0`,
+		"  kill -0 \"$cp\" 2>/dev/null || exit 0",
+		"  sleep 2",
+		"done",
+		`[ -f ${shQuote(join(dir, "exitcode"))} ] || printf 'agent-exited\\n' > ${shQuote(join(dir, "stopped"))}`,
+		"kill 0 2>/dev/null",
+		"sleep 3",
+		"kill -KILL 0 2>/dev/null",
+		") &",
+		"wp=$!",
 		`printf '%s\\n' "$cp" > ${shQuote(join(dir, "child.pid"))}`,
+		`printf '%s\\n' "$wp" > ${shQuote(join(dir, "watcher.pid"))}`,
 		'wait "$cp"',
 		"rc=$?",
 		`printf '%s\\n' "$rc" > ${shQuote(join(dir, "exitcode"))}`,
-		"exit \"$rc\"",
+		'kill -KILL "$wp" 2>/dev/null',
+		'exit "$rc"',
 	].join("\n");
 	const child = spawn("sh", ["-c", runScript], {
 		cwd: input.cwd,
@@ -362,15 +408,30 @@ export async function waitJob(
 
 /** One job as a line: id, status, age, name. */
 export function formatJobLine(job: JobInfo): string {
-	const status = job.status === "running" ? "running" : job.exitCode === null ? "exited (no code)" : `exited (${job.exitCode})`;
+	const status =
+		job.status === "running"
+			? "running"
+			: job.exitCode !== null
+				? `exited (${job.exitCode})`
+				: job.stopped
+					? "stopped (agent)"
+					: "exited (no code)";
 	return `${job.jobId}  ${status.padEnd(16)} ${formatAge(job.ageMs).padStart(6)}  ${job.name}`;
 }
 
 /** One job as a multi-line block for the single-job status. */
 export function formatJob(job: JobInfo): string {
+	const status =
+		job.status === "running"
+			? "running"
+			: job.exitCode !== null
+				? `exited (${job.exitCode})`
+				: job.stopped
+					? "stopped (the agent process exited)"
+					: "exited (no exit code recorded)";
 	const lines = [
 		`job ${job.jobId}`,
-		`status: ${job.status === "running" ? "running" : job.exitCode === null ? "exited (no exit code recorded)" : `exited (${job.exitCode})`}`,
+		`status: ${status}`,
 		`pid: ${job.pid ?? "unknown"}`,
 	];
 	if (job.pid) lines.push(`stop: kill -- -${job.pid}`);

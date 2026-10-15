@@ -41,3 +41,4 @@ chosen option, and the options that were considered.
 | [0034](/adr/0034-the-vendored-antislop-copy-is-edited-for-a-tracked-tree) | The vendored antislop core is edited in two places only: its self-install and self-update sections are cut, and an unresolved usage mode defaults to `during` instead of asking. |
 | [0035](/adr/0035-the-skill-tool-loads-referenced-skills-by-name) | The skill tool loads a referenced skill by name against pi's own registry, so the model never re-types a skill's install path. |
 | [0036](/adr/0036-a-job-dies-as-a-process-group) | A job is one process group, stopped with a group signal, and its record covers it while any of its processes is alive; the shells trap no signals. |
+| [0037](/adr/0037-a-job-dies-with-the-agent-process) | A job's lifetime is bounded by the agent process: the wrapper watches the agent's pid and stops the job's process group when the agent dies. Supersedes the outlive-the-session decision of ADR 0023. |

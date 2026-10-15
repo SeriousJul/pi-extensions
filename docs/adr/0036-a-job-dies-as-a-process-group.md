@@ -46,9 +46,7 @@ could have fired at all.
 
 **Rejected alternatives.** Trapping and forwarding signals in the shell
 wrapper (above): unportable across dash and bash, and useless against
-SIGKILL. Auto-killing the job's processes when the wrapper dies: the ADR
-0023 policy is that jobs outlive the session, so a surviving job is a
-feature, not a leak; the bug was the record lying and the processes being
-unreachable, not that they kept running. A Node watchdog process per job:
-a second long-lived process to manage, for a job the on-disk record already
-describes; the group kill needs no resident process.
+SIGKILL. A Node watchdog process per job: a second long-lived process to
+manage, for a job the on-disk record already describes; the group kill
+needs no resident process. Stopping the job's processes when the agent
+process dies is a lifetime policy, decided separately in ADR 0037.
