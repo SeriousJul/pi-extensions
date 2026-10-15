@@ -80,6 +80,41 @@ function mockProviderExtension() {
 }
 
 /**
+ * The tool-headers before/after pair (issue #137): real pi at the pinned grid
+ * drives the mock model's one `tool_calls` completion (a real `read` and a
+ * real `bash`), so pi runs real tools and draws real Tool rows. The `after`
+ * capture loads the tool-headers extension; the `before` capture is the same
+ * session without it, so the only visible difference is the header lines.
+ */
+function toolHeadersCapture(ctx, { dir, headers }) {
+	const root = join(WORK_ROOT, dir);
+	const { cwd } = piHome(root);
+	// The small note the mock model's `read` call opens.
+	writeFileSync(join(cwd, "note.txt"), "Remember the tool row headers.\n", "utf8");
+	const extension = mockProviderExtension();
+	const headerArgs = headers ? ["--extension", join(ctx.repoRoot, "extensions", "tool-headers", "index.ts")] : [];
+	return {
+		file: process.execPath,
+		args: [
+			PI_CLI(ctx.repoRoot),
+			"--tui-mode",
+			"fullscreen",
+			"--model",
+			"mock/mock-tools",
+			"--extension",
+			extension,
+			...headerArgs,
+		],
+		cwd,
+		env: piEnv(root, { MOCK_MODEL_PORT: String(ctx.modelPort) }),
+		input: [{ data: "Read note.txt and greet me.\r", delayMs: 300 }],
+		marker: "Done.",
+		startupMs: 6000,
+		timeoutMs: 120_000,
+	};
+}
+
+/**
  * Run one status merge over the committed sync fixture and return the
  * report lines. The real ops code runs; only the transport is the
  * fixture gist.
@@ -423,5 +458,21 @@ export const CAPTURES = [
 				timeoutMs: 120_000,
 			};
 		},
+	},
+
+	// -----------------------------------------------------------------
+	// tool-headers
+	// -----------------------------------------------------------------
+	{
+		id: "tool-headers",
+		out: "docs/extensions/tool-headers.png",
+		kind: "pty",
+		setup: (ctx) => toolHeadersCapture(ctx, { dir: "tool-headers", headers: true }),
+	},
+	{
+		id: "tool-headers-before",
+		out: "docs/extensions/tool-headers-before.png",
+		kind: "pty",
+		setup: (ctx) => toolHeadersCapture(ctx, { dir: "tool-headers-before", headers: false }),
 	},
 ];

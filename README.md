@@ -22,6 +22,7 @@ VitePress from the [`docs/`](docs/) folder.
 - **background-jobs** - `bash_bg`, `job_wait`, `job_status`: run long commands in the background and wait on them once, instead of sleep-and-tail loops.
 - **skill-migrate** - deterministic repo-structure migrations with a committed changelog: a `status`/`migrate` CLI and a `/migrate` command. The first step records the adoption, the second migrates the domain docs to the GLOSSARY file layout and rewrites every reference to the old file names.
 - **skill-tool** - a `skill` tool that loads a skill by name, from the list pi itself resolved: the named cross-references the skills carry ("call the Skill tool for 'grilling'") stop making the model guess install paths (issue #143).
+- **tool-headers** - a Tool row header on every tool row: the tool name set in a rule, one line above the call line, so the tool is told at a glance. A `bash` row and a `bash_bg` row are finally distinguishable; MCP rows read `server/tool`. Always on, no setting (issue #137).
 - **skills** - a curated skill tree loaded by pi from the package's `skills/` directory, with `npm run skills:update` to three-way-merge upstream changes into the copies. The `mattpocock/` skills come from [mattpocock/skills](https://github.com/mattpocock/skills) and the `anti-slop/` skills from [miqdadbadjuber/Anti-Slop](https://github.com/miqdadbadjuber/Anti-Slop); both are MIT licensed (the upstream `LICENSE` ships at `skills/mattpocock/LICENSE` and `skills/anti-slop/LICENSE`).
 
 See the [pi packages docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md) and the [extensions docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md).
@@ -48,6 +49,7 @@ See the [pi packages docs](https://github.com/earendil-works/pi/blob/main/packag
 | skill-command | [docs](https://seriousjul.github.io/pi-extensions/extensions/skill-command.html) |
 | skill-migrate | [README](extensions/skill-migrate/README.md) |
 | skill-tool | [docs](https://seriousjul.github.io/pi-extensions/extensions/skill-tool.html) |
+| tool-headers | [docs](https://seriousjul.github.io/pi-extensions/extensions/tool-headers.html) |
 
 ## Skills
 

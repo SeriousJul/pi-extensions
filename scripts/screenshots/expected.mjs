@@ -94,4 +94,24 @@ export const EXPECTED_LINES = {
 		"model-router: usage limit on mock/mock-orig; switched to mock/mock-fallback",
 		"Hello! I am the fallback model.",
 	],
+	"tool-headers": [
+		// The header lines are the point of the extension: the tool name set
+		// in a rule above each call line.
+		"── read ──",
+		"── bash ──",
+		"read note.txt",
+		"$ sleep 0.2; echo greeting",
+		"greeting",
+		"Took 0.2s",
+		"Done.",
+	],
+	"tool-headers-before": [
+		// The same session without the extension: the rows name nothing, which
+		// is exactly what the header fixes. No `── … ──` line may be asserted.
+		"read note.txt",
+		"$ sleep 0.2; echo greeting",
+		"greeting",
+		"Took 0.2s",
+		"Done.",
+	],
 };
