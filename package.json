@@ -39,7 +39,8 @@
     "@xterm/headless": "^6.0.0",
     "node-pty": "^1.1.0",
     "typebox": "^1.3.36",
-    "typescript": "^7.0.2",
+    "typescript": "~5.9.0",
+    "typescript-language-server": "^6.0.2",
     "vitest": "^5.0.3"
   },
   "scripts": {
@@ -49,13 +50,14 @@
     "docs:screenshots": "node scripts/screenshots/capture.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-		"smoke:node": "node tests/codegraph/smoke/smoke-node.mjs",
-		"e2e:bash-no-match": "node tests/bash-no-match/e2e-rpc.mjs",
-		"e2e:background-jobs": "node tests/background-jobs/e2e-rpc.mjs",
+    "smoke:node": "node tests/codegraph/smoke/smoke-node.mjs",
+    "e2e:bash-no-match": "node tests/bash-no-match/e2e-rpc.mjs",
+    "e2e:background-jobs": "node tests/background-jobs/e2e-rpc.mjs",
     "e2e:context-cap": "node tests/context-cap/e2e-rpc.mjs",
     "e2e:edit-assist": "node tests/edit-assist/e2e-rpc.mjs",
     "e2e:initial-context": "node tests/initial-context/e2e-rpc.mjs",
-    "e2e:llama-refresh": "node tests/llama-refresh/e2e-rpc.mjs",
+		"e2e:llama-refresh": "node tests/llama-refresh/e2e-rpc.mjs",
+		"e2e:lsp": "node tests/lsp/e2e-rpc.mjs",
     "e2e:output-limits": "node tests/output-limits/e2e-rpc.mjs",
     "e2e:output-starvation": "node tests/output-starvation/e2e-rpc.mjs",
     "e2e:pruning": "node tests/pruning/e2e-rpc.mjs",
@@ -74,7 +76,9 @@
   },
   "dependencies": {
     "@colbymchenry/codegraph": "^1.6.2",
-    "jiti": "^2.7.0"
+    "jiti": "^2.7.0",
+    "vscode-jsonrpc": "^9.0.3",
+    "vscode-languageserver-protocol": "^3.18.4"
   },
   "allowScripts": {
     "esbuild@0.28.2": true

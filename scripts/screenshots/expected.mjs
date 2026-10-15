@@ -79,6 +79,17 @@ export const EXPECTED_LINES = {
 		"auto-index: on",
 	],
 	"context-cap": ["Context window capped at 100000 tokens"],
+	"lsp-status": [
+		"lsp: /tmp/pi-extensions-capture/lsp/repo",
+		"project: trusted",
+		"TypeScript: not started - typescript-language-server found on PATH",
+		"C/C++: absent - clangd not found on PATH",
+		"Rust: absent - rust-analyzer not found on PATH",
+		"Python: absent - basedpyright or pyright not found on PATH",
+		"Go: absent - gopls not found on PATH",
+		"watcher: off (no running server)",
+		"Press Enter or Esc to close",
+	],
 	"model-router-halt": [
 		"model-router: usage limit on mock/mock-orig; switched to mock/mock-fallback",
 		"Hello! I am the fallback model.",
