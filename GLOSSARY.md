@@ -893,6 +893,39 @@ sees them without deciding to ask.
 _Avoid_: lint (names a tool, not this loop), type check (one server's
 internal job), auto-check (generic)
 
+**Open document**:
+A file a Language server holds in memory. Diagnostics exist only for Open
+documents. The set per server is bounded and least-recently-used, and
+eviction sends `didClose`, which drops that file's Diagnostics.
+_Avoid_: open file (a file handle is a different thing), buffer (pi holds
+no buffer), loaded file
+
+**Diagnostic baseline**:
+The Diagnostics last reported for one file, kept so only new ones reach the
+model. Without it the same pre-existing errors ride every turn.
+_Avoid_: dedup set (names the mechanism, not the role), last errors, cache
+
+**Changed set**:
+The paths the watcher has seen change since the last pass. It decides what
+to look at; it never decides what is current.
+_Avoid_: dirty files (git's word means something else here), events (an
+event is the signal, the set is the record)
+
+**Sweep**:
+The turn-end pass that catches edits made outside pi's edit tools: the
+Changed set and the Open documents are re-checked, and new errors are
+reported once, as a message the agent reads at the start of its next turn.
+_Avoid_: scan (the Usage extension owns that word for session files),
+resync, poll, reconcile (codegraph rebuilds an index; a sweep only
+re-checks and reports)
+
+**Concurrent server bound**:
+The cap of four Language servers per session. Eviction takes the idlest
+server and its Open documents, so several languages in one session cannot
+start a memory stampede.
+_Avoid_: server limit (does not say concurrent or per-session), pool (a
+pool implies idle ones are reused)
+
 ### TUI
 
 **Tool row**:
