@@ -85,6 +85,7 @@ export default defineConfig({
 			  { text: "edit-assist", link: "/extensions/edit-assist" },
 			  { text: "lsp", link: "/extensions/lsp" },
 			  { text: "skill-tool", link: "/extensions/skill-tool" },
+			  { text: "tool-headers", link: "/extensions/tool-headers" },
         ],
       },
       {
