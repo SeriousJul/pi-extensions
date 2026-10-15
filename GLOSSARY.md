@@ -781,9 +781,14 @@ _Avoid_: delimiter (too generic), separator character (there is a run of them, n
 
 **Background job**:
 A command started detached from the agent turn by `bash_bg`, with its
-state in one on-disk job directory. It outlives the session that started
-it, so a new session can list it and wait on it.
+state in one on-disk job directory. The job outlives the turn, not the
+agent: when the agent process that started it exits or is killed, the
+job's process group is stopped and the record is marked stopped (ADR
+0037). The record, with its log and exit code, stays on disk, so a new
+session can read what ran, but it never manages a live job from another
+agent.
 _Avoid_: background process (generic OS term), detached process, daemon
+(a job is stopped when its agent dies; a daemon is meant to keep running)
 
 **Job root**:
 The machine-local directory that holds one subdirectory per job: a `jobs`
@@ -795,18 +800,34 @@ directory, not the root), cache
 
 **Job manifest**:
 The on-disk record in a job directory: the command, the cwd, the label,
-the wrapper pid, the start time, and the log path. With the log, the child
-pid file, and the exit code file, it makes a job knowable to a process
-that did not start it.
+the wrapper pid (and thus the job's process group id), the start time, and
+the log path. With the log, the child pid file, and the exit code file, it
+makes a job knowable to a process that did not start it.
 _Avoid_: job state (also names the whole directory), job record (fine in
 prose, but the manifest is the file)
+
+**Process group**:
+The POSIX process group holding every process of a job: the wrapper, its
+leader, and everything the command spawns. Its id is the wrapper's pid
+(the detached spawn makes the wrapper the group leader), and it stays valid
+after the wrapper dies, as long as any member is alive. Stopping a job is
+one group signal, `kill -- -<pid>`, which reaches every process of the job,
+wrapper dead or not (ADR 0036).
+_Avoid_: process tree (describes ancestry, not the signalling unit), job
+(the job is the record plus the group), background process (generic OS term)
 
 **Shell wrapper**:
 The POSIX sh script that runs a job: it starts the command script with
 its output to the job log, records the child pid, waits, and writes the
 child's exit code to the job directory. The exit code file is the point:
 Node's exit status is only readable by the spawner, so the file makes the
-code knowable to any process.
+code knowable to any process. The wrapper also runs a watcher subshell
+that polls the pid of the agent process that started the job: when the
+agent dies, the watcher stops the job's process group (TERM, a grace,
+KILL) and marks the record stopped, so the wrapper never outlives the
+agent (ADR 0037). The scripts trap no other signals: dash and the bash
+versions that serve as /bin/sh disagree on trap semantics, so the job's
+process group is managed from plain group signals (ADR 0036).
 _Avoid_: runner (too generic), launcher, job script (the job script is
 the user command, not the wrapper)
 

@@ -10,7 +10,9 @@
  * suite, keeps working on other files, and waits once at the end.
  *
  * Job state lives on disk under pi's agent state root, one directory per
- * job, so jobs outlive the session that started them (ADR 0023). The three
+ * job (ADR 0023): the record, log, and exit code stay on disk for a new
+ * session to read, but a live job dies with the agent process that started
+ * it (ADR 0037). The three
  * tools are agent tools, active by default: the capability replaces a
  * workaround the agent would otherwise improvise, and the prompt cost is
  * three short descriptions, so they are not in the /tools default-disabled
@@ -51,7 +53,7 @@ export function registerTools(pi: ExtensionAPI): void {
 		name: "bash_bg",
 		label: "Bash background",
 		description:
-			"Start a long-running command in the background without blocking. The command runs detached through a shell; its stdout and stderr go to a per-job log file. Returns the job id, the pid, and the log path. A machine-level bound limits the number of concurrent running jobs.",
+			"Start a long-running command in the background without blocking. The command runs detached through a shell; its stdout and stderr go to a per-job log file. The job is stopped when the agent process exits or is killed; work that must outlive the agent belongs in nohup or a service manager. Returns the job id, the pid, and the log path. A machine-level bound limits the number of concurrent running jobs.",
 		promptSnippet: "Start a long command in the background; returns job id, pid, and log path.",
 		parameters: Type.Object({
 			command: Type.String({ description: "The command to run, as you would pass it to the bash tool." }),
@@ -77,7 +79,7 @@ export function registerTools(pi: ExtensionAPI): void {
 			if (!result.ok) return textResult(result.error);
 			const m = result.manifest;
 			return textResult(
-				`job ${m.jobId} started${m.label ? ` (${m.label})` : ""}\npid: ${m.pid}\nlog: ${m.logPath}\nwait on it with job_wait; inspect it with job_status.`,
+				`job ${m.jobId} started${m.label ? ` (${m.label})` : ""}\npid: ${m.pid}\nlog: ${m.logPath}\nwait on it with job_wait; inspect it with job_status. To stop it, kill its process group: kill -- -${m.pid}.`,
 			);
 		},
 		// The tool row (issue #101, ADR 0024): the command in the built-in
@@ -113,7 +115,12 @@ export function registerTools(pi: ExtensionAPI): void {
 			const info = await waitJob(jobsRootFor(ctx), params.jobId, timeoutS * 1000);
 			const tail = tailOfFile(info.logPath, params.tailLines ?? DEFAULT_TAIL_LINES);
 			if (info.status === "exited") {
-				const code = info.exitCode === null ? "no exit code recorded" : `exit code: ${info.exitCode}`;
+				const code =
+					info.exitCode === null
+						? info.stopped
+							? "stopped when the agent process exited"
+							: "no exit code recorded"
+						: `exit code: ${info.exitCode}`;
 				return textResult(`job ${info.jobId} exited\n${code}\nlog: ${info.logPath}\ntail:\n${tail || "(no output)"}`);
 			}
 			return textResult(
@@ -126,13 +133,13 @@ export function registerTools(pi: ExtensionAPI): void {
 		name: "job_status",
 		label: "Job status",
 		description:
-			"Report one background job by id, or list every job (running and exited) with its age, name, and status, without waiting. To stop a job, signal its pid through the bash tool.",
+			"Report one background job by id, or list every job (running and exited) with its age, name, and status, without waiting. To stop a job, kill its process group through the bash tool: kill -- -<pid>, where <pid> is the one the status reports.",
 		promptSnippet: "Report one background job, or list all jobs, without waiting.",
 		parameters: Type.Object({
 			jobId: Type.Optional(Type.String({ description: "A job id. Omit to list every job." })),
 		}),
 		promptGuidelines: [
-			"Use job_status to inspect one bash_bg job or list all jobs without waiting; if a job must be stopped, signal the pid it reports through the bash tool.",
+			"Use job_status to inspect one bash_bg job or list all jobs without waiting; if a job must be stopped, kill its process group through the bash tool: kill -- -<pid>, with the pid the status reports.",
 		],
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const jobsRoot = jobsRootFor(ctx);
