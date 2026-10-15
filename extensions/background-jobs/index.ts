@@ -77,7 +77,7 @@ export function registerTools(pi: ExtensionAPI): void {
 			if (!result.ok) return textResult(result.error);
 			const m = result.manifest;
 			return textResult(
-				`job ${m.jobId} started${m.label ? ` (${m.label})` : ""}\npid: ${m.pid}\nlog: ${m.logPath}\nwait on it with job_wait; inspect it with job_status.`,
+				`job ${m.jobId} started${m.label ? ` (${m.label})` : ""}\npid: ${m.pid}\nlog: ${m.logPath}\nwait on it with job_wait; inspect it with job_status. To stop it, kill its process group: kill -- -${m.pid}.`,
 			);
 		},
 		// The tool row (issue #101, ADR 0024): the command in the built-in
@@ -126,13 +126,13 @@ export function registerTools(pi: ExtensionAPI): void {
 		name: "job_status",
 		label: "Job status",
 		description:
-			"Report one background job by id, or list every job (running and exited) with its age, name, and status, without waiting. To stop a job, signal its pid through the bash tool.",
+			"Report one background job by id, or list every job (running and exited) with its age, name, and status, without waiting. To stop a job, kill its process group through the bash tool: kill -- -<pid>, where <pid> is the one the status reports.",
 		promptSnippet: "Report one background job, or list all jobs, without waiting.",
 		parameters: Type.Object({
 			jobId: Type.Optional(Type.String({ description: "A job id. Omit to list every job." })),
 		}),
 		promptGuidelines: [
-			"Use job_status to inspect one bash_bg job or list all jobs without waiting; if a job must be stopped, signal the pid it reports through the bash tool.",
+			"Use job_status to inspect one bash_bg job or list all jobs without waiting; if a job must be stopped, kill its process group through the bash tool: kill -- -<pid>, with the pid the status reports.",
 		],
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const jobsRoot = jobsRootFor(ctx);

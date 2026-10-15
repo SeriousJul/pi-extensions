@@ -19,6 +19,16 @@
  * knowable to a process that did not start the job, so a new pi session can
  * wait on a job an old session started. Jobs outlive the session.
  *
+ * The job is one process group, led by the wrapper: detached makes the
+ * wrapper the group leader, and the group id (the wrapper's pid) stays
+ * valid after the wrapper dies, as long as any member is alive. So the
+ * whole tree is always stoppable with `kill -- -<pid>`, and the record
+ * keeps covering the job while any of its processes is alive: no process
+ * of a job ever outlives the record (ADR 0036). The shell scripts install
+ * no signal traps: dash and the bash versions that serve as /bin/sh
+ * disagree on trap semantics, and bash 5.3 crashes on a `kill 0` group
+ * kill inside a trap, so the group is managed from the Node side.
+ *
  * POSIX only: the wrapper is /bin/sh. The extension set targets the
  * operator's Linux and macOS machines.
  */
@@ -52,8 +62,10 @@ export interface JobManifest {
 	command: string;
 	cwd: string;
 	label?: string;
-	/** The wrapper process's pid. The command's pid is in child.pid once
-	 * the wrapper has launched it. */
+	/** The wrapper process's pid, and therefore the job's process group id
+	 * (the detached wrapper is the group leader): signal the group with
+	 * `kill -- -<pid>` to stop the whole job. The command's pid is in
+	 * child.pid once the wrapper has launched it. */
 	pid: number;
 	/** ISO start time. */
 	startedAt: string;
@@ -69,7 +81,9 @@ export interface JobInfo {
 	/** The exit code once the wrapper recorded it. Null when the job is
 	 * still running, or when the wrapper died before recording one. */
 	exitCode: number | null;
-	/** The command's pid when known, else the wrapper's pid. */
+	/** The job's process group id: the wrapper's pid. Stopping the job is a
+	 * signal to that group (`kill -- -<pid>`), which covers every process
+	 * of the job, the wrapper dead or not. */
 	pid: number | null;
 	startedAt: string;
 	ageMs: number;
@@ -126,6 +140,20 @@ export function tailOfFile(path: string, lines: number): string {
 	return all.slice(-lines).join("\n");
 }
 
+/** True while any process of the job is alive: the wrapper pid normally,
+ * and the child pid once the wrapper is gone (an untrappable wrapper death
+ * such as SIGKILL). A job directory is never removed while this holds, so
+ * the processes a record covers can never become unmanageable. */
+function jobProcessesAlive(dir: string): boolean {
+	let wrapperPid: number | null = null;
+	try {
+		wrapperPid = Number.parseInt(JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")).pid, 10);
+	} catch {
+		wrapperPid = null;
+	}
+	return isPidAlive(wrapperPid) || isPidAlive(readNumberFile(join(dir, "child.pid")));
+}
+
 function readNumberFile(path: string): number | null {
 	try {
 		const parsed = Number.parseInt(readFileSync(path, "utf8").trim(), 10);
@@ -143,13 +171,18 @@ function commandHead(command: string): string {
 function jobInfoFromManifest(dir: string, manifest: JobManifest, now: number): JobInfo {
 	const exitCode = readNumberFile(join(dir, "exitcode"));
 	const childPid = readNumberFile(join(dir, "child.pid"));
-	const running = exitCode === null && isPidAlive(manifest.pid);
+	// The record covers the job while any of its processes is alive: the
+	// wrapper normally, the command's shell after an untrappable wrapper
+	// death such as SIGKILL. Then a session can still wait on, or stop
+	// (group signal), the surviving tree instead of reading a dead wrapper
+	// as an exit that never came (issue #139).
+	const running = exitCode === null && (isPidAlive(manifest.pid) || isPidAlive(childPid));
 	return {
 		jobId: manifest.jobId,
 		name: manifest.label ?? commandHead(manifest.command),
 		status: running ? "running" : "exited",
 		exitCode,
-		pid: childPid ?? manifest.pid,
+		pid: manifest.pid || null,
 		startedAt: manifest.startedAt,
 		ageMs: Math.max(0, now - Date.parse(manifest.startedAt)),
 		logPath: manifest.logPath,
@@ -209,9 +242,13 @@ export function formatJobListing(jobs: JobInfo[], jobsRoot: string): string {
 	return lines.join("\n");
 }
 
-/** Removes job directories older than the stale bound. Returns how many it
- * removed. Called when a new job starts, so cleanup rides on real usage
- * and never runs on a schedule. */
+/** Removes job directories older than the stale bound, except the records
+ * of jobs whose processes are still alive: a long-running job never
+ * refreshes its directory's mtime (the wrapper writes only on exit), so
+ * age alone would delete the record of a live job and leave its processes
+ * unmanageable (issue #139). Returns how many it removed. Called when a
+ * new job starts, so cleanup rides on real usage and never runs on a
+ * schedule. */
 export function cleanupStaleJobs(jobsRoot: string, now: number = Date.now()): number {
 	let names: string[];
 	try {
@@ -226,6 +263,7 @@ export function cleanupStaleJobs(jobsRoot: string, now: number = Date.now()): nu
 			const st = statSync(dir);
 			if (!st.isDirectory()) continue;
 			if (now - st.mtimeMs <= STALE_JOB_MS) continue;
+			if (jobProcessesAlive(dir)) continue;
 		} catch {
 			continue;
 		}
@@ -334,10 +372,13 @@ export function formatJob(job: JobInfo): string {
 		`job ${job.jobId}`,
 		`status: ${job.status === "running" ? "running" : job.exitCode === null ? "exited (no exit code recorded)" : `exited (${job.exitCode})`}`,
 		`pid: ${job.pid ?? "unknown"}`,
+	];
+	if (job.pid) lines.push(`stop: kill -- -${job.pid}`);
+	lines.push(
 		`age: ${formatAge(job.ageMs)}`,
 		`name: ${job.name}`,
 		`log: ${job.logPath}`,
-	];
+	);
 	return lines.join("\n");
 }
 

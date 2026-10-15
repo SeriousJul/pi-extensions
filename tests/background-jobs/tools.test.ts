@@ -13,13 +13,15 @@
  * real way.
  */
 import { afterAll, describe, expect, it } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionToolContext, Theme } from "@earendil-works/pi-coding-agent";
 import registerBackgroundJobs, { registerTools } from "../../extensions/background-jobs/index";
 import { paintBashBgCallLine } from "../../extensions/background-jobs/render";
-import { MAX_LISTED_JOBS, formatLiveJobs } from "../../extensions/background-jobs/core.ts";
+import { MAX_LISTED_JOBS, formatLiveJobs, getJob, isPidAlive } from "../../extensions/background-jobs/core.ts";
 
 type ToolDef = Parameters<ExtensionAPI["registerTool"]>[0];
 
@@ -220,9 +222,13 @@ describe("job state on disk", () => {
 		const h = makeHarness();
 		const root = jobsRootOf(h);
 		mkdirSync(root, { recursive: true });
+		// A pid that is dead for real: spawn a process and let it exit, so the
+		// stale job reads as dead and age alone decides its cleanup.
+		const dead = spawn("sh", ["-c", "true"], { stdio: "ignore" });
+		await once(dead, "exit");
 		const stale = join(root, "jb-stale");
 		mkdirSync(stale);
-		writeFileSync(join(stale, "manifest.json"), JSON.stringify({ jobId: "jb-stale", pid: 1, startedAt: new Date().toISOString() }));
+		writeFileSync(join(stale, "manifest.json"), JSON.stringify({ jobId: "jb-stale", command: "echo stale", cwd: root, pid: dead.pid, startedAt: new Date().toISOString() }));
 		const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
 		utimesSync(stale, eightDaysAgo, eightDaysAgo);
 
@@ -230,6 +236,142 @@ describe("job state on disk", () => {
 		const jobId = startedJobId(start);
 		expect(existsSync(stale)).toBe(false);
 		await settle(h, jobId);
+	});
+
+	it("a job that outlives the stale bound keeps its record while its processes run", async () => {
+		const h = makeHarness();
+		const root = jobsRootOf(h);
+		mkdirSync(root, { recursive: true });
+		// A live job whose directory is older than the stale bound: cleanup must
+		// keep the record, so the job's processes never become unmanageable
+		// (issue #139). The live pid is this test process.
+		const live = join(root, "jb-long");
+		mkdirSync(live);
+		writeFileSync(join(live, "manifest.json"), JSON.stringify({ jobId: "jb-long", command: "sleep 1000", cwd: root, pid: process.pid, startedAt: new Date().toISOString() }));
+		const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+		utimesSync(live, eightDaysAgo, eightDaysAgo);
+
+		const start = await h.call("bash_bg", { command: "echo after cleanup" });
+		const jobId = startedJobId(start);
+		expect(existsSync(live)).toBe(true);
+		// and a new session still sees the long job listed
+		const list = await h.call("job_status", {});
+		expect(list).toContain("jb-long");
+		await settle(h, jobId);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// No process of a job outlives its record (issue #139)
+// ---------------------------------------------------------------------------
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Models the reporter's "several bun processes": a job whose command runs a
+ * managing shell with two long-lived children, recording their pids so a
+ * test can assert on the whole tree. */
+function bunLike(workersPath: string): string {
+	return `sleep 30 & p1=$!; sleep 30 & p2=$!; printf '%s %s\\n' "$p1" "$p2" > ${workersPath}; wait`;
+}
+
+interface LongJob {
+	jobId: string;
+	wrapperPid: number;
+	workersPath: string;
+}
+
+async function startLongJob(h: Harness, tag: string): Promise<LongJob> {
+	const workersPath = join(h.sessionsRoot, `${tag}-workers.pid`);
+	const start = await h.call("bash_bg", { command: bunLike(workersPath), cwd: h.sessionsRoot });
+	const jobId = startedJobId(start);
+	for (let i = 0; i < 200; i += 1) {
+		if (existsSync(workersPath)) break;
+		await sleep(25);
+	}
+	if (!existsSync(workersPath)) throw new Error(`workers file never written for ${jobId}`);
+	const manifest = JSON.parse(readFileSync(join(jobsRootOf(h), jobId, "manifest.json"), "utf8"));
+	return { jobId, wrapperPid: manifest.pid, workersPath };
+}
+
+/** Every pid the record covers: the wrapper (the group id), the job's
+ * shell (child.pid), and the command's own long-lived children. */
+function coveredPids(h: Harness, job: LongJob): number[] {
+	const pids = [job.wrapperPid];
+	try {
+		pids.push(Number.parseInt(readFileSync(join(jobsRootOf(h), job.jobId, "child.pid"), "utf8").trim(), 10));
+	} catch {
+		// child.pid not written yet
+	}
+	try {
+		for (const s of readFileSync(job.workersPath, "utf8").trim().split(/\s+/)) {
+			const p = Number.parseInt(s, 10);
+			if (Number.isFinite(p)) pids.push(p);
+		}
+	} catch {
+		// workers file not written yet
+	}
+	return pids;
+}
+
+/** The documented stop path: a signal to the job's process group, as the
+ * agent runs `kill -- -<pid>` through the bash tool. False when the group
+ * is already gone. */
+function stopGroup(pid: number | null | undefined, signal: NodeJS.Signals): boolean {
+	if (!pid) return false;
+	try {
+		process.kill(-pid, signal);
+		return true;
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ESRCH") return false;
+		throw err;
+	}
+}
+
+describe("no process of a job outlives its record (issue #139)", () => {
+	it("a killed wrapper keeps the record honest, and the group stop clears the tree", async () => {
+		const h = makeHarness();
+		const job = await startLongJob(h, "m1");
+		const root = jobsRootOf(h);
+		process.kill(job.wrapperPid, "SIGTERM");
+		await sleep(1000);
+		const info = getJob(root, job.jobId);
+		expect(info?.status, "the job's processes are still alive, so the record must still say running").toBe("running");
+		const stopped = stopGroup(info?.pid, "SIGTERM");
+		await sleep(1000);
+		expect(stopped, `stopping group ${info?.pid} failed`).toBe(true);
+		const alive = coveredPids(h, job).filter((pid) => isPidAlive(pid));
+		expect(alive, `processes ${alive.join(",")} survived the group stop`).toEqual([]);
+		expect(getJob(root, job.jobId)?.status).toBe("exited");
+	});
+
+	it("stopping a running job through the reported pid clears the whole process group", async () => {
+		const h = makeHarness();
+		const job = await startLongJob(h, "m2");
+		const root = jobsRootOf(h);
+		const info = getJob(root, job.jobId);
+		expect(info?.status).toBe("running");
+		const stopped = stopGroup(info?.pid, "SIGTERM");
+		await sleep(1000);
+		expect(stopped, `the reported pid ${info?.pid} is not a process group id, so the stop cannot reach the job's processes`).toBe(true);
+		const alive = coveredPids(h, job).filter((pid) => isPidAlive(pid));
+		expect(alive, `processes ${alive.join(",")} survived the documented stop`).toEqual([]);
+		expect(getJob(root, job.jobId)?.status).toBe("exited");
+	});
+
+	it("a SIGKILLed wrapper: the record keeps covering the live job until it is stopped", async () => {
+		const h = makeHarness();
+		const job = await startLongJob(h, "m1k");
+		const root = jobsRootOf(h);
+		process.kill(job.wrapperPid, "SIGKILL");
+		await sleep(500);
+		const info = getJob(root, job.jobId);
+		expect(info?.status, `record says ${info?.status} while the job's processes are alive`).toBe("running");
+		const stopped = stopGroup(info?.pid, "SIGTERM");
+		await sleep(1000);
+		expect(stopped).toBe(true);
+		const alive = coveredPids(h, job).filter((pid) => isPidAlive(pid));
+		expect(alive, `processes ${alive.join(",")} survived the group stop`).toEqual([]);
+		expect(getJob(root, job.jobId)?.status).toBe("exited");
 	});
 });
 

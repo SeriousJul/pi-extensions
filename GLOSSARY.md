@@ -795,18 +795,31 @@ directory, not the root), cache
 
 **Job manifest**:
 The on-disk record in a job directory: the command, the cwd, the label,
-the wrapper pid, the start time, and the log path. With the log, the child
-pid file, and the exit code file, it makes a job knowable to a process
-that did not start it.
+the wrapper pid (and thus the job's process group id), the start time, and
+the log path. With the log, the child pid file, and the exit code file, it
+makes a job knowable to a process that did not start it.
 _Avoid_: job state (also names the whole directory), job record (fine in
 prose, but the manifest is the file)
+
+**Process group**:
+The POSIX process group holding every process of a job: the wrapper, its
+leader, and everything the command spawns. Its id is the wrapper's pid
+(the detached spawn makes the wrapper the group leader), and it stays valid
+after the wrapper dies, as long as any member is alive. Stopping a job is
+one group signal, `kill -- -<pid>`, which reaches every process of the job,
+wrapper dead or not (ADR 0036).
+_Avoid_: process tree (describes ancestry, not the signalling unit), job
+(the job is the record plus the group), background process (generic OS term)
 
 **Shell wrapper**:
 The POSIX sh script that runs a job: it starts the command script with
 its output to the job log, records the child pid, waits, and writes the
 child's exit code to the job directory. The exit code file is the point:
 Node's exit status is only readable by the spawner, so the file makes the
-code knowable to any process.
+code knowable to any process. The wrapper and the job's shell trap no
+signals: dash and the bash versions that serve as /bin/sh disagree on trap
+semantics, so the job's process group is managed from the Node side
+(ADR 0036).
 _Avoid_: runner (too generic), launcher, job script (the job script is
 the user command, not the wrapper)
 
