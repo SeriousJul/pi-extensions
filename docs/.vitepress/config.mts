@@ -82,8 +82,9 @@ export default defineConfig({
           { text: "pruning", link: "/extensions/pruning" },
           { text: "output-limits", link: "/extensions/output-limits" },
           { text: "resource-toggle", link: "/extensions/resource-toggle" },
-          { text: "edit-assist", link: "/extensions/edit-assist" },
-          { text: "skill-tool", link: "/extensions/skill-tool" },
+			  { text: "edit-assist", link: "/extensions/edit-assist" },
+			  { text: "lsp", link: "/extensions/lsp" },
+			  { text: "skill-tool", link: "/extensions/skill-tool" },
         ],
       },
       {

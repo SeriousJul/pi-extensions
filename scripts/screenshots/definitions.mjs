@@ -300,6 +300,55 @@ export const CAPTURES = [
 	},
 
 	// -----------------------------------------------------------------
+	// lsp
+	// -----------------------------------------------------------------
+	{
+		id: "lsp-status",
+		out: "docs/extensions/lsp-status.png",
+		kind: "pty",
+		setup: async (ctx) => {
+			const root = join(WORK_ROOT, "lsp");
+			piHome(root);
+			// A small TypeScript project: the registry finds the pinned
+			// typescript-language-server, the other four languages are
+			// absent on the capture's PATH, and nothing has run yet.
+			const repo = join(root, "repo");
+			mkdirSync(repo, { recursive: true });
+			writeFileSync(
+				join(repo, "tsconfig.json"),
+				"{\n  \"compilerOptions\": { \"strict\": true, \"noEmit\": true, \"target\": \"es2022\" },\n  \"files\": [\"app.ts\"]\n}\n",
+				"utf8",
+			);
+			writeFileSync(join(repo, "app.ts"), "export const greeting = \"hello\";\nconsole.log(greeting);\n", "utf8");
+			const extension = mockProviderExtension();
+			// The capture's PATH is pinned to the stub bin plus the repo's
+			// node_modules/.bin, so which languages are found is identical
+			// on every machine: only typescript resolves.
+			const repoBin = join(ctx.repoRoot, "node_modules", ".bin");
+			return {
+				file: process.execPath,
+				args: [
+					PI_CLI(ctx.repoRoot),
+					"--tui-mode",
+					"fullscreen",
+					"--model",
+					"mock/mock-orig",
+					"--extension",
+					extension,
+					"--extension",
+					join(ctx.repoRoot, "extensions", "lsp", "index.ts"),
+				],
+				cwd: repo,
+				env: piEnv(root, { MOCK_MODEL_PORT: String(ctx.modelPort), PATH: `${stubBinDir()}:${repoBin}` }),
+				input: [{ data: "/lsp\r", delayMs: 400 }],
+				marker: "watcher: off",
+				startupMs: 8000,
+				timeoutMs: 120_000,
+			};
+		},
+	},
+
+	// -----------------------------------------------------------------
 	// context-cap
 	// -----------------------------------------------------------------
 	{
