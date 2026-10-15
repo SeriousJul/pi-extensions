@@ -42,3 +42,4 @@ chosen option, and the options that were considered.
 | [0035](/adr/0035-the-skill-tool-loads-referenced-skills-by-name) | The skill tool loads a referenced skill by name against pi's own registry, so the model never re-types a skill's install path. |
 | [0036](/adr/0036-a-job-dies-as-a-process-group) | A job is one process group, stopped with a group signal, and its record covers it while any of its processes is alive; the shells trap no signals. |
 | [0037](/adr/0037-a-job-dies-with-the-agent-process) | A job's lifetime is bounded by the agent process: the wrapper watches the agent's pid and stops the job's process group when the agent dies. Supersedes the outlive-the-session decision of ADR 0023. |
+| [0038](/adr/0038-tool-row-headers-wrap-pi-tool-renderers) | Tool row headers wrap pi's tool renderers: one resolver prepends the tool name to whatever pi or another extension would draw, for every tool, with no setting. |

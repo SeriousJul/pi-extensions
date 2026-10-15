@@ -848,6 +848,14 @@ from the tool's `renderCall` slot, with the result block from the
 _Avoid_: agent turn view (a turn view holds the whole turn, not one call),
 tool call (that is the LLM-side record), row (too generic)
 
+**Tool row header**:
+The one line a Tool row draws above its call line to name the tool, as a
+label set in a rule. It is the row's frame label, never part of the call
+line, and it carries no argument and no result state: the call line owns
+the argument and the row's background owns the state.
+_Avoid_: fieldset (an HTML element, not this line), tool title (pi's word
+for the bold name inside the call line), row label (too generic), banner
+
 ### Docs
 
 **Screenshot**:
