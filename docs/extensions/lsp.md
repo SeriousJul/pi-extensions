@@ -160,6 +160,11 @@ state and never writes settings.
 - **watcher: off / degraded** - watching is unavailable for the root and
   the fallback stat pass is in effect.
 
+Server stderr is persisted per project under the state directory
+(`server-<name>.stderr.log`); the health script counts it. `LSP_DBG=1`
+adds a per-call trace to the terminal for support: every open, change,
+and publish, and the state of each sweep.
+
 ## Instrument
 
 The extension logs every `lsp_*` call (tool, language, server, outcome,
