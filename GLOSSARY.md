@@ -852,6 +852,47 @@ one machine do not stampede it with detached work.
 _Avoid_: job limit (does not say concurrent or machine-level),
 rate limit (that is a per-time cap, this is a simultaneous one)
 
+### LSP
+
+**Language server**:
+The long-lived process that answers code-intelligence questions for one
+project root over the Language Server Protocol. The extension starts it,
+never installs it, and closes it with the session. A language with no
+server binary on the machine is simply absent.
+_Avoid_: LSP server (in prose; the LSP is the protocol), daemon (codegraph
+rejects that word for its own process), analyzer (names one language's
+server, not the role)
+
+**Server registry**:
+The table that maps a language to the command that starts its Language
+server, its file extensions, and the markers that identify a project root.
+Built-in defaults, overridable by settings. It never downloads or builds a
+server.
+_Avoid_: language map (says nothing about starting a server), provider
+(pi's word for a model API), config table
+
+**Document sync**:
+Keeping a Language server's copy of a file equal to the file on disk
+before any answer is served from it. Disk is the only truth: an edit made
+by a script, another tool, or another agent is picked up the same way as
+an edit made by pi's edit tool.
+_Avoid_: file watch (a watcher is one possible mechanism, not the
+contract), buffer mirror (pi holds no buffer), hot reload
+
+**Diagnostics**:
+What a Language server reports about a file it has open: errors, warnings,
+and hints, each at a range with a message. They exist only for files the
+server has open, and they arrive as a notification, not as a reply.
+_Avoid_: errors (hides the severities), lint output, problems (the IDE's
+word for the panel that shows them)
+
+**Post-edit diagnostics**:
+The Diagnostics a Language server reports for a file the agent just
+changed, attached to the result of the call that changed it, so the agent
+sees them without deciding to ask.
+_Avoid_: lint (names a tool, not this loop), type check (one server's
+internal job), auto-check (generic)
+
 ### TUI
 
 **Tool row**:
