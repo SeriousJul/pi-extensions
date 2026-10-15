@@ -17,10 +17,13 @@ import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
+import { accountSetup, cliCommand } from "./paths.ts";
+
 export const TOKEN_ENV = "PI_SYNC_TOKEN";
 export const STATE_DIR_ENV = "PI_SYNC_STATE_DIR";
 export const HOME_ENV = "PI_SYNC_HOME";
 export const GITHUB_BASE_URL_ENV = "PI_SYNC_GITHUB_BASE_URL";
+export const CLIENT_ID_ENV = "PI_SYNC_OAUTH_CLIENT_ID";
 export const TOKEN_FILE_NAME = "token";
 
 /** The sync state directory: PI_SYNC_STATE_DIR, else <home>/.pi/sync. */
@@ -144,9 +147,15 @@ export function resolveToken(home: string, env: NodeJS.ProcessEnv = process.env)
 }
 
 export function noTokenMessage(tokenPath: string): string {
+	// The device flow needs the OAuth client id: name how to make it known,
+	// the same way config.ts does (ADR 0039).
+	const setup = accountSetup();
+	const clientFix = setup.present
+		? `run ${setup.command} once`
+		: `set ${CLIENT_ID_ENV} - the Account setup script ${setup.path} is not present in this install`;
 	return (
 		`no GitHub token configured for pi sync.\n` +
-		`- run pi-sync in a terminal (tty) to start the GitHub device flow; it needs the OAuth client id config (run scripts/setup-sync-wizard.sh once), or\n` +
+		`- run ${cliCommand("init")} in a terminal (tty) to start the GitHub device flow; it needs the OAuth client id config (${clientFix}), or\n` +
 		`- create a personal access token with gist scope, then either write it to ${tokenPath} (owner-only: mkdir -p $(dirname ${tokenPath}) && printf '%s\\n' <token> > ${tokenPath} && chmod 600 ${tokenPath}), ` +
 		`or set ${TOKEN_ENV} for this run.`
 	);

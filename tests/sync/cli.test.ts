@@ -7,6 +7,7 @@ import { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { main, type CliOutput } from "../../extensions/sync/cli.ts";
+import { cliEntryPath } from "../../extensions/sync/paths.ts";
 
 const savedEnv: Record<string, string | undefined> = {};
 const envKeys = ["PI_SYNC_HOME", "PI_SYNC_STATE_DIR", "PI_SYNC_TOKEN", "PI_SYNC_GITHUB_BASE_URL"];
@@ -39,7 +40,7 @@ describe("pi-sync CLI argument handling", () => {
 		const c = capture();
 		const code = await main(["help"], c.output);
 		expect(code).toBe(0);
-		expect(c.lines.join("\n")).toContain("pi-sync init [gist-id] [--yes] [--force]");
+		expect(c.lines.join("\n")).toContain(`node ${cliEntryPath()} init [gist-id] [--yes] [--force]`);
 	});
 
 	it("prints usage with exit 2 when no command is given", async () => {
@@ -161,7 +162,7 @@ describe("pi-sync CLI end-to-end against a loopback Gist stub", () => {
 		// --yes confirms ahead, but the preview is still shown.
 		expect(initA.lines.join("\n")).toContain("preview, nothing written yet");
 		expect(initA.lines.join("\n")).toContain("created secret gist created-id");
-		expect(initA.lines.join("\n")).toContain("pi-sync init created-id");
+		expect(initA.lines.join("\n")).toContain(`node ${cliEntryPath()} init created-id`);
 
 		// The local manifest records the gist id.
 		const manifest = JSON.parse(await readFile(join(home, ".pi", "sync", "manifest.json"), "utf8"));

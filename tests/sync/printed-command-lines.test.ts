@@ -175,8 +175,7 @@ describe("ADR 0039: printed command lines run as printed (issue #135)", () => {
 
 		// The absolute CLI line, from the same temporary working directory,
 		// runs the tool. It reports the ordinary no-token fix, not a crash.
-		const entry = printedCliEntry(first.output).replace(/'/g, "");
-		const second = await runShell(`node ${entry} status`, cwd, env);
+		const second = await runShell(`${printedCliEntry(first.output)} status`, cwd, env);
 		expect(second.status).toBe(1);
 		expect(second.output).toContain("pi-sync:");
 		expect(second.output).not.toContain("Cannot find module");

@@ -8,6 +8,7 @@
  * touches the network.
  */
 import { lstat, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Server } from "node:http";
@@ -18,7 +19,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createAuthSession } from "../../extensions/sync/auth.ts";
 import { CLIENT_ID_ENV, clientIdPathFor, resolveClientId } from "../../extensions/sync/config.ts";
 import { runDeviceFlow, type OAuthTransport } from "../../extensions/sync/deviceflow.ts";
-import { stateDirFor } from "../../extensions/sync/token.ts";
+import { accountSetup, accountSetupScriptPath, clientReRunFix, clientSetupInstruction, type AccountSetup } from "../../extensions/sync/paths.ts";
+import { noTokenMessage, stateDirFor } from "../../extensions/sync/token.ts";
 
 const WIZARD_PATH = join(import.meta.dirname, "..", "..", "scripts", "setup-sync-wizard.sh");
 
@@ -148,7 +150,7 @@ describe("resolveClientId (issue #34)", () => {
 		const home = await tempDir("pi-sync-cid-none-");
 		const resolution = resolveClientId(home, {});
 		expect(resolution.clientId).toBeUndefined();
-		expect(resolution.error).toContain("scripts/setup-sync-wizard.sh");
+		expect(resolution.error).toContain(accountSetupScriptPath());
 		expect(resolution.error).toContain("oauth-client.json");
 		expect(resolution.error).toContain(CLIENT_ID_ENV);
 		expect(resolution.error).not.toContain("    at ");
@@ -196,6 +198,56 @@ describe("createAuthSession with the client id from the config file (issue #34)"
 		expect(built.session?.source).toBe("managed-file");
 		expect(seen.length).toBeGreaterThanOrEqual(1);
 		for (const call of seen) expect(call.client).toBe("file-client"); // the config file id drove the flow
+	});
+});
+
+describe("install paths and the printed client id fixes (issue #135, ADR 0039)", () => {
+	it("the Account setup script path resolves to an existing file in this install", () => {
+		const path = accountSetupScriptPath();
+		expect(existsSync(path)).toBe(true);
+		const setup = accountSetup();
+		expect(setup.present).toBe(true);
+		expect(setup.path).toBe(path);
+		expect(setup.command).toBe(`bash ${path}`);
+	});
+
+	it("every missing-client-id and no-token message names the script by absolute path", async () => {
+		const path = accountSetupScriptPath();
+		// No config file at all.
+		const home = await tempDir("pi-sync-cid-absent-");
+		expect(resolveClientId(home, {}).error).toContain(path);
+		// A config file that is broken in both ways.
+		const stateDir = stateDirFor(home, {});
+		await mkdir(stateDir, { recursive: true });
+		await writeFile(clientIdPathFor(stateDir), "not json");
+		expect(resolveClientId(home, {}).error).toContain(path);
+		await writeFile(clientIdPathFor(stateDir), JSON.stringify({ other: 1 }));
+		expect(resolveClientId(home, {}).error).toContain(path);
+		// The no-token message names the step that makes the client id known.
+		expect(noTokenMessage(join(home, ".pi", "sync", "token"))).toContain(path);
+	});
+
+	it("when the script is absent, the message names the path and leads with the env var", () => {
+		const setup: AccountSetup = {
+			present: false,
+			path: "/some/install dir/scripts/setup-sync-wizard.sh",
+			command: "bash '/some/install dir/scripts/setup-sync-wizard.sh'",
+		};
+		const instruction = clientSetupInstruction(setup, CLIENT_ID_ENV);
+		expect(instruction).toContain(setup.path);
+		expect(instruction).toContain(CLIENT_ID_ENV);
+		expect(instruction).toContain("not present in this install");
+		expect(instruction).not.toContain("bash ");
+		const reRun = clientReRunFix(setup, CLIENT_ID_ENV);
+		expect(reRun).toContain(setup.path);
+		expect(reRun).toContain(CLIENT_ID_ENV);
+		expect(reRun).not.toContain("bash ");
+	});
+
+	it("the presence check is made when the message is built, not at module load", () => {
+		const present = accountSetup();
+		const setup: AccountSetup = { ...present, present: !present.present, command: `bash ${present.path}` };
+		expect(clientSetupInstruction(setup, CLIENT_ID_ENV)).not.toBe(clientSetupInstruction(present, CLIENT_ID_ENV));
 	});
 });
 
