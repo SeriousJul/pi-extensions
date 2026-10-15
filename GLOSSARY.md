@@ -368,11 +368,25 @@ _Avoid_: enabled flag (only two of the states), on/off (hides the override layer
 A plain path plus a `+` or `-` pattern for the same path, written together into the project settings. It re-registers a global resource at project scope, where it wins over the global copy, so the project decides the resource's state without touching the global file.
 _Avoid_: alias (implies the path stays one resource), per-project copy, override rule
 
+### Package install
+
+**Install root**:
+The directory one pi package was installed into: a clone under pi's git directory, a copy under pi's npm root, or the checkout itself for a local install. Pi's "package root" seen from the installed side, and the anchor every path a tool prints to the user resolves against.
+_Avoid_: package root (pi's word for the source layout), install dir, checkout root (the same directory under skill-migrate's internal name), agent dir (holds every install, not one)
+
 ### Sync
 
 **Sync wizard**:
-The guided first run that makes a device useful: secure a Gist-only token, then create the shared tree or join an existing one, preview the local changes, confirm them, and report. Re-running it with no id on a joined device is always a plain error. Re-running it with a gist id on a joined device re-joins the tree behind the preview confirm; --force skips only that confirm.
+The guided first run that makes a device useful: secure a Gist-only token, then create the shared tree or join an existing one, preview the local changes, confirm them, and report. Re-running it with no id on a joined device is always a plain error. Re-running it with a gist id on a joined device re-joins the tree behind the preview confirm; --force skips only that confirm. Its account-level counterpart is Account setup.
 _Avoid_: setup (generic), install, first run
+
+**Account setup**:
+Making one GitHub account's OAuth client id known to a device, so the device flow can run there. It happens once per account, before any device joins a tree. The Account setup script is one way to perform it; the client id environment variable is another, for scripted and CI runs.
+_Avoid_: onboarding (the whole first-run path, Account setup and the Sync wizard together), OAuth setup (too narrow), client id config (the file, not the act)
+
+**Account setup script**:
+The one-time, per-account program that performs Account setup: it walks the GitHub OAuth app form and stores the resulting client id. It is the file `scripts/setup-sync-wizard.sh`, inside the package's Install root.
+_Avoid_: setup wizard (reads as the Sync wizard), onboarding script, OAuth wizard, wizard (unqualified, and taken by the /wizard skill)
 
 **Pairing**:
 Joining a device to a shared tree that already exists: the device fetches the tree, the user confirms what arrives, and the device records which tree it belongs to. Its counterpart is the first device creating the tree. "Join" is the verb for the act; "pairing" is the noun.
