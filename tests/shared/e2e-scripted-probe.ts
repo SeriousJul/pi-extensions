@@ -13,7 +13,8 @@
  * the turn ends. The driver rewrites the file between cases, so the probe
  * re-reads it on every call and re-arms when the runId changes.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import {
 	createAssistantMessageEventStream,
 	type AssistantMessage,
@@ -39,6 +40,13 @@ interface ScriptedCase {
 	toolCall?: ScriptedCall;
 	/** Several tool calls, answered in one assistant message. */
 	calls?: ScriptedCall[];
+	/**
+	 * A file the probe writes with this text right before the run's
+	 * "done" answer: an external change landing after the tool results
+	 * and before the turn end (a build, a script, a teammate). The file
+	 * is resolved against the process's working directory.
+	 */
+	externalWrite?: { file: string; text: string };
 }
 
 let lastRunId: number | null = null;
@@ -132,6 +140,14 @@ export default function (pi: ExtensionAPI): void {
 				if (blocks.length > 0) {
 					return scriptedStream(assistantMessage(blocks, "toolUse"), options);
 				}
+			}
+			// The done answer ends the turn: land the scripted external
+			// change before it, so a turn-end hook sees it.
+			if (nextCase.externalWrite) {
+				const target = nextCase.externalWrite.file.startsWith("/")
+					? nextCase.externalWrite.file
+					: path.resolve(process.cwd(), nextCase.externalWrite.file);
+				writeFileSync(target, nextCase.externalWrite.text, "utf8");
 			}
 			return scriptedStream(assistantMessage([{ type: "text", text: "done" }], "stop"), options);
 		},
