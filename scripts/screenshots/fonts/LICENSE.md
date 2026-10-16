@@ -1,13 +1,17 @@
 # Fonts in this directory
 
 The four `MesloLGMDZNFMono-*.ttf` files are the Regular, Italic, Bold, and
-BoldItalic styles of **Meslo LG M for Powerline** (Nerd Font Mono cut),
-distributed by the [Nerd Fonts](https://www.nerdfonts.com/) project.
+BoldItalic styles of **MesloLGMDZ Nerd Font Mono**, the Nerd Fonts build of
+Meslo LG M for Powerline that SeriousJul's terminals (ghostty, foot,
+alacritty, kitty) render with.
 
 - Upstream base font: **Meslo LG** (Masayuki Horie), licensed under the SIL
   Open Font License, 1.1.
-- Nerd Font patches: [nerd-fonts/patched-fonts](https://github.com/nerd-fonts/patched-fonts),
+- Nerd Font patches: [nerd-fonts/nerd-fonts](https://github.com/ryanoasis/nerd-fonts),
   licensed under the SIL Open Font License, 1.1.
+- The committed bytes are the font files of the Arch Linux package
+  `ttf-meslo-nerd` (version 3.5.1), the same files the author's machine
+  loads from /usr/share/fonts/TTF.
 
 Full text of the license: [SIL Open Font License 1.1](https://openfontlicense.org/).
 

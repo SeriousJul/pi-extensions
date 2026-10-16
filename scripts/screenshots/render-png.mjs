@@ -11,13 +11,19 @@
  * font-family in the SVG is the family name inside those files, so the
  * pixels come from the committed TTFs on every machine.
  *
- * Every choice is fixed: the grid size, the font, the font metrics, the
- * palette. Two runs over the same byte stream produce identical PNG bytes.
+ * resvg draws glyphs without antialiasing, so the SVG is rasterized at 2x
+ * and each 2x2 block is averaged in linear light back to the pinned 1x
+ * size: the text edges carry the smooth coverage a real terminal shows.
+ * The 1x pixels are encoded by the pinned pure-JS PNG encoder (png.mjs),
+ * never by a machine library. Every choice is fixed: the grid size, the
+ * font, the font metrics, the palette. Two runs over the same byte stream
+ * produce identical PNG bytes.
  */
 import pkg from "@xterm/headless";
 import resvgJs from "@resvg/resvg-js";
 
 import { LOOK } from "./look.mjs";
+import { downsample2x, encodePng } from "./png.mjs";
 
 const { Terminal } = pkg;
 const { Resvg } = resvgJs;
@@ -176,8 +182,23 @@ export function resvgOptions(look = LOOK) {
 export async function renderScreenToPng(data, look = LOOK) {
 	const grid = await screenToGrid(data, { cols: look.cols, rows: look.rows });
 	const svg = gridToSvg(grid, look);
-	const resvg = new Resvg(svg, resvgOptions(look));
-	return resvg.render().asPng();
+	return renderSupersampled(svg, resvgOptions(look), look);
+}
+
+/**
+ * Rasterize the SVG at 2x and average each 2x2 block back to the pinned
+ * 1x size. The 2x pass is what gives resvg's un-antialiased glyphs smooth
+ * edges; see png.mjs for the blend and the PNG encoding.
+ */
+function renderSupersampled(svg, options, look) {
+	const zoomed = new Resvg(svg, { ...options, fitTo: { mode: "zoom", value: 2 } }).render();
+	const w = look.widthPx * 2;
+	const h = look.heightPx * 2;
+	if (zoomed.width !== w || zoomed.height !== h) {
+		throw new Error(`resvg returned ${zoomed.width}x${zoomed.height}, expected ${w}x${h}`);
+	}
+	const pixels = downsample2x(new Uint8Array(zoomed.pixels), w, h, look.widthPx, look.heightPx);
+	return encodePng(look.widthPx, look.heightPx, pixels);
 }
 
 /**
@@ -189,9 +210,5 @@ export async function renderScreenToPng(data, look = LOOK) {
 export async function renderScreenToPngWithoutFontFiles(data, look = LOOK) {
 	const grid = await screenToGrid(data, { cols: look.cols, rows: look.rows });
 	const svg = gridToSvg(grid, look);
-	const resvg = new Resvg(svg, {
-		background: look.background,
-		font: { loadSystemFonts: false },
-	});
-	return resvg.render().asPng();
+	return renderSupersampled(svg, { background: look.background, font: { loadSystemFonts: false } }, look);
 }

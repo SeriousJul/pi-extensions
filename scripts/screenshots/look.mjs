@@ -54,9 +54,11 @@ export const LOOK = {
 	 * The font family all cells are drawn with. This is the family name in the
 	 * committed TTFs' name tables (fc-scan), not the file names: resvg matches
 	 * SVG font-family against the family name of every loaded font, so the
-	 * name must equal what the file declares.
+	 * name must equal what the file declares. It is also the family
+	 * SeriousJul's terminals (ghostty, foot, alacritty, kitty) load, so a
+	 * screenshot matches what his terminal shows on screen.
 	 */
-	fontFamily: "MesloLGLDZ Nerd Font Mono",
+	fontFamily: "MesloLGMDZ Nerd Font Mono",
 	/** Font files, checked into the repo so CI renders the same glyphs. */
 	fontFiles: [
 		join(here, "fonts", "MesloLGMDZNFMono-Regular.ttf"),

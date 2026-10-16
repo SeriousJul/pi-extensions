@@ -26,11 +26,19 @@ and fails when a committed Screenshot no longer matches.
   the render pins grid size, theme, and font, so local and CI renders are
   byte-identical.
 - The font pin is exact at the rasterizer boundary: the SVG font-family is
-  the family name inside the committed TTFs' name tables, resvg loads only
-  the committed file paths with system fonts disabled, and the theme color
-  mode is pinned by environment (COLORTERM) before pi's theme loader runs.
-  A golden test proves the committed TTFs are what rasterizes: the same
-  screen rendered without the font files must differ.
+  the family name inside the committed TTFs' name tables (the MesloLGMDZ
+  Nerd Font Mono cut, the font the author's terminals load), resvg loads
+  only the committed file paths with system fonts disabled, and the theme
+  color mode is pinned by environment (COLORTERM) before pi's theme loader
+  runs. A golden test proves the committed TTFs are what rasterizes: the
+  same screen rendered without the font files must differ.
+- resvg rasterizes glyphs without antialiasing, so every render goes
+  through a 2x supersample: the SVG is rasterized at 2x and each 2x2 block
+  is averaged in linear sRGB light back to the pinned 1x size, which gives
+  the text the smooth edges a real terminal shows. The 1x pixels are
+  encoded by the pinned pure-JS PNG encoder (pako DEFLATE, fixed chunks)
+  instead of a machine libz, so the same screen gives the same bytes on
+  every node version in the test matrix and in CI.
 - The real-pi captures run with stub `fd` and `rg` binaries on PATH so pi's
   "not found" startup warnings - which depend on what the rendering machine
   has installed - never reach the screen.
