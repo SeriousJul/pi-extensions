@@ -344,9 +344,10 @@ export const CAPTURES = [
 		setup: async (ctx) => {
 			const root = join(WORK_ROOT, "lsp");
 			piHome(root);
-			// A small TypeScript project: the registry finds the pinned
-			// typescript-language-server, the other four languages are
-			// absent on the capture's PATH, and nothing has run yet.
+			// A small TypeScript project without a local typescript install:
+			// the registry falls back to the repo's node_modules/.bin, where
+			// only the TypeScript 7 native tsc resolves, and the other four
+			// languages are absent on the capture's PATH. Nothing has run yet.
 			const repo = join(root, "repo");
 			mkdirSync(repo, { recursive: true });
 			writeFileSync(
@@ -358,8 +359,12 @@ export const CAPTURES = [
 			const extension = mockProviderExtension();
 			// The capture's PATH is pinned to the stub bin plus the repo's
 			// node_modules/.bin, so which languages are found is identical
-			// on every machine: only typescript resolves.
+			// on every machine: only typescript (its native tsc) resolves.
+			// The node dir stays on PATH: the native tsc is a node-shebang
+			// shim on most platforms, and the registry's version probe execs
+			// it to tell TypeScript 7 from the 5.x/6.x compiler CLI.
 			const repoBin = join(ctx.repoRoot, "node_modules", ".bin");
+			const nodeDir = dirname(process.execPath);
 			return {
 				file: process.execPath,
 				args: [
@@ -374,7 +379,7 @@ export const CAPTURES = [
 					join(ctx.repoRoot, "extensions", "lsp", "index.ts"),
 				],
 				cwd: repo,
-				env: piEnv(root, { MOCK_MODEL_PORT: String(ctx.modelPort), PATH: `${stubBinDir()}:${repoBin}` }),
+				env: piEnv(root, { MOCK_MODEL_PORT: String(ctx.modelPort), PATH: `${stubBinDir()}:${repoBin}:${nodeDir}` }),
 				input: [{ data: "/lsp\r", delayMs: 400 }],
 				marker: "watcher: off",
 				startupMs: 8000,

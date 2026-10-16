@@ -3,14 +3,16 @@
  *
  * A real pi process in RPC mode with the extension loaded and no live LLM:
  * the scripted probe answers each prompt with real tool calls taken from a
- * case file. The fixture is a small TypeScript project and the real
- * typescript-language-server (pinned as a devDependency) runs in-process
- * behind the extension's client - the only seam the tests reach is the
- * machine, which is exactly what the ticket asks to be proven.
+ * case file. Each fixture is a small TypeScript project that declares its
+ * own typescript, and the real language servers run in-process behind the
+ * extension's client - the only seam the tests reach is the machine, which
+ * is exactly what the ticket asks to be proven.
  *
  * Three runs:
  *
- *   enabled   a trusted project with the TypeScript server available:
+ *   enabled   a trusted TypeScript 7 project: the fixture installs
+ *             typescript@7, so the project's own native tsc (tsc --lsp
+ *             --stdio) is the only server that can serve it (ADR 0044):
  *             1. a read seeds the Open documents; the server settles the
  *                Diagnostic baseline for the pre-existing error
  *             2. an edit that breaks the file: the result keeps pi's stock
@@ -22,17 +24,13 @@
  *                the Sweep at turn end reports it as one custom message,
  *                and the turn does not continue because of it
  *             5. lsp_hover returns the real type from the server
- *             6. lsp_reports no references when there are none
- *             and the file on disk holds exactly what the built-in tool
- *             wrote
+ *             6. lsp_references finds the real usage
+ *             the per-call log proves the serving server was the native
+ *             tsc, and the file on disk holds exactly what the built-in
+ *             tool wrote
  *   disabled  the same project with the server disabled by settings: no
  *             annotation, no note, the edit result is stock alone
  *   untrusted the same project, the run untrusted: nothing lsp runs
- *   ts7       the same loop over a TypeScript 7 project: the fixture
- *             installs typescript@7, and the extension must find the
- *             project's own native tsc (tsc --lsp --stdio) without any
- *             settings: typescript-language-server is on no PATH and
- *             could not serve TS7 anyway (ADR 0044)
  *
  *   node tests/lsp/e2e-rpc.mjs
  */
@@ -70,7 +68,7 @@ function fail(message) {
 	process.exit(1);
 }
 
-async function runSession(label, { trusted, settings, cases, check, prepare, withRepoBin = true }) {
+async function runSession(label, { trusted, settings, cases, check, prepare }) {
 	const cwd = mkdtempSync(join(tmpdir(), `lsp-e2e-${label}-`));
 	if (prepare) await prepare(cwd);
 	const caseFile = join(cwd, "e2e-case.json");
@@ -100,9 +98,11 @@ async function runSession(label, { trusted, settings, cases, check, prepare, wit
 			cwd,
 			env: {
 				...process.env,
-				// The pinned language server binary, and the extension's
-				// state (the per-call log) inside the throwaway project.
-				PATH: withRepoBin ? `${join(repoRoot, "node_modules", ".bin")}:${process.env.PATH ?? ""}` : process.env.PATH ?? "",
+				// No repo binaries on PATH: the fixture is self-contained and
+				// carries the typescript that serves it, so the run never
+				// depends on the repo's own toolchain or on what happens to
+				// be on the machine's PATH. The extension's state (the
+				// per-call log) lives in the throwaway project.
 				PI_CODING_AGENT_DIR: join(cwd, ".agent"),
 				E2E_CASE_FILE: caseFile,
 			},
@@ -385,8 +385,31 @@ function standardLoop() {
 	};
 }
 
+/**
+ * The standard loop over a TypeScript 7 project (ADR 0044): the fixture
+ * installs typescript@7, so the project's own native tsc is the only
+ * server that can serve it - no other server is on the run's PATH. The
+ * final check reads the per-call log and proves the serving server was
+ * that tsc.
+ */
 function runEnabled() {
-	return runSession("enabled", { trusted: true, settings: null, ...standardLoop() });
+	const loop = standardLoop();
+	return runSession("enabled", {
+		trusted: true,
+		settings: null,
+		prepare: installTypeScript7,
+		cases: loop.cases,
+		check: (messages, cwd) => {
+			loop.check(messages, cwd);
+			const log = join(cwd, ".agent", "lsp", cwd.replace(/[^A-Za-z0-9._-]/g, "-"), "usage.jsonl");
+			const records = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+			const servers = new Set(records.filter((r) => r.server).map((r) => r.server));
+			if (servers.size === 0) fail("the enabled run left no per-call log: no server served it");
+			if (![...servers].every((s) => s === "tsc")) {
+				fail(`the run was not served by the native tsc: ${[...servers].join(", ")}`);
+			}
+		},
+	});
 }
 
 /** Install TypeScript 7 in the fixture: the project's own compiler. */
@@ -397,37 +420,6 @@ async function installTypeScript7(cwd) {
 		timeout: 180_000,
 		stdio: "pipe",
 	});
-}
-
-/**
- * The standard loop over a TypeScript 7 project (ADR 0044): the fixture
- * installs typescript@7, no language server is on any PATH, so the only
- * way the loop passes is the project's own native tsc (tsc --lsp
- * --stdio), found by the registry without any settings. The final check
- * reads the per-call log and proves the server that served was that tsc.
- */
-function runTs7Enabled() {
-	const loop = standardLoop();
-	return runSession(
-		"ts7",
-		{
-			trusted: true,
-			settings: null,
-			prepare: installTypeScript7,
-			withRepoBin: false,
-			cases: loop.cases,
-			check: (messages, cwd) => {
-				loop.check(messages, cwd);
-				const log = join(cwd, ".agent", "lsp", cwd.replace(/[^A-Za-z0-9._-]/g, "-"), "usage.jsonl");
-				const records = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-				const servers = new Set(records.filter((r) => r.server).map((r) => r.server));
-				if (servers.size === 0) fail("the TS7 run left no per-call log: no server served it");
-				if (![...servers].every((s) => s === "tsc")) {
-					fail(`the TS7 run was not served by the native tsc: ${[...servers].join(", ")}`);
-				}
-			},
-		},
-	);
 }
 
 function runDisabled() {
@@ -529,8 +521,6 @@ function runUntrusted() {
 (async () => {
 	await runEnabled();
 	console.log("ok: enabled run");
-	await runTs7Enabled();
-	console.log("ok: ts7 run");
 	await runDisabled();
 	console.log("ok: disabled run");
 	await runUntrusted();

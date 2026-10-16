@@ -82,7 +82,7 @@ export const EXPECTED_LINES = {
 	"lsp-status": [
 		"lsp: /tmp/pi-extensions-capture/lsp/repo",
 		"project: trusted",
-		"TypeScript: not started - typescript-language-server",
+		"TypeScript: not started - tsc",
 		"C/C++: absent - clangd not found on PATH",
 		"Rust: absent - rust-analyzer not found on PATH",
 		"Python: absent - basedpyright or pyright not found on PATH",
