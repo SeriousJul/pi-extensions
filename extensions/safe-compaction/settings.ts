@@ -7,10 +7,17 @@
  * key by key. A malformed value falls back to its default and is reported
  * in the returned error list; it never throws. There is no settings
  * command in v1: the file is edited by hand.
+ *
+ * The reader also parses the top-level `retry` section of the same files,
+ * the same section pi's settings manager reads. The wiring forwards the
+ * result to pi's `compact()`, so the thinking-free re-run honors the user's
+ * retry budget: a transient stream drop retries before the guard degrades
+ * to the checkpoint.
  */
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { RetryPolicy } from "@earendil-works/pi-ai";
 
 export interface SafeCompactionSettings {
 	/** Turn the extension on or off. Off: pi's built-in summarizer runs
@@ -25,6 +32,15 @@ export const DEFAULTS: SafeCompactionSettings = {
 };
 
 const SECTION = "safeCompaction";
+const RETRY_SECTION = "retry";
+
+/** pi's own defaults for the `retry` section, per pi's settings manager. */
+export const RETRY_DEFAULTS: Required<RetryPolicy> = {
+	enabled: true,
+	maxRetries: 3,
+	baseDelayMs: 2000,
+	maxAgentDelayMs: 60000,
+};
 
 function globalSettingsPath(env: NodeJS.ProcessEnv): string {
 	return path.join(env.PI_CODING_AGENT_DIR ?? path.join(os.homedir(), ".pi", "agent"), "settings.json");
@@ -60,16 +76,27 @@ function sectionOf(obj: Record<string, unknown> | null, name: string): Record<st
 	return section as Record<string, unknown>;
 }
 
-function parseBool(key: string, value: unknown, fallback: boolean, errors: string[]): boolean {
+function parseBool(section: string, key: string, value: unknown, fallback: boolean, errors: string[]): boolean {
 	if (value === undefined || value === null) return fallback;
 	if (typeof value === "boolean") return value;
-	errors.push(`${SECTION}.${key} must be a boolean, got: ${JSON.stringify(value)}`);
+	errors.push(`${section}.${key} must be a boolean, got: ${JSON.stringify(value)}`);
 	return fallback;
 }
 
-/** Read the extension settings: project file overrides global, key by key.
- * Malformed values fall back to their default and are reported. */
-export function readSafeCompactionSettings(cwd: string, env: NodeJS.ProcessEnv = process.env): { settings: SafeCompactionSettings; errors: string[] } {
+function parseNumber(section: string, key: string, value: unknown, fallback: number, errors: string[]): number {
+	if (value === undefined || value === null) return fallback;
+	if (typeof value === "number" && Number.isFinite(value)) return value;
+	errors.push(`${section}.${key} must be a number, got: ${JSON.stringify(value)}`);
+	return fallback;
+}
+
+/** Read the extension settings and pi's retry policy: the project file
+ * overrides the global file, key by key. Malformed values fall back to
+ * their defaults and are reported. */
+export function readSafeCompactionSettings(
+	cwd: string,
+	env: NodeJS.ProcessEnv = process.env,
+): { settings: SafeCompactionSettings; retry: Required<RetryPolicy>; errors: string[] } {
 	const errors: string[] = [];
 	const { obj: globalObj, error: globalError } = readJson(globalSettingsPath(env));
 	const { obj: projectObj, error: projectError } = readJson(projectSettingsPath(cwd));
@@ -77,10 +104,17 @@ export function readSafeCompactionSettings(cwd: string, env: NodeJS.ProcessEnv =
 	if (projectError) errors.push(projectError);
 	const globalSection = sectionOf(globalObj, SECTION);
 	const projectSection = sectionOf(projectObj, SECTION);
-
+	const globalRetry = sectionOf(globalObj, RETRY_SECTION);
+	const projectRetry = sectionOf(projectObj, RETRY_SECTION);
 	return {
 		settings: {
-			enabled: parseBool("enabled", projectSection?.enabled ?? globalSection?.enabled, DEFAULT_ENABLED, errors),
+			enabled: parseBool(SECTION, "enabled", projectSection?.enabled ?? globalSection?.enabled, DEFAULT_ENABLED, errors),
+		},
+		retry: {
+			enabled: parseBool(RETRY_SECTION, "enabled", projectRetry?.enabled ?? globalRetry?.enabled, RETRY_DEFAULTS.enabled, errors),
+			maxRetries: parseNumber(RETRY_SECTION, "maxRetries", projectRetry?.maxRetries ?? globalRetry?.maxRetries, RETRY_DEFAULTS.maxRetries, errors),
+			baseDelayMs: parseNumber(RETRY_SECTION, "baseDelayMs", projectRetry?.baseDelayMs ?? globalRetry?.baseDelayMs, RETRY_DEFAULTS.baseDelayMs, errors),
+			maxAgentDelayMs: parseNumber(RETRY_SECTION, "maxAgentDelayMs", projectRetry?.maxAgentDelayMs ?? globalRetry?.maxAgentDelayMs, RETRY_DEFAULTS.maxAgentDelayMs, errors),
 		},
 		errors,
 	};

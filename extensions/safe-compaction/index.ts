@@ -7,9 +7,10 @@
  * of the compaction reserve) then pays for thinking and for the summary at
  * once, and a long-thinking model stops mid-summary and fails the whole
  * compaction. The handler re-runs pi's own compaction with thinking
- * disabled - identical prompts, budgets, and split-turn handling - and
- * degrades to the deterministic checkpoint when even that run cannot write
- * a summary, so the session never strands in an ever-growing context.
+ * disabled - identical prompts, budgets, and split-turn handling, and the
+ * user's retry policy from the same settings files - and degrades to the
+ * deterministic checkpoint when even that run cannot write a summary, so
+ * the session never strands in an ever-growing context.
  *
  * The handler must never throw: an unhandled error would hand the request
  * back to the built-in summarizer with thinking still on, which is exactly
@@ -19,8 +20,8 @@
  */
 import type { ExtensionAPI, SessionBeforeCompactEvent } from "@earendil-works/pi-coding-agent";
 import { compact, type CompactionResult, type FileOperations } from "@earendil-works/pi-coding-agent";
-import type { Model } from "@earendil-works/pi-ai";
-import { buildCheckpoint, shouldTakeOverSummarization, type CheckpointFileOps, type CheckpointMessage } from "./core.ts";
+import type { Model, ProviderHeaders } from "@earendil-works/pi-ai";
+import { buildCheckpoint, computeFileLists, shouldTakeOverSummarization, type CheckpointMessage } from "./core.ts";
 import { readSafeCompactionSettings } from "./settings.ts";
 
 type Preparation = SessionBeforeCompactEvent["preparation"];
@@ -32,7 +33,7 @@ export interface BeforeCompactContext {
 	modelRegistry: {
 		getApiKeyAndHeaders(
 			model: Model<any>,
-		): Promise<{ ok: true; apiKey?: string; headers?: Record<string, string | undefined>; baseUrl?: string; env?: Record<string, string> } | { ok: false; error: string }>;
+		): Promise<{ ok: true; apiKey?: string; headers?: ProviderHeaders; baseUrl?: string; env?: Record<string, string> } | { ok: false; error: string }>;
 	};
 	thinkingLevel?: string;
 	ui: {
@@ -44,7 +45,7 @@ function errorText(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
 }
 
-function stringHeaders(headers: Record<string, string | undefined> | undefined): Record<string, string> | undefined {
+function stringHeaders(headers: ProviderHeaders | undefined): Record<string, string> | undefined {
 	if (!headers) return undefined;
 	const out: Record<string, string> = {};
 	for (const [key, value] of Object.entries(headers)) {
@@ -55,26 +56,22 @@ function stringHeaders(headers: Record<string, string | undefined> | undefined):
 
 /** The extractive fallback compaction: pi's own preparation, no LLM call.
  * The previous summary rides through verbatim, so nothing already
- * summarized is lost. */
+ * summarized is lost. The file lists are computed once in the core and
+ * reused for the summary text and the result's details. */
 export function checkpointResult(preparation: Preparation): CompactionResult {
 	const fileOps = preparation.fileOps as unknown as FileOperations | undefined;
 	const messages: readonly CheckpointMessage[] = [...preparation.messagesToSummarize, ...preparation.turnPrefixMessages];
-	const modified = new Set<string>([...(fileOps?.edited ?? []), ...(fileOps?.written ?? [])]);
-	const readFiles = [...(fileOps?.read ?? [])].filter((f) => !modified.has(f)).sort();
-	const modifiedFiles = [...modified].sort();
-	const checkpointFileOps: CheckpointFileOps | undefined = fileOps
-		? { read: fileOps.read, written: fileOps.written, edited: fileOps.edited }
-		: undefined;
+	const fileLists = computeFileLists(fileOps ? { read: fileOps.read, written: fileOps.written, edited: fileOps.edited } : undefined);
 	const summary = buildCheckpoint({
 		previousSummary: preparation.previousSummary,
 		messages,
-		fileOps: checkpointFileOps,
+		fileLists,
 	});
 	return {
 		summary,
 		firstKeptEntryId: preparation.firstKeptEntryId,
 		tokensBefore: preparation.tokensBefore,
-		details: { readFiles, modifiedFiles },
+		details: { readFiles: fileLists.readFiles, modifiedFiles: fileLists.modifiedFiles },
 	};
 }
 
@@ -92,7 +89,7 @@ export function createBeforeCompactHandler(env: NodeJS.ProcessEnv) {
 			return { compaction: checkpointResult(event.preparation) };
 		};
 		try {
-			const { settings, errors } = readSafeCompactionSettings(ctx.cwd || process.cwd(), env);
+			const { settings, retry, errors } = readSafeCompactionSettings(ctx.cwd || process.cwd(), env);
 			for (const error of errors) {
 				try {
 					ctx.ui.notify(`safe-compaction: ${error}`, "error");
@@ -119,7 +116,9 @@ export function createBeforeCompactHandler(env: NodeJS.ProcessEnv) {
 
 			// The only difference from the native path: the summarization
 			// runs with thinking disabled, so the reserve-derived output
-			// budget pays for summary text only.
+			// budget pays for summary text only. The retry policy is pi's
+			// own, read from the same settings files, so a transient stream
+			// drop spends the user's retry budget before the checkpoint.
 			const callModel = auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;
 			try {
 				const result = await compact(
@@ -132,6 +131,7 @@ export function createBeforeCompactHandler(env: NodeJS.ProcessEnv) {
 					"off",
 					undefined,
 					auth.env,
+					retry,
 				);
 				if (signal?.aborted) return cancel();
 				return { compaction: result };

@@ -30,6 +30,12 @@
  *      session keeps serving prompts.
  *   5. non-reasoning model: the guard stands aside and the built-in
  *      summarizer writes the entry without any thinking on the wire.
+ *   6. retry honored: a transient stream drop in the thinking-free run
+ *      spends the user's retry budget from settings.json; the re-run
+ *      retries the summarization and the compaction completes with the
+ *      LLM summary, not the checkpoint.
+ *   7. retry disabled: the same drop with `retry.enabled: false` lands
+ *      the re-run on the deterministic checkpoint after one attempt.
  *
  *   node tests/safe-compaction/e2e.mjs
  */
@@ -82,9 +88,19 @@ function scenario(name, fn) {
  *     completes. The engine behavior recorded in the issue.
  *   "always-fail" - every summarization request runs to the cap, so even
  *     the guard's thinking-free run cannot write a summary.
+ *   "fail-then-succeed" - the first thinking-free summarization request
+ *     fails with a transient 502; later requests complete. Agent requests
+ *     always complete.
  */
+function messageText(message) {
+	if (typeof message.content === "string") return message.content;
+	if (Array.isArray(message.content)) return message.content.map((p) => (p && typeof p.text === "string" ? p.text : "")).join("");
+	return "";
+}
+
 function startMockServer(mode) {
 	const requests = [];
+	let thinkingFreeSummaries = 0;
 	const server = createServer((req, res) => {
 		if (req.method !== "POST" || req.url !== "/v1/chat/completions") {
 			res.writeHead(404, { "content-type": "application/json" });
@@ -100,15 +116,31 @@ function startMockServer(mode) {
 			} catch {
 				parsed = null;
 			}
-			const isSummarization = parsed !== null && parsed.messages?.length === 2 && !parsed.tools;
+			// pi wraps the conversation it summarizes in <conversation> tags
+			// in the prompt text, so the marker identifies a summarization
+			// request by content. A shape guess (message count) misclassifies
+			// the first prompt of a fresh session, which is also a
+			// two-message, toolless request.
+			const isSummarization = parsed !== null && Array.isArray(parsed.messages) && parsed.messages.some((m) => messageText(m).includes("<conversation>"));
 			const thinkingOn = parsed?.enable_thinking === true || typeof parsed?.reasoning_effort === "string";
+			const transientDrop = mode === "fail-then-succeed" && isSummarization && !thinkingOn && thinkingFreeSummaries === 0;
+			if (isSummarization && !thinkingOn) thinkingFreeSummaries += 1;
 			const record = {
 				isSummarization,
 				thinkingOn,
+				transientDrop,
 				maxTokens: parsed?.max_tokens,
 				bodyChars: body.length,
 			};
 			requests.push(record);
+
+			if (transientDrop) {
+				// A gateway-style transient failure: the retry policy should
+				// spend the user's budget here, not the checkpoint.
+				res.writeHead(502, { "content-type": "application/json" });
+				res.end(JSON.stringify({ error: { message: "Bad Gateway" } }));
+				return;
+			}
 
 			if (!isSummarization) {
 				// Agent request: short complete answer, no tools.
@@ -454,6 +486,76 @@ async function runNonReasoningNative() {
 	}
 }
 
+async function runRetryHonored() {
+	// A transient stream drop in the thinking-free run. The retry budget
+	// from the same settings.json pi reads carries the re-run through it:
+	// the summarization is re-sent and the compaction completes with the
+	// LLM summary instead of the checkpoint.
+	const { tmp, project, agentDir } = makeDirs("safe-compaction-e2e-retry-");
+	try {
+		writeAgentSettings(agentDir, {
+			...BASE_SETTINGS,
+			retry: { enabled: true, maxRetries: 2, baseDelayMs: 50, maxAgentDelayMs: 1000 },
+		});
+		const mock = await startMockServer("fail-then-succeed");
+		const { session, sm } = await makeSession({ project, agentDir, mockPort: mock.port, reasoning: true, thinkingLevel: "xhigh", guard: true, prior: true });
+		const events = compactionEvents(session);
+		await session.prompt("continue the work");
+		const before = mock.requests.length;
+		await session.prompt("one more turn");
+		await mock.close();
+
+		const summarization = mock.requests.filter((r) => r.isSummarization);
+		const thinkingFree = summarization.filter((r) => !r.thinkingOn);
+		const compactionEnds = events.filter((e) => e.type === "compaction_end");
+		check(thinkingFree.some((r) => r.transientDrop), "the thinking-free run hit a transient stream drop");
+		check(thinkingFree.length >= 2, `the retry budget re-sent the summarization (${thinkingFree.length} attempts)`);
+		check(compactionEnds.some((e) => e.result !== undefined), "the compaction completed after the retry");
+		check(!compactionEnds.some((e) => e.errorMessage), "no compaction failure surfaced");
+		const entries = compactionEntries(sm);
+		check(entries.length === 2, "one compaction entry after the prior one");
+		const entry = entries[1];
+		check(entry?.fromHook === true, "the entry is extension-provided");
+		check(entry?.summary?.includes("Summarize the prior work.") ?? false, "the retried run wrote the LLM summary");
+		check(!(entry?.summary?.includes("Checkpoint (deterministic)") ?? false), "no checkpoint was needed");
+		check(mock.requests.length > before, "the session keeps serving prompts after the retry");
+	} finally {
+		rmSync(tmp, { recursive: true, force: true });
+	}
+}
+
+async function runRetryDisabledCheckpoint() {
+	// The same transient drop, with the user's retry disabled. The re-run
+	// honors the empty budget: one attempt, then the deterministic
+	// checkpoint completes the compaction.
+	const { tmp, project, agentDir } = makeDirs("safe-compaction-e2e-noretry-");
+	try {
+		writeAgentSettings(agentDir, { ...BASE_SETTINGS, retry: { enabled: false } });
+		const mock = await startMockServer("fail-then-succeed");
+		const { session, sm } = await makeSession({ project, agentDir, mockPort: mock.port, reasoning: true, thinkingLevel: "xhigh", guard: true, prior: true });
+		const events = compactionEvents(session);
+		await session.prompt("continue the work");
+		const before = mock.requests.length;
+		await session.prompt("one more turn");
+		await mock.close();
+
+		const summarization = mock.requests.filter((r) => r.isSummarization);
+		const thinkingFree = summarization.filter((r) => !r.thinkingOn);
+		const compactionEnds = events.filter((e) => e.type === "compaction_end");
+		check(thinkingFree.some((r) => r.transientDrop), "the thinking-free run hit the transient stream drop");
+		check(thinkingFree.length === 1, `no retry was attempted (${thinkingFree.length} attempt)`);
+		check(compactionEnds.some((e) => e.result !== undefined), "the compaction completed via the checkpoint");
+		check(!compactionEnds.some((e) => e.errorMessage), "no compaction failure surfaced");
+		const entries = compactionEntries(sm);
+		const entry = entries[entries.length - 1];
+		check(entry?.fromHook === true, "the checkpoint entry is extension-provided");
+		check(entry?.summary?.includes("Checkpoint (deterministic)") ?? false, "the checkpoint is labeled as extractive");
+		check(mock.requests.length > before, "the session keeps serving prompts after the checkpoint");
+	} finally {
+		rmSync(tmp, { recursive: true, force: true });
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Run
 // ---------------------------------------------------------------------------
@@ -463,6 +565,8 @@ await scenario("guard takeover", runGuardTakeover);
 await scenario("thinking off", runThinkingOffNative);
 await scenario("checkpoint fallback", runCheckpointFallback);
 await scenario("non-reasoning model", runNonReasoningNative);
+await scenario("retry honored", runRetryHonored);
+await scenario("retry disabled", runRetryDisabledCheckpoint);
 
 if (failures > 0) {
 	console.error(`\n${failures} failure(s)`);

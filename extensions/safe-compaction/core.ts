@@ -3,9 +3,9 @@
  *
  * Pure decision and checkpoint logic, no pi imports: the wiring (index.ts)
  * keeps the settings read, the auth resolution, and the re-run of pi's own
- * compaction with thinking disabled; the core owns the takeover decision and
- * the deterministic checkpoint the wiring writes when no LLM summary can be
- * written.
+ * compaction with thinking disabled and the user's retry policy; the core
+ * owns the takeover decision and the deterministic checkpoint the wiring
+ * writes when no LLM summary can be written.
  *
  * Why the takeover: pi's compaction summarizes with the session's thinking
  * level, but budgets the summary's output as a share of the compaction
@@ -41,12 +41,25 @@ export interface CheckpointFileOps {
 	edited: ReadonlySet<string>;
 }
 
+/** The file lists of a checkpoint range. Computed once and reused for both
+ * the summary text and the compaction result's details, so the two can
+ * never diverge. */
+export interface CheckpointFileLists {
+	readFiles: string[];
+	modifiedFiles: string[];
+}
+
 export interface CheckpointInput {
 	/** The summary of the previous compaction, carried over verbatim. */
 	previousSummary?: string;
 	/** The messages being compacted away (history plus turn prefix, in order). */
 	messages: readonly CheckpointMessage[];
+	/** The file-operation sets to derive the file lists from. Ignored when
+	 * `fileLists` is provided. */
 	fileOps?: CheckpointFileOps;
+	/** Precomputed file lists, reused for the summary text and the caller's
+	 * result details. */
+	fileLists?: CheckpointFileLists;
 	limits?: CheckpointLimits;
 }
 
@@ -67,6 +80,16 @@ export const CHECKPOINT_LIMITS: Required<CheckpointLimits> = {
 	blockChars: 240,
 	argChars: 140,
 };
+
+/** Derive the file lists from pi's file-operation sets: read files that
+ * were never modified, and files written or edited, both sorted. */
+export function computeFileLists(fileOps: CheckpointFileOps | undefined): CheckpointFileLists {
+	if (!fileOps) return { readFiles: [], modifiedFiles: [] };
+	const modified = new Set<string>([...fileOps.edited, ...fileOps.written]);
+	const readFiles = [...fileOps.read].filter((f) => !modified.has(f)).sort();
+	const modifiedFiles = [...modified].sort();
+	return { readFiles, modifiedFiles };
+}
 
 /** The takeover decision: the native compaction is unsafe exactly when the
  * model reasons and the session's thinking level is on, because the level
@@ -97,7 +120,7 @@ function textOf(content: unknown): string {
 	return parts.join(" ").trim();
 }
 
-function toolCallLines(content: unknown): string[] {
+function toolCallLines(content: unknown, argChars: number): string[] {
 	if (!Array.isArray(content)) return [];
 	const lines: string[] = [];
 	for (const block of content) {
@@ -110,6 +133,10 @@ function toolCallLines(content: unknown): string[] {
 		} catch {
 			args = String(call.arguments);
 		}
+		// Cap the arguments before the line budget is applied, so one call
+		// with a huge argument (a write with a big content field) cannot
+		// spend the whole line budget on itself.
+		args = oneLine(args, argChars);
 		lines.push(`- ${call.name}: ${args}`);
 	}
 	return lines;
@@ -121,16 +148,10 @@ function oneLine(text: string, maxChars: number): string {
 	return `${flat.slice(0, maxChars - 3)}...`;
 }
 
-function fileSections(fileOps: CheckpointFileOps | undefined): string {
-	if (!fileOps) return "";
-	const modified = new Set<string>([...fileOps.edited, ...fileOps.written]);
-	const readFiles = [...fileOps.read]
-		.filter((f) => !modified.has(f))
-		.sort();
-	const modifiedFiles = [...modified].sort();
+function fileSections(lists: CheckpointFileLists): string {
 	const sections: string[] = [];
-	if (readFiles.length > 0) sections.push(`<read-files>\n${readFiles.join("\n")}\n</read-files>`);
-	if (modifiedFiles.length > 0) sections.push(`<modified-files>\n${modifiedFiles.join("\n")}\n</modified-files>`);
+	if (lists.readFiles.length > 0) sections.push(`<read-files>\n${lists.readFiles.join("\n")}\n</read-files>`);
+	if (lists.modifiedFiles.length > 0) sections.push(`<modified-files>\n${lists.modifiedFiles.join("\n")}\n</modified-files>`);
 	if (sections.length === 0) return "";
 	return `\n\n${sections.join("\n\n")}`;
 }
@@ -177,7 +198,7 @@ export function buildCheckpoint(input: CheckpointInput): string {
 	for (const message of input.messages) {
 		const text = textOf(message.content);
 		if (message.role === "assistant" && text) append(oneLine(text, limits.blockChars));
-		for (const line of toolCallLines(message.content)) append(oneLine(line, limits.blockChars));
+		for (const line of toolCallLines(message.content, limits.argChars)) append(oneLine(line, limits.blockChars));
 		if (truncated) break;
 	}
 	lines.push("## Progress");
@@ -186,7 +207,8 @@ export function buildCheckpoint(input: CheckpointInput): string {
 	if (truncated) lines.push(`[... progress index truncated at ${limits.progressChars} characters]`);
 	lines.push("");
 
-	const files = fileSections(input.fileOps);
+	const fileLists = input.fileLists ?? computeFileLists(input.fileOps);
+	const files = fileSections(fileLists);
 	if (files) lines.push(files.trimEnd());
 
 	return lines.join("\n").trimEnd() + "\n";

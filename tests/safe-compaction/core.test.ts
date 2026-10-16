@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	buildCheckpoint,
+	computeFileLists,
 	shouldTakeOverSummarization,
 	type CheckpointFileOps,
 	type CheckpointMessage,
@@ -36,6 +37,27 @@ const fileOps: CheckpointFileOps = {
 	written: new Set(["src/app.ts"]),
 	edited: new Set(["src/app.ts"]),
 };
+
+// ---------------------------------------------------------------------------
+// computeFileLists
+// ---------------------------------------------------------------------------
+
+describe("computeFileLists", () => {
+	it("separates modified files from read-only files and sorts both", () => {
+		expect(computeFileLists(fileOps)).toEqual({ readFiles: ["a/b.ts", "c/d.ts"], modifiedFiles: ["src/app.ts"] });
+	});
+
+	it("drops a read file that was also modified", () => {
+		expect(computeFileLists({ read: new Set(["src/app.ts"]), written: new Set(["src/app.ts"]), edited: new Set() })).toEqual({
+			readFiles: [],
+			modifiedFiles: ["src/app.ts"],
+		});
+	});
+
+	it("returns empty lists when there are no file operations", () => {
+		expect(computeFileLists(undefined)).toEqual({ readFiles: [], modifiedFiles: [] });
+	});
+});
 
 function user(text: string): CheckpointMessage {
 	return { role: "user", content: text };
@@ -115,6 +137,37 @@ describe("buildCheckpoint", () => {
 		const text = buildCheckpoint({ messages });
 		const progress = text.slice(text.indexOf("## Progress"));
 		expect(progress).toContain("progress index truncated at 6000 characters");
+	});
+
+	it("caps one tool call's arguments at the argument budget", () => {
+		const text = buildCheckpoint({
+			messages: [
+				user("go"),
+				assistant("writing", [
+					{ type: "toolCall", id: "c1", name: "write", arguments: { path: "big.txt", content: "x".repeat(500) } },
+				]),
+			],
+		});
+		const line = text.split("\n").find((l) => l.startsWith("- write: "));
+		expect(line).toBeDefined();
+		const argsPart = line!.slice("- write: ".length);
+		// CHECKPOINT_LIMITS.argChars bounds the arguments before the line
+		// budget is applied, and the cut is marked.
+		expect(argsPart.length).toBeLessThanOrEqual(140);
+		expect(argsPart.endsWith("...")).toBe(true);
+		expect(text).not.toContain("x".repeat(141));
+	});
+
+	it("uses the provided file lists instead of deriving them from the file ops", () => {
+		const text = buildCheckpoint({
+			messages: [user("go")],
+			fileOps,
+			fileLists: { readFiles: ["only-this.ts"], modifiedFiles: ["only-modified.ts"] },
+		});
+		expect(text).toContain("only-this.ts");
+		expect(text).toContain("only-modified.ts");
+		expect(text).not.toContain("a/b.ts");
+		expect(text).not.toContain("src/app.ts");
 	});
 
 	it("stays small: a checkpoint never grows past its budgets plus the prior summary", () => {

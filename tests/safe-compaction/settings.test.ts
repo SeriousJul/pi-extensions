@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DEFAULTS, readSafeCompactionSettings } from "../../extensions/safe-compaction/settings";
+import { RETRY_DEFAULTS, DEFAULTS, readSafeCompactionSettings } from "../../extensions/safe-compaction/settings";
 
 // ---------------------------------------------------------------------------
 // Fixture: a temp home with a global settings dir, and a temp project cwd.
@@ -75,5 +75,45 @@ describe("readSafeCompactionSettings", () => {
 		const { settings, errors } = readSafeCompactionSettings(project, env);
 		expect(settings.enabled).toBe(false);
 		expect(errors.some((e) => e.includes(projectPath()))).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// The retry policy: pi's own section, forwarded to the re-run
+// ---------------------------------------------------------------------------
+
+describe("readSafeCompactionSettings retry policy", () => {
+	it("returns pi's retry defaults when no retry section exists", () => {
+		const { retry, errors } = readSafeCompactionSettings(project, env);
+		expect(retry).toEqual(RETRY_DEFAULTS);
+		expect(errors).toEqual([]);
+	});
+
+	it("reads the global retry section", () => {
+		writeJson(globalPath(), { retry: { maxRetries: 5 } });
+		const { retry } = readSafeCompactionSettings(project, env);
+		expect(retry).toEqual({ ...RETRY_DEFAULTS, maxRetries: 5 });
+	});
+
+	it("project retry values override global, key by key", () => {
+		writeJson(globalPath(), { retry: { enabled: false, maxRetries: 5 } });
+		writeJson(projectPath(), { retry: { maxRetries: 1 } });
+		const { retry } = readSafeCompactionSettings(project, env);
+		expect(retry).toEqual({ ...RETRY_DEFAULTS, enabled: false, maxRetries: 1 });
+	});
+
+	it("a malformed retry value falls back to the default and is reported", () => {
+		writeJson(globalPath(), { retry: { baseDelayMs: "fast" } });
+		const { retry, errors } = readSafeCompactionSettings(project, env);
+		expect(retry).toEqual(RETRY_DEFAULTS);
+		expect(errors).toHaveLength(1);
+		expect(errors[0]).toContain("retry.baseDelayMs");
+	});
+
+	it("a non-object retry section is ignored, like pi does", () => {
+		writeJson(globalPath(), { retry: [1, 2, 3] });
+		const { retry, errors } = readSafeCompactionSettings(project, env);
+		expect(retry).toEqual(RETRY_DEFAULTS);
+		expect(errors).toEqual([]);
 	});
 });

@@ -74,7 +74,7 @@ function makeEvent(signal?: AbortSignal): SessionBeforeCompactEvent {
 interface FakeCtx {
 	model?: Model<any>;
 	thinkingLevel?: string;
-	auth: { ok: true; apiKey?: string; headers?: Record<string, string | undefined>; baseUrl?: string; env?: Record<string, string> } | { ok: false; error: string };
+	auth: { ok: true; apiKey?: string; headers?: Record<string, string | null>; baseUrl?: string; env?: Record<string, string> } | { ok: false; error: string };
 	notifications: { message: string; type: string }[];
 	ctx: Parameters<ReturnType<typeof createBeforeCompactHandler>>[1];
 }
@@ -165,6 +165,9 @@ describe("takeover and fallback", () => {
 		// The provider at the dead port refuses the connection, so the
 		// thinking-free run fails and the guard degrades to the checkpoint.
 		// What is under test is the decision to call at all, not the call.
+		// Retry is disabled so the dead call fails fast instead of spending
+		// the backoff budget; the e2e pins the retry forwarding.
+		writeAgentSettings({ retry: { enabled: false } });
 		const fake = makeCtx({ model: reasoningModel("http://127.0.0.1:1"), thinkingLevel: "xhigh" });
 		const result = await handler(makeEvent(), fake.ctx);
 		expect(result?.compaction).toBeDefined();
@@ -192,7 +195,7 @@ describe("takeover and fallback", () => {
 	});
 
 	it("keeps working when a settings value is malformed: default stays on and the error is reported", async () => {
-		writeAgentSettings({ safeCompaction: { enabled: "yes-please" } });
+		writeAgentSettings({ safeCompaction: { enabled: "yes-please" }, retry: { enabled: false } });
 		const fake = makeCtx({ model: reasoningModel(), thinkingLevel: "xhigh" });
 		const result = await handler(makeEvent(), fake.ctx);
 		expect(fake.notifications.some((n) => n.type === "error" && n.message.includes("must be a boolean"))).toBe(true);
@@ -202,7 +205,9 @@ describe("takeover and fallback", () => {
 	});
 
 	it("never throws out of the handler", async () => {
-		// A context with a broken UI must not stop the fallback.
+		// A context with a broken UI must not stop the fallback. Retry is
+		// disabled so any provider failure lands fast on the checkpoint.
+		writeAgentSettings({ retry: { enabled: false } });
 		const fake = makeCtx({ model: reasoningModel(), thinkingLevel: "xhigh" });
 		const ctx = { ...fake.ctx, ui: { notify: () => { throw new Error("ui broken"); } } } as never;
 		const result = await handler(makeEvent(), ctx);
