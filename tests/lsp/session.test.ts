@@ -147,7 +147,7 @@ describe("resolveForFile", () => {
 		const s = session();
 		const refused = refusalOf(s.resolveForFile(root, "app.c", true, false));
 		expect(refused).toContain("definitely-not-installed");
-		expect(refused).toContain("not found on PATH");
+		expect(refused).toContain("looked on PATH");
 	});
 
 	it("refuses a language with no registry entry", () => {
@@ -284,6 +284,86 @@ describe("the sweep", () => {
 		await s.onEditToolCall(root, "app.ts", true, false, true);
 		await s.sweep(root);
 		expect(await s.sweep(root)).toBeUndefined();
+	});
+});
+
+describe("TypeScript 7 server selection", () => {
+	it("serves a file whose root carries a typescript@7 the machine registry cannot see", async () => {
+		const pkg = path.join(root, "pkg");
+		makeProject(null, {
+			"pkg/tsconfig.json": "{}",
+			"pkg/app.ts": "let a = 1; // ERR:package error\n",
+			"pkg/node_modules/typescript/package.json": JSON.stringify({ name: "typescript", version: "7.0.2" }),
+		});
+		const tsc = path.join(pkg, "node_modules", ".bin", "tsc");
+		fs.mkdirSync(path.dirname(tsc), { recursive: true });
+		fs.writeFileSync(tsc, "#!/bin/sh\nexit 0\n");
+		fs.chmodSync(tsc, 0o755);
+		// A PATH with only the fakes: no TypeScript server on the machine,
+		// so only the package's own typescript@7 can serve the file.
+		const empty = path.join(root, "empty");
+		fs.mkdirSync(empty, { recursive: true });
+		const s = new LspSession({
+			makeClient,
+			env: { ...process.env, PATH: `${bin}:${empty}`, LSP_NO_WATCH: "1", PI_CODING_AGENT_DIR: agentDir },
+		});
+		lastSession = s;
+		bind({});
+		const res = s.resolveForFile(root, "pkg/app.ts", true, false);
+		if ("refusal" in res) throw new Error(`refused: ${res.refusal}`);
+		expect(res.root).toBe(pkg);
+		script({});
+		await s.runTool("lsp_diagnostics", root, { file: "pkg/app.ts" }, true, false);
+		expect(clients[0].command).toBe(tsc);
+		expect(clients[0].args).toEqual(["--lsp", "--stdio"]);
+	});
+
+	it("a package root with its own typescript@7 is served by it, not by the machine-level server", async () => {
+		const pkg = path.join(root, "pkg");
+		makeProject(null, {
+			"pkg/tsconfig.json": "{}",
+			"pkg/app.ts": "let a = 1;\n",
+			"pkg/node_modules/typescript/package.json": JSON.stringify({ name: "typescript", version: "7.0.2" }),
+		});
+		const tsc = path.join(pkg, "node_modules", ".bin", "tsc");
+		fs.mkdirSync(path.dirname(tsc), { recursive: true });
+		fs.writeFileSync(tsc, "#!/bin/sh\nexit 0\n");
+		fs.chmodSync(tsc, 0o755);
+		const classic = path.join(bin, "typescript-language-server");
+		fs.writeFileSync(classic, "#!/bin/sh\nexit 0\n");
+		fs.chmodSync(classic, 0o755);
+		const s = session();
+		const res = s.resolveForFile(root, "pkg/app.ts", true, false);
+		if ("refusal" in res) throw new Error(`refused: ${res.refusal}`);
+		// The machine-level pick is the classic server on PATH...
+		expect(res.entry.command).toBe(classic);
+		script({});
+		await s.runTool("lsp_diagnostics", root, { file: "pkg/app.ts" }, true, false);
+		// ...but the package root's own native tsc serves the file.
+		expect(clients[0].command).toBe(tsc);
+		expect(clients[0].args).toEqual(["--lsp", "--stdio"]);
+		expect(clients[0].root).toBe(pkg);
+	});
+
+	it("a package root with a classic typescript keeps the machine-level server", async () => {
+		const pkg = path.join(root, "pkg");
+		makeProject(null, {
+			"pkg/tsconfig.json": "{}",
+			"pkg/app.ts": "let a = 1;\n",
+			"pkg/node_modules/typescript/package.json": JSON.stringify({ name: "typescript", version: "5.9.3" }),
+		});
+		const tsc = path.join(pkg, "node_modules", ".bin", "tsc");
+		fs.mkdirSync(path.dirname(tsc), { recursive: true });
+		fs.writeFileSync(tsc, "#!/bin/sh\nexit 0\n");
+		fs.chmodSync(tsc, 0o755);
+		const classic = path.join(bin, "typescript-language-server");
+		fs.writeFileSync(classic, "#!/bin/sh\nexit 0\n");
+		fs.chmodSync(classic, 0o755);
+		const s = session();
+		script({});
+		await s.runTool("lsp_diagnostics", root, { file: "pkg/app.ts" }, true, false);
+		expect(clients[0].command).toBe(classic);
+		expect(clients[0].args).toEqual(["--stdio"]);
 	});
 });
 

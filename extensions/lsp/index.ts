@@ -72,7 +72,7 @@ function projectAvailable(ctx: ExtensionContext, env: NodeJS.ProcessEnv): boolea
 	const { settings, projectExplicitlyEnabled } = readLspSettings(ctx.cwd, env);
 	if (!settings.enabled) return false;
 	if (!ctx.isProjectTrusted() && !projectExplicitlyEnabled) return false;
-	const resolved = resolveRegistry(settings, env);
+	const resolved = resolveRegistry(settings, env, ctx.cwd);
 	return resolved.some((r) => r.status === "ready");
 }
 
@@ -112,7 +112,7 @@ export default function lspExtension(pi: ExtensionAPI): void {
 		if (!projectAvailable(ctx, env)) return undefined;
 		if (!LSP_TOOL_NAMES.some((name) => pi.getActiveTools().includes(name))) return undefined;
 		const { settings } = readLspSettings(ctx.cwd, env);
-		const ready = resolveRegistry(settings, env).filter((r) => r.status === "ready");
+		const ready = resolveRegistry(settings, env, ctx.cwd).filter((r) => r.status === "ready");
 		const languages = Object.keys(readyByLang(ready));
 		if (languages.length === 0) return undefined;
 		return { systemPrompt: `${event.systemPrompt}\n\n${promptNoteFor(languages)}` };

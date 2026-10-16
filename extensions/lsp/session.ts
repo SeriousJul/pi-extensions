@@ -41,7 +41,7 @@ import {
 	type LspCrashInfo,
 } from "./client.ts";
 import { renderDiagnosticGroups, renderSweepMessage, severitiesForFilter, type DiagnosticFileGroup } from "./format.ts";
-import { languageForPath, resolveRegistry, type ResolvedServer } from "./registry.ts";
+import { languageForPath, nativeTypeScriptForRoot, resolveRegistry, BUILTIN_BY_LANG, type ResolvedServer } from "./registry.ts";
 import { rootForFile } from "./root.ts";
 import { readLspSettings } from "./settings.ts";
 import type { DiagnosticAnswer, LspDiagnostic } from "./types.ts";
@@ -240,10 +240,28 @@ export class LspSession {
 		if (!settings.enabled) return { refusal: "the lsp extension is disabled by settings" };
 		const lang = languageForPath(file);
 		if (lang === null) return { refusal: `no language server for the ${path.extname(file) || "unknown"} extension` };
-		const resolved = resolveRegistry(settings, this.env);
-		const entry = resolved.find((r) => r.lang === lang);
+		const resolved = resolveRegistry(settings, this.env, cwd);
+		let entry = resolved.find((r) => r.lang === lang);
+		// The machine-level registry resolves from the session root. A file
+		// whose own root carries a typescript@7 the session root does not is
+		// still served: that root's node_modules provides the native server.
+		if (entry?.status === "absent" && lang === "typescript" && !settings.servers[lang]?.command) {
+			const spec = BUILTIN_BY_LANG.typescript;
+			const local = nativeTypeScriptForRoot(rootForFile(file, cwd, lang, spec.rootMarkers, cwd), this.env);
+			if (local && spec.extensions && spec.rootMarkers) {
+				entry = {
+					status: "ready",
+					lang: spec.lang,
+					label: spec.label,
+					command: local.command,
+					args: local.args,
+					extensions: spec.extensions,
+					rootMarkers: spec.rootMarkers,
+				};
+			}
+		}
 		if (!entry || entry.status !== "ready") {
-			return { refusal: entry ? `${entry.label} server unavailable: ${entry.reason}` : `${lang}: no registry entry` };
+			return { refusal: entry ? `${entry.label} server unavailable: ${"reason" in entry ? entry.reason : "unavailable"}` : `${lang}: no registry entry` };
 		}
 		if (!trusted && !projectEnabled) {
 			return { refusal: `project not trusted: ${entry.label} will not start until the project is trusted, or lsp is enabled for this project in the project settings` };
@@ -277,26 +295,40 @@ export class LspSession {
 		if (this.closed) throw new LspServerDeadError(entry.label, "the session is shutting down");
 		const key = this.instanceKey(entry.lang, root);
 		let inst = this.servers.get(key);
-		if (!inst) {
-			const { settings } = readLspSettings(cwd, this.env);
-			this.enforceServerBound(entry.lang, root, settings.maxServers);
-			inst = {
-				lang: entry.lang,
-				label: entry.label,
-				root,
-				command: entry.command,
-				args: entry.args,
-				state: "starting",
-				restarts: 0,
-				client: null,
-				docs: new Map(),
-				docsOrder: [],
-				watcherState: "off",
-				lastAccess: this.now(),
-			};
-			this.servers.set(key, inst);
-			this.startClient(inst);
-		}
+			if (!inst) {
+				const { settings } = readLspSettings(cwd, this.env);
+				this.enforceServerBound(entry.lang, root, settings.maxServers);
+				let command = entry.command;
+				let args = entry.args;
+				// A TypeScript root whose own node_modules carries
+				// typescript@7 is served by that native tsc: the machine-level
+				// command (a typescript-language-server, or a global tsc) cannot
+				// serve the project's own newer compiler. An operator command
+				// override always wins over the auto-detection.
+				if (entry.lang === "typescript" && !settings.servers[entry.lang]?.command) {
+					const local = nativeTypeScriptForRoot(root, this.env);
+					if (local && local.command !== command) {
+						command = local.command;
+						args = local.args;
+					}
+				}
+				inst = {
+					lang: entry.lang,
+					label: entry.label,
+					root,
+					command,
+					args,
+					state: "starting",
+					restarts: 0,
+					client: null,
+					docs: new Map(),
+					docsOrder: [],
+					watcherState: "off",
+					lastAccess: this.now(),
+				};
+				this.servers.set(key, inst);
+				this.startClient(inst);
+			}
 		inst.lastAccess = this.now();
 		return inst;
 	}
@@ -1206,7 +1238,7 @@ export class LspSession {
 
 	statusLines(cwd: string, trusted: boolean, projectEnabled: boolean): string[] {
 		const { settings, errors } = readLspSettings(cwd, this.env);
-		const resolved = resolveRegistry(settings, this.env);
+		const resolved = resolveRegistry(settings, this.env, cwd);
 		const lines: string[] = [`lsp: ${cwd}`];
 		if (!settings.enabled) {
 			lines.push("  disabled by settings: no server runs, no tools, no note, no annotation");
@@ -1235,9 +1267,9 @@ export class LspSession {
 				} else {
 					lines.push(`    ${entry.label}: running - ${path.basename(inst.command)} - ${docs} open doc${docs === 1 ? "" : "s"} (root ${shortRoot(inst.root, cwd)})`);
 				}
-			} else {
-				lines.push(`    ${entry.label}: not started - ${path.basename(entry.command)} found on PATH`);
-			}
+				} else {
+					lines.push(`    ${entry.label}: not started - ${commandLabel(entry.command, cwd)}`);
+				}
 		}
 		const watchRoots = [...new Set(this.runningServers().map((i) => i.root))];
 		if (watchRoots.length === 0) {
@@ -1340,6 +1372,19 @@ function crashSummary(info: LspCrashInfo): string {
 
 function shortRoot(root: string, cwd: string): string {
 	return root === cwd ? "." : root;
+}
+
+/**
+ * The name the /lsp status shows for a command that has not started yet:
+ * the bare name for a PATH binary, the project-relative path for one the
+ * project's own node_modules provides.
+ */
+function commandLabel(command: string, cwd: string): string {
+	if (path.isAbsolute(command)) {
+		const rel = path.relative(cwd, command);
+		if (rel.length > 0 && !rel.startsWith("..") && !path.isAbsolute(rel)) return `${path.basename(command)} (${rel})`;
+	}
+	return path.basename(command);
 }
 
 /** Display a path relative to the root when it is inside it. */

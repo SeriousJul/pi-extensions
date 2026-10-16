@@ -101,12 +101,17 @@ export class FakeLspClient {
 	private readonly onDiagnostics: (uri: string, diags: LspDiagnostic[]) => void;
 	private readonly onCrash: (info: LspCrashInfo) => void;
 	private readonly mode: "push" | "pull" | "none";
+	/** The command the session asked the fake to run: what the real spawn would take. */
+	readonly command: string;
+	readonly args: string[];
 	private dead = false;
 	private crashedOnce = false;
 
 	constructor(private readonly opts: LspClientOptions, private readonly script: FakeClientScript = {}) {
 		this.label = opts.label;
 		this.root = opts.root;
+		this.command = opts.command;
+		this.args = opts.args;
 		this.mode = script.mode ?? "push";
 		this.onDiagnostics = opts.onDiagnostics ?? (() => undefined);
 		this.onCrash = opts.onCrash ?? (() => undefined);
