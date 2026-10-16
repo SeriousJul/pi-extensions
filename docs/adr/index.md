@@ -48,3 +48,4 @@ chosen option, and the options that were considered.
 | [0041](/adr/0041-the-lsp-client-is-in-process-on-the-official-protocol-packages) | The LSP client is in-process on `vscode-jsonrpc` plus `vscode-languageserver-protocol`, not an MCP bridge and not a hand-rolled framing. |
 | [0042](/adr/0042-the-watcher-discovers-and-the-stat-check-verifies) | The watcher discovers changed paths and a stat check verifies currency; a watcher event is never proof, and a degraded watcher falls back to a stat pass plus a bounded git sweep. |
 | [0043](/adr/0043-language-servers-are-lazy-per-root-and-never-shared) | Language servers are lazy, one per (language, root) pair, bounded to four per session, and never shared across sessions. |
+| [0044](/adr/0044-the-typescript-7-native-server-is-found-per-root) | The TypeScript 7 native server is found per root: the project's own typescript@7 wins ahead of every PATH binary, and a PATH tsc only counts when it reports version 7 or newer. |

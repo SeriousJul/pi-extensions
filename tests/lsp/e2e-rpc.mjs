@@ -28,6 +28,11 @@
  *   disabled  the same project with the server disabled by settings: no
  *             annotation, no note, the edit result is stock alone
  *   untrusted the same project, the run untrusted: nothing lsp runs
+ *   ts7       the same loop over a TypeScript 7 project: the fixture
+ *             installs typescript@7, and the extension must find the
+ *             project's own native tsc (tsc --lsp --stdio) without any
+ *             settings: typescript-language-server is on no PATH and
+ *             could not serve TS7 anyway (ADR 0044)
  *
  *   node tests/lsp/e2e-rpc.mjs
  */
@@ -65,8 +70,9 @@ function fail(message) {
 	process.exit(1);
 }
 
-async function runSession(label, { trusted, settings, cases, check }) {
+async function runSession(label, { trusted, settings, cases, check, prepare, withRepoBin = true }) {
 	const cwd = mkdtempSync(join(tmpdir(), `lsp-e2e-${label}-`));
+	if (prepare) await prepare(cwd);
 	const caseFile = join(cwd, "e2e-case.json");
 	writeFileSync(join(cwd, "tsconfig.json"), JSON.stringify({
 		compilerOptions: { strict: true, noEmit: true, target: "es2022" },
@@ -96,7 +102,7 @@ async function runSession(label, { trusted, settings, cases, check }) {
 				...process.env,
 				// The pinned language server binary, and the extension's
 				// state (the per-call log) inside the throwaway project.
-				PATH: `${join(repoRoot, "node_modules", ".bin")}:${process.env.PATH ?? ""}`,
+				PATH: withRepoBin ? `${join(repoRoot, "node_modules", ".bin")}:${process.env.PATH ?? ""}` : process.env.PATH ?? "",
 				PI_CODING_AGENT_DIR: join(cwd, ".agent"),
 				E2E_CASE_FILE: caseFile,
 			},
@@ -243,136 +249,181 @@ function activeLspTools(messages) {
 	return added.filter((name) => name.startsWith("lsp_"));
 }
 
+/**
+ * The standard six-case loop and its disk check, shared by the classic run
+ * and the TypeScript 7 run: same fixture, same expectations. The only
+ * difference is which real server serves it.
+ */
+function standardLoop() {
+	return {
+		cases: [
+			{
+				name: "reads seed the Open documents and settle the baseline",
+				calls: [
+					{ id: "seed-app", name: "read", arguments: { path: "app.ts", limit: 50 } },
+					{ id: "seed-util", name: "read", arguments: { path: "util.ts", limit: 50 } },
+				],
+				// The real server needs its project load before it
+				// publishes; give it time so the baseline is settled by
+				// the edit case.
+				settle: 12_000,
+				check: (messages) => {
+					if (activeLspTools(messages).length === 0) {
+						throw new Error("the lsp tools did not activate in a project that has a server");
+					}
+				},
+			},
+			{
+				name: "an edit that breaks the file: stock text kept, only the new diagnostic reported",
+				toolCall: {
+					id: "edit-break",
+					name: "edit",
+					arguments: {
+						path: "app.ts",
+						edits: [{ oldText: "console.log(helper);", newText: "const broken: string = 42;\nconsole.log(helper);" }],
+					},
+				},
+				waitForResultId: "edit-break",
+				expectResult: (result) => {
+					const [stock, note] = result.content;
+					if (!stock.text.startsWith("Successfully replaced 1 block(s) in app.ts.")) {
+						throw new Error(`stock text missing or changed:\n${stock.text}`);
+					}
+					if (stock.text.includes("LSP:")) throw new Error(`stock block touched by the annotation:\n${stock.text}`);
+					if (!note || note.type !== "text") throw new Error(`no annotation block after the stock text:\n${JSON.stringify(result.content)}`);
+					if (!note.text.includes("1 new diagnostic")) throw new Error(`annotation does not name the one new diagnostic:\n${note.text}`);
+					if (!note.text.includes(EDIT_ERROR)) throw new Error(`the new diagnostic is not named:\n${note.text}`);
+					if (note.text.includes(PRE_EXISTING_ERROR)) {
+						throw new Error(`the pre-existing error rode the annotation (baseline failed):\n${note.text}`);
+					}
+				},
+			},
+			{
+				name: "lsp_diagnostics answers from the real server",
+				toolCall: { id: "diag-app", name: "lsp_diagnostics", arguments: { file: "app.ts" } },
+				waitForResultId: "diag-app",
+				expectResult: (result) => {
+					const text = result.content[0].text;
+					if (!text.includes("2 diagnostics")) throw new Error(`expected both current errors, got:\n${text}`);
+					if (!text.includes(PRE_EXISTING_ERROR) || !text.includes(EDIT_ERROR)) {
+						throw new Error(`the current errors are missing:\n${text}`);
+					}
+				},
+			},
+			{
+				name: "the Sweep reports a late external change and the turn does not continue",
+				toolCall: {
+					id: "edit-clean",
+					name: "edit",
+					arguments: {
+						path: "app.ts",
+						edits: [{ oldText: "console.log(helper);", newText: "// note\nconsole.log(helper);" }],
+					},
+				},
+				// A change lands outside the edit tool, after the tool
+				// results and before the turn end: the probe writes it
+				// right before the turn's done answer, in a file the
+				// server has open.
+				externalWrite: { file: "util.ts", text: "export const utilValue: boolean = 1;\n" },
+				waitForResultId: "edit-clean",
+				expectResult: (result) => {
+					const [stock, note] = result.content;
+					if (!stock.text.startsWith("Successfully replaced 1 block(s) in app.ts.")) {
+						throw new Error(`stock text missing:\n${stock.text}`);
+					}
+					if (!note?.text?.includes("no new diagnostics")) {
+						throw new Error(`a clean edit must report no new diagnostics:\n${note?.text}`);
+					}
+				},
+				waitForCustom: true,
+				expectCustom: (custom) => {
+					const text = Array.isArray(custom.content) ? custom.content.map((b) => b.text).join("") : custom.content;
+					if (!text.includes("LSP sweep:")) throw new Error(`sweep message malformed:\n${text}`);
+					if (!text.includes("util.ts")) throw new Error(`the sweep did not name the changed file:\n${text}`);
+					if (!text.includes(SWEEP_ERROR)) throw new Error(`the sweep did not name the new error:\n${text}`);
+				},
+			},
+			{
+				name: "lsp_hover returns the real type",
+				toolCall: { id: "hover-n", name: "lsp_hover", arguments: { file: "app.ts", line: 1, character: 4 } },
+				waitForResultId: "hover-n",
+				expectResult: (result) => {
+					const text = result.content[0].text;
+					if (!text.includes("number")) throw new Error(`hover did not carry the type:\n${text}`);
+				},
+			},
+			{
+				name: "lsp_references finds the real usage",
+				toolCall: { id: "refs-helper", name: "lsp_references", arguments: { file: "app.ts", line: 2, character: 19 } },
+				waitForResultId: "refs-helper",
+				expectResult: (result) => {
+					const text = result.content[0].text;
+					// helper is defined at L2 and used once, at L7 in the
+				// final file: the server must name that usage.
+					if (!text.includes("L7")) {
+						throw new Error(`the real usage of helper was not found:\n${text}`);
+					}
+				},
+			},
+		],
+		check: (messages, cwd) => {
+			const doneAnswers = messages.filter((m) => m.role === "assistant" && lastText(m) === "done");
+			// One "done" per case. A sweep continuation would add another.
+			if (doneAnswers.length !== 6) {
+				fail(`the sweep continued the turn: ${doneAnswers.length} turn-end answers`);
+			}
+			const app = readFileSync(join(cwd, "app.ts"), "utf8");
+			const expected =
+				APP_TS.replace("console.log(helper);", "const broken: string = 42;\nconsole.log(helper);").replace(
+					"console.log(helper);",
+					"// note\nconsole.log(helper);",
+				);
+			if (app !== expected) {
+				fail(`the file on disk is not what the built-in tool wrote:\n${app}`);
+			}
+		},
+	};
+}
+
 function runEnabled() {
+	return runSession("enabled", { trusted: true, settings: null, ...standardLoop() });
+}
+
+/** Install TypeScript 7 in the fixture: the project's own compiler. */
+async function installTypeScript7(cwd) {
+	const { execFileSync } = await import("node:child_process");
+	execFileSync("npm", ["install", "typescript@7", "--no-audit", "--no-fund", "--loglevel=error"], {
+		cwd,
+		timeout: 180_000,
+		stdio: "pipe",
+	});
+}
+
+/**
+ * The standard loop over a TypeScript 7 project (ADR 0044): the fixture
+ * installs typescript@7, no language server is on any PATH, so the only
+ * way the loop passes is the project's own native tsc (tsc --lsp
+ * --stdio), found by the registry without any settings. The final check
+ * reads the per-call log and proves the server that served was that tsc.
+ */
+function runTs7Enabled() {
+	const loop = standardLoop();
 	return runSession(
-		"enabled",
+		"ts7",
 		{
 			trusted: true,
 			settings: null,
-			cases: [
-				{
-					name: "reads seed the Open documents and settle the baseline",
-					calls: [
-						{ id: "seed-app", name: "read", arguments: { path: "app.ts", limit: 50 } },
-						{ id: "seed-util", name: "read", arguments: { path: "util.ts", limit: 50 } },
-					],
-					// The real server needs its project load before it
-					// publishes; give it time so the baseline is settled by
-					// the edit case.
-					settle: 12_000,
-					check: (messages) => {
-						if (activeLspTools(messages).length === 0) {
-							throw new Error("the lsp tools did not activate in a project that has a server");
-						}
-					},
-				},
-				{
-					name: "an edit that breaks the file: stock text kept, only the new diagnostic reported",
-					toolCall: {
-						id: "edit-break",
-						name: "edit",
-						arguments: {
-							path: "app.ts",
-							edits: [{ oldText: "console.log(helper);", newText: "const broken: string = 42;\nconsole.log(helper);" }],
-						},
-					},
-					waitForResultId: "edit-break",
-					expectResult: (result) => {
-						const [stock, note] = result.content;
-						if (!stock.text.startsWith("Successfully replaced 1 block(s) in app.ts.")) {
-							throw new Error(`stock text missing or changed:\n${stock.text}`);
-						}
-						if (stock.text.includes("LSP:")) throw new Error(`stock block touched by the annotation:\n${stock.text}`);
-						if (!note || note.type !== "text") throw new Error(`no annotation block after the stock text:\n${JSON.stringify(result.content)}`);
-						if (!note.text.includes("1 new diagnostic")) throw new Error(`annotation does not name the one new diagnostic:\n${note.text}`);
-						if (!note.text.includes(EDIT_ERROR)) throw new Error(`the new diagnostic is not named:\n${note.text}`);
-						if (note.text.includes(PRE_EXISTING_ERROR)) {
-							throw new Error(`the pre-existing error rode the annotation (baseline failed):\n${note.text}`);
-						}
-					},
-				},
-				{
-					name: "lsp_diagnostics answers from the real server",
-					toolCall: { id: "diag-app", name: "lsp_diagnostics", arguments: { file: "app.ts" } },
-					waitForResultId: "diag-app",
-					expectResult: (result) => {
-						const text = result.content[0].text;
-						if (!text.includes("2 diagnostics")) throw new Error(`expected both current errors, got:\n${text}`);
-						if (!text.includes(PRE_EXISTING_ERROR) || !text.includes(EDIT_ERROR)) {
-							throw new Error(`the current errors are missing:\n${text}`);
-						}
-					},
-				},
-				{
-					name: "the Sweep reports a late external change and the turn does not continue",
-					toolCall: {
-						id: "edit-clean",
-						name: "edit",
-						arguments: {
-							path: "app.ts",
-							edits: [{ oldText: "console.log(helper);", newText: "// note\nconsole.log(helper);" }],
-						},
-					},
-					// A change lands outside the edit tool, after the tool
-					// results and before the turn end: the probe writes it
-					// right before the turn's done answer, in a file the
-					// server has open.
-					externalWrite: { file: "util.ts", text: "export const utilValue: boolean = 1;\n" },
-					waitForResultId: "edit-clean",
-					expectResult: (result) => {
-						const [stock, note] = result.content;
-						if (!stock.text.startsWith("Successfully replaced 1 block(s) in app.ts.")) {
-							throw new Error(`stock text missing:\n${stock.text}`);
-						}
-						if (!note?.text?.includes("no new diagnostics")) {
-							throw new Error(`a clean edit must report no new diagnostics:\n${note?.text}`);
-						}
-					},
-					waitForCustom: true,
-					expectCustom: (custom) => {
-						const text = Array.isArray(custom.content) ? custom.content.map((b) => b.text).join("") : custom.content;
-						if (!text.includes("LSP sweep:")) throw new Error(`sweep message malformed:\n${text}`);
-						if (!text.includes("util.ts")) throw new Error(`the sweep did not name the changed file:\n${text}`);
-						if (!text.includes(SWEEP_ERROR)) throw new Error(`the sweep did not name the new error:\n${text}`);
-					},
-				},
-				{
-					name: "lsp_hover returns the real type",
-					toolCall: { id: "hover-n", name: "lsp_hover", arguments: { file: "app.ts", line: 1, character: 4 } },
-					waitForResultId: "hover-n",
-					expectResult: (result) => {
-						const text = result.content[0].text;
-						if (!text.includes("number")) throw new Error(`hover did not carry the type:\n${text}`);
-					},
-				},
-				{
-					name: "lsp_references finds the real usage",
-					toolCall: { id: "refs-helper", name: "lsp_references", arguments: { file: "app.ts", line: 2, character: 19 } },
-					waitForResultId: "refs-helper",
-					expectResult: (result) => {
-						const text = result.content[0].text;
-						// helper is defined at L2 and used once, at L7 in the
-						// final file: the server must name that usage.
-						if (!text.includes("L7")) {
-							throw new Error(`the real usage of helper was not found:\n${text}`);
-						}
-					},
-				},
-			],
+			prepare: installTypeScript7,
+			withRepoBin: false,
+			cases: loop.cases,
 			check: (messages, cwd) => {
-				const doneAnswers = messages.filter((m) => m.role === "assistant" && lastText(m) === "done");
-				// One "done" per case. A sweep continuation would add another.
-				if (doneAnswers.length !== 6) {
-					fail(`the sweep continued the turn: ${doneAnswers.length} turn-end answers`);
-				}
-				const app = readFileSync(join(cwd, "app.ts"), "utf8");
-				const expected =
-					APP_TS.replace("console.log(helper);", "const broken: string = 42;\nconsole.log(helper);").replace(
-						"console.log(helper);",
-						"// note\nconsole.log(helper);",
-					);
-				if (app !== expected) {
-					fail(`the file on disk is not what the built-in tool wrote:\n${app}`);
+				loop.check(messages, cwd);
+				const log = join(cwd, ".agent", "lsp", cwd.replace(/[^A-Za-z0-9._-]/g, "-"), "usage.jsonl");
+				const records = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+				const servers = new Set(records.filter((r) => r.server).map((r) => r.server));
+				if (servers.size === 0) fail("the TS7 run left no per-call log: no server served it");
+				if (![...servers].every((s) => s === "tsc")) {
+					fail(`the TS7 run was not served by the native tsc: ${[...servers].join(", ")}`);
 				}
 			},
 		},
@@ -478,6 +529,8 @@ function runUntrusted() {
 (async () => {
 	await runEnabled();
 	console.log("ok: enabled run");
+	await runTs7Enabled();
+	console.log("ok: ts7 run");
 	await runDisabled();
 	console.log("ok: disabled run");
 	await runUntrusted();

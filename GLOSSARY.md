@@ -871,6 +871,16 @@ server.
 _Avoid_: language map (says nothing about starting a server), provider
 (pi's word for a model API), config table
 
+**Native TypeScript server**:
+The Language server that TypeScript 7 carries inside its native Go
+compiler binary, run as `tsc --lsp --stdio`. TypeScript 7 removed the
+node-based tsserver, so no other server can serve a TypeScript 7 project.
+The registry finds it per root from the project's own `typescript@7`
+install, ahead of any binary on PATH (ADR 0044).
+_Avoid_: tsgo server (tsgo is the native preview's binary name; the
+term covers the released compiler too), TS7 tsserver (that process no
+longer exists)
+
 **Document sync**:
 Keeping a Language server's copy of a file equal to the file on disk
 before any answer is served from it. Disk is the only truth: an edit made

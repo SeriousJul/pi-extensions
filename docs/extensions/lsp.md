@@ -2,8 +2,8 @@
 
 Gives the agent the project's real compiler in the loop. The extension
 speaks the Language Server Protocol in-process (ADR 0041) to the language
-servers already on the machine - it never installs, downloads, or builds
-one. Its primary job is **Post-edit diagnostics**: after an edit, the
+servers already on the machine or in the project's own `node_modules` -
+it never installs, downloads, or builds one. Its primary job is **Post-edit diagnostics**: after an edit, the
 project's Language server reports what the edit broke, and the note is
 attached to the result the agent is already looking at. Navigation is a
 narrow second set, taken only where a Language server clearly beats
@@ -93,17 +93,31 @@ extension would spend, so the two do not fight.
 
 ## Server registry
 
-The built-in table, overridable by settings. It only finds what is
-already on the machine: a language with no binary on `PATH` is absent,
-and that is reported in `/lsp`, not in a tool error.
+The built-in table, overridable by settings. It only finds what already
+exists: a language whose server is neither on `PATH` nor in the project's
+own `node_modules` is absent, and that is reported in `/lsp`, not in a
+tool error.
 
 | Language | Server | Root markers |
 | --- | --- | --- |
-| TypeScript / JavaScript | `typescript-language-server` | `tsconfig.json`, `package.json` |
+| TypeScript / JavaScript | the project's own `typescript@7` native `tsc` when present, else `typescript-language-server`, else a PATH `tsc` of version 7 or newer | `tsconfig.json`, `package.json` |
 | C / C++ | `clangd` | `compile_commands.json`, `compile_flags.txt` |
 | Rust | `rust-analyzer` | `Cargo.toml` |
 | Python | `basedpyright`, else `pyright` | `pyproject.toml` |
 | Go | `gopls` | `go.mod` |
+
+**TypeScript 7 needs no configuration.** TypeScript 7 is the native Go
+compiler. It dropped `tsserver`, so `typescript-language-server` cannot
+serve a TypeScript 7 project, and it carries its own Language server:
+`tsc --lsp --stdio`. The registry walks up from the session root for the
+project's own `typescript` package and reads its version: 7 or newer means
+that `node_modules/.bin/tsc` serves the project, ahead of any binary on
+`PATH` (ADR 0044). A nearer `typescript` below version 7 stops the walk
+and keeps the classic server for that tree. A `tsc` on `PATH` is used
+only after it reports version 7 or newer: the 5.x and 6.x `tsc` is a
+compiler CLI that rejects `--lsp`. An operator `command` override always
+wins over this detection, and an override that names `tsc` or `tsgo`
+without `args` is started with `--lsp --stdio`.
 
 ## Settings
 
@@ -130,7 +144,11 @@ A `lsp` section in pi's settings files, global or per project:
   runs, no tools, no note, no annotation.
 - `servers` (per language): `command` and `args` override how the
   Language server starts; `disabled` turns one language off. The
-  built-in registry stays a default, not a decision made for you.
+  built-in registry stays a default, not a decision made for you. On a
+  TypeScript 7 project nothing to set: the project's own `typescript@7`
+  is found automatically. Pin the server anyway with
+  `{ "typescript": { "command": "node_modules/.bin/tsc" } }`, or turn the
+  language off with `{ "typescript": { "disabled": true } }`.
 - `severity` (default `"warning"`): error and warning reach the model;
   set to `"info"` to include info.
 - `maxOpenDocuments` (default 32): the Open document LRU cap per server.

@@ -53,7 +53,8 @@ export interface ServerSpec {
  * back to pyright; every other language names one binary. TypeScript names
  * two kinds of server: typescript-language-server for TypeScript 5 and 6,
  * and the native TypeScript 7 compiler's built-in LSP, which needs the
- * --lsp --stdio pair (issue #153).
+ * the
+ * --lsp --stdio pair.
  */
 export const BUILTIN_REGISTRY: ServerSpec[] = [
 	{
