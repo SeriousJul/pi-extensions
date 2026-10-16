@@ -20,9 +20,12 @@
  * personal package; the way to opt out is to not load the file.
  *
  * Self-shell rows (`renderShell: "self"`, today only `edit`) are drawn by pi
- * in a plain container that carries no background, so their header paints the
- * row's pending/success/error background itself, with the same tokens pi's
- * shell box applies, and starts one cell in like every other header.
+ * in a plain container that carries no background, so their header paints
+ * that background itself. It follows the body's color: pi's edit box paints
+ * its lines from its diff-preview state, and the header reads that same
+ * state at paint time, so header and body always agree. A self-shell tool
+ * without that state falls back to the row's pending/success/error color.
+ * Every header starts one cell in, like the shell-box rows' headers.
  */
 import type { ExtensionAPI, ToolRenderers } from "@earendil-works/pi-coding-agent";
 import { Container, Text, type Component } from "@earendil-works/pi-tui";
@@ -84,7 +87,7 @@ const ROW_STATE_KEY = Symbol.for("pi-extensions.tool-headers.row");
 interface RowState {
 	inner?: Component;
 	wrapper?: HeaderedComponent;
-	/** The row state the header's state background reads. Updated on every
+	/** The row state the header's background falls back to. Updated on every
 	 * render, so a repaint after a state change repaints the background. */
 	line?: { isPartial: boolean; isError: boolean };
 }
@@ -104,9 +107,13 @@ function rowState(state: unknown): RowState {
  * caches the result renderer owns - render exactly as pi would draw them.
  *
  * A self-shell row is drawn by pi in a plain container that carries no
- * background: the tool's own box paints only its own lines, so the header
- * paints the row's state background itself (the same tokens pi's shell box
- * applies) and starts one cell in, matching the shell-box rows' indent.
+ * background, so the header paints that background itself. It follows the
+ * body's color: pi's edit box is the inner component, it keeps its diff
+ * preview state on itself, and the header reads that state at paint time -
+ * the same mapping pi's box uses - so header and body always share one
+ * background. A self-shell tool without that state falls back to the row's
+ * pending, success, and error colors. The header starts one cell in,
+ * matching the shell-box rows' indent.
  */
 export function wrapToolRenderers(toolName: string, inner: ToolRenderers | undefined): ToolRenderers | undefined {
 	if (!inner) return undefined;
@@ -124,14 +131,7 @@ export function wrapToolRenderers(toolName: string, inner: ToolRenderers | undef
 		entry.line.isPartial = context.isPartial;
 		entry.line.isError = context.isError;
 		if (selfShell) {
-			painter.bg = (text: string) => {
-				const color = entry.line!.isPartial
-					? "toolPendingBg"
-					: entry.line!.isError
-						? "toolErrorBg"
-						: "toolSuccessBg";
-				return theme.bg(color, text);
-			};
+			painter.bg = (text: string) => theme.bg(headerBgColor(entry), text);
 		}
 		let innerComponent: Component;
 		if (callRenderer) {
@@ -152,6 +152,25 @@ export function wrapToolRenderers(toolName: string, inner: ToolRenderers | undef
 		return entry.wrapper;
 	};
 	return wrapped;
+}
+
+/**
+ * The self-shell header's background, read at paint time so it follows the
+ * body within the same frame. pi's edit box keeps its state on itself:
+ * once the diff preview lands it owns the color (green, or red on a preview
+ * error), exactly as pi's box maps it; before that, or on a settled
+ * execution error, its `settledError` flag does. Any other inner component
+ * has neither field: the row's own state applies.
+ */
+function headerBgColor(entry: RowState): "toolPendingBg" | "toolSuccessBg" | "toolErrorBg" {
+	const inner = entry.inner as { preview?: unknown; settledError?: boolean } | undefined;
+	const preview = inner?.preview;
+	if (preview) return "error" in (preview as object) ? "toolErrorBg" : "toolSuccessBg";
+	if (inner && typeof inner.settledError === "boolean") {
+		return inner.settledError ? "toolErrorBg" : "toolPendingBg";
+	}
+	const row = entry.line!;
+	return row.isPartial ? "toolPendingBg" : row.isError ? "toolErrorBg" : "toolSuccessBg";
 }
 
 export function registerToolHeaders(pi: ExtensionAPI): void {

@@ -102,7 +102,7 @@ describe("wrapToolRenderers", () => {
 		expect(lines[1].trim()).toBe('tool_search jobId="jb-1"'); // pi's stock call line
 	});
 
-	it("paints a self-shell header with the row-state background, indented like the shell-box rows", () => {
+	it("paints a self-shell header from the row state when the inner component carries no edit state", () => {
 		const { theme: recTheme, bgs } = recordingTheme();
 		const wrapped = wrapToolRenderers("edit", {
 			renderShell: "self",
@@ -117,23 +117,38 @@ describe("wrapToolRenderers", () => {
 		expect(lines[1]).toBe("edit line"); // the tool's own lines keep their own framing
 	});
 
-	it("re-paints the self-shell header background when the row state changes", () => {
+	it("follows the edit box's preview state: header and body share one background", () => {
 		const { theme: recTheme, bgs } = recordingTheme();
+		// The stand-in keeps pi's edit box state shape on itself.
+		const box = {
+			preview: undefined as undefined | { diff?: string; error?: string },
+			settledError: false,
+			render: () => ["body-line"],
+			invalidate: () => {},
+		};
 		const wrapped = wrapToolRenderers("edit", {
 			renderShell: "self",
-			renderCall: () => fakeComponent(["edit line"]),
+			renderCall: () => box as unknown as Component,
 		} as never);
 		const state: object = {};
 		const component = wrapped!.renderCall!({}, recTheme, makeContext(state, undefined)) as Component;
-		component.render(40); // settled and not an error: the success background
-		const pending = makeContext(state, undefined, { isPartial: true });
-		const errored = makeContext(state, undefined, { isPartial: false, isError: true });
-		wrapped!.renderCall!({}, recTheme, pending);
-		component.render(40);
-		wrapped!.renderCall!({}, recTheme, errored);
-		const lines = component.render(40);
-		expect(bgs.map((b) => b.color)).toEqual(["toolSuccessBg", "toolPendingBg", "toolErrorBg"]);
-		expect(lines[0].length).toBe(40); // the line still spans the full width
+		component.render(40); // no preview yet: the pending color, like the body
+		box.preview = { diff: "-foo\n+baz" };
+		wrapped!.renderCall!({}, recTheme, makeContext(state, undefined));
+		component.render(40); // the preview lands: green before the result does
+		box.preview = { error: "text not found" };
+		wrapped!.renderCall!({}, recTheme, makeContext(state, undefined));
+		component.render(40); // a preview error: red
+		box.preview = undefined;
+		box.settledError = true;
+		wrapped!.renderCall!({}, recTheme, makeContext(state, undefined));
+		component.render(40); // a settled execution error without a preview: red
+		expect(bgs.map((b) => b.color)).toEqual([
+			"toolPendingBg",
+			"toolSuccessBg",
+			"toolErrorBg",
+			"toolErrorBg",
+		]);
 	});
 
 	it("paints no background for a shell-box row, whose shell box carries it", () => {

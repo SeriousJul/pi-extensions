@@ -38,11 +38,14 @@ timers) forever.
   is a different layer, and it is what finally tells a `bash` row from a
   `bash_bg` row.
 - A self-shell row's header (`renderShell: "self"`, today only `edit`) paints
-  the row's pending, success, and error background itself, in the same tokens
-  pi's shell box applies, and starts one cell in like the shell-box rows'
-  headers. Pi draws self-shell rows into a plain container that carries no
-  background, and the tool's own box paints only its own lines, so without
-  this the header would sit on the terminal's plain background.
+  the row's background itself, because pi draws self-shell rows into a plain
+  container that carries no background. It follows the body's color: pi's
+  edit box paints its lines from its diff-preview state (green once the diff
+  is computed, red on a preview error, grey until then), and the header reads
+  that same state at paint time, so header and body always share one
+  background. A self-shell tool without that state gets the row's pending,
+  success, and error colors instead. The header starts one cell in like the
+  shell-box rows' headers.
 - The wrapper must keep pi's inner component in its own state key and hand
   it back as `context.lastComponent`, because pi's built-in renderers call
   `setText` on that component and would crash on the wrapper.
