@@ -18,6 +18,11 @@
  *
  * Always on, with no setting and no command. It is a rendering opinion in a
  * personal package; the way to opt out is to not load the file.
+ *
+ * Self-shell rows (`renderShell: "self"`, today only `edit`) are drawn by pi
+ * in a plain container that carries no background, so their header paints the
+ * row's pending/success/error background itself, with the same tokens pi's
+ * shell box applies, and starts one cell in like every other header.
  */
 import type { ExtensionAPI, ToolRenderers } from "@earendil-works/pi-coding-agent";
 import { Container, Text, type Component } from "@earendil-works/pi-tui";
@@ -35,9 +40,10 @@ class HeaderLine implements Component {
 	constructor(
 		private readonly displayName: string,
 		private readonly paint: ToolRowHeaderPainter,
+		private readonly indent = 0,
 	) {}
 	render(width: number): string[] {
-		return [paintToolRowHeader(this.displayName, width, this.paint)];
+		return [paintToolRowHeader(this.displayName, width, this.paint, this.indent)];
 	}
 	invalidate(): void {}
 }
@@ -55,9 +61,10 @@ class HeaderedComponent extends Container {
 	constructor(
 		displayName: string,
 		paint: ToolRowHeaderPainter,
+		indent = 0,
 	) {
 		super();
-		this.header = new HeaderLine(displayName, paint);
+		this.header = new HeaderLine(displayName, paint, indent);
 		this.addChild(this.header);
 	}
 
@@ -77,6 +84,9 @@ const ROW_STATE_KEY = Symbol.for("pi-extensions.tool-headers.row");
 interface RowState {
 	inner?: Component;
 	wrapper?: HeaderedComponent;
+	/** The row state the header's state background reads. Updated on every
+	 * render, so a repaint after a state change repaints the background. */
+	line?: { isPartial: boolean; isError: boolean };
 }
 function rowState(state: unknown): RowState {
 	const holder = (state ?? {}) as Record<symbol, unknown>;
@@ -92,18 +102,37 @@ function rowState(state: unknown): RowState {
  * prepended to its call line. `renderShell` is preserved, so `edit` keeps its
  * self shell; `renderResult` is left untouched, so the row's result - and the
  * caches the result renderer owns - render exactly as pi would draw them.
+ *
+ * A self-shell row is drawn by pi in a plain container that carries no
+ * background: the tool's own box paints only its own lines, so the header
+ * paints the row's state background itself (the same tokens pi's shell box
+ * applies) and starts one cell in, matching the shell-box rows' indent.
  */
 export function wrapToolRenderers(toolName: string, inner: ToolRenderers | undefined): ToolRenderers | undefined {
 	if (!inner) return undefined;
 	const displayName = mcpDisplayName(toolName);
 	const wrapped: ToolRenderers = { ...inner };
 	const callRenderer = inner.renderCall;
+	const selfShell = inner.renderShell === "self";
 	wrapped.renderCall = (args, theme, context) => {
 		const painter: ToolRowHeaderPainter = {
 			fg: (color, text) => theme.fg(color, text),
 			bold: (text) => theme.bold(text),
 		};
 		const entry = rowState(context.state);
+		if (!entry.line) entry.line = { isPartial: true, isError: false };
+		entry.line.isPartial = context.isPartial;
+		entry.line.isError = context.isError;
+		if (selfShell) {
+			painter.bg = (text: string) => {
+				const color = entry.line!.isPartial
+					? "toolPendingBg"
+					: entry.line!.isError
+						? "toolErrorBg"
+						: "toolSuccessBg";
+				return theme.bg(color, text);
+			};
+		}
 		let innerComponent: Component;
 		if (callRenderer) {
 			// Hand the wrapped renderer its own previous component, not the
@@ -118,7 +147,7 @@ export function wrapToolRenderers(toolName: string, inner: ToolRenderers | undef
 			innerComponent = text;
 		}
 		entry.inner = innerComponent;
-		if (!entry.wrapper) entry.wrapper = new HeaderedComponent(displayName, painter);
+		if (!entry.wrapper) entry.wrapper = new HeaderedComponent(displayName, painter, selfShell ? 1 : 0);
 		entry.wrapper.setInner(innerComponent);
 		return entry.wrapper;
 	};

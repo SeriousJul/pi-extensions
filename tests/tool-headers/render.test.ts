@@ -77,6 +77,60 @@ describe("paintToolRowHeader", () => {
 	});
 });
 
+describe("paintToolRowHeader with a background painter", () => {
+	/** A painter whose `bg` records the line it is asked to paint. */
+	function bgPainter() {
+		const bgs: string[] = [];
+		const paint: ToolRowHeaderPainter = {
+			fg: (_color, text) => text,
+			bold: (text) => text,
+			bg: (text) => {
+				bgs.push(text);
+				return text;
+			},
+		};
+		return { paint, bgs };
+	}
+
+	it("pads the line to the full width before painting, so the background reaches the edge", () => {
+		const { paint, bgs } = bgPainter();
+		// 10 cells: the rule collapses to zero and the line is 9 cells, so bg
+		// sees the line plus 1 padding cell.
+		paintToolRowHeader("abcdef", 10, paint);
+		expect(bgs).toEqual(["── abcdef "]);
+	});
+
+	it("adds no padding when the rule already fills the width", () => {
+		const { paint, bgs } = bgPainter();
+		// `── read ` leaves 2 rule cells: the line is exactly 10 cells.
+		paintToolRowHeader("read", 10, paint);
+		expect(bgs).toEqual([`── read ${"─".repeat(2)}`]);
+	});
+
+	it("pads after the indent, so the background still spans the whole line", () => {
+		const { paint, bgs } = bgPainter();
+		// Available is 11 cells: `── abcdef` plus 1 rule cell, behind the 1-space indent.
+		paintToolRowHeader("abcdef", 12, paint, 1);
+		expect(bgs).toEqual([` ── abcdef ─`]);
+	});
+});
+
+describe("paintToolRowHeader indent", () => {
+	const paint: ToolRowHeaderPainter = {
+		fg: (_color, text) => text,
+		bold: (text) => text,
+	};
+
+	it("prefixes the rule with the indent spaces and fills the rest of the width", () => {
+		// Available is 9 cells: `── read` plus 1 rule cell, behind a 1-space indent.
+		expect(paintToolRowHeader("read", 10, paint, 1)).toBe(" ── read ─");
+	});
+
+	it("keeps the no-indent output exactly as it was", () => {
+		expect(paintToolRowHeader("read", 98, paint, 0)).toBe(`── read ${"─".repeat(90)}`);
+	});
+});
+
 describe("mcpDisplayName", () => {
 	it("drops pi's mcp__ spelling for an MCP tool", () => {
 		expect(mcpDisplayName("mcp__github__searchIssue")).toBe("github/searchIssue");

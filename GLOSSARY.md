@@ -940,7 +940,9 @@ tool call (that is the LLM-side record), row (too generic)
 The one line a Tool row draws above its call line to name the tool, as a
 label set in a rule. It is the row's frame label, never part of the call
 line, and it carries no argument and no result state: the call line owns
-the argument and the row's background owns the state.
+the argument and the row's background owns the state. On a self-shell row,
+which pi draws in a container that carries no background, the header paints
+that state background itself.
 _Avoid_: fieldset (an HTML element, not this line), tool title (pi's word
 for the bold name inside the call line), row label (too generic), banner
 

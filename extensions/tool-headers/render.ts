@@ -16,6 +16,11 @@
 export interface ToolRowHeaderPainter {
 	fg: (color: "toolTitle" | "borderMuted" | "muted", text: string) => string;
 	bold: (text: string) => string;
+	/** Paints the row's state background over full-width text. Present only on
+	 * self-shell rows, which pi draws in a plain container that carries no
+	 * background: the header paints the same state colors pi's shell box would
+	 * have applied. */
+	bg?: (text: string) => string;
 }
 
 const RULE = "─"; // U+2500, the character pi uses for its editor scroll border.
@@ -23,15 +28,34 @@ const PREFIX = "── "; // Two rule cells plus a space, ahead of the name.
 const PREFIX_LEN = 3;
 
 /**
- * The header line: `── <name> ` filled with `─` to the right edge of the
- * box's content area, which is the `width` the painter is given.
+ * The header line: `indent` spaces, then `── <name> ` filled with `─` to
+ * the right edge of the area the painter is given, which is `width`.
  *
  * Shrinking spends the rule first, then the name: the trailing rule
  * collapses to zero (`── <name>`), and only if the name alone no longer
  * fits is the name truncated, ending in `…`. The name is the payload, so it
  * truncates last. The line is always exactly one row.
+ *
+ * When the painter carries a `bg`, the line is padded to the full `width`
+ * before the background is applied, so the state background reaches the box
+ * edge on the shorter rule forms.
  */
-export function paintToolRowHeader(displayName: string, width: number, paint: ToolRowHeaderPainter): string {
+export function paintToolRowHeader(
+	displayName: string,
+	width: number,
+	paint: ToolRowHeaderPainter,
+	indent = 0,
+): string {
+	const available = Math.max(0, width - indent);
+	const line = paintRuleLine(displayName, available, paint);
+	const prefix = " ".repeat(indent);
+	if (!paint.bg) return prefix + line;
+	const padded = line + " ".repeat(Math.max(0, available - line.length));
+	return paint.bg(prefix + padded);
+}
+
+/** The rule line itself: `── <name>` filled with `─` to `width` cells. */
+function paintRuleLine(displayName: string, width: number, paint: ToolRowHeaderPainter): string {
 	const nameLen = displayName.length;
 	// `── <name> ` plus at least one rule cell: the full rule form.
 	if (nameLen <= width - PREFIX_LEN - 2) {
