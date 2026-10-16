@@ -781,6 +781,20 @@ _Avoid_: safety factor (too generic), padding, overhead, divisor
 The Safe branch summary failure mode in which the navigation completes without a branch summary entry, with a notice. The abandoned branch stays reachable through `/tree`.
 _Avoid_: fallback (implies a summary was produced by another path), cancel (that is the abort outcome), skip (hides the navigation outcome)
 
+### Safe compaction
+
+**Safe compaction**:
+The extension that runs the compaction summary on pi's behalf when the session's thinking level is on for a reasoning model. It re-runs pi's own compaction with thinking disabled so the reserve-derived output budget pays for summary text only, and degrades to a Checkpoint when no LLM summary can be written at all. The session never strands in an ever-growing context.
+_Avoid_: compaction guard (implies it only watches), thinking guard, safe summary (that is the branch summary's), summary fallback
+
+**Thinking overflow**:
+The compaction failure mode Safe compaction fixes: the summarization request inherits the session's thinking level, and the model spends the whole reserve-derived output budget thinking, stops mid-summary, and pi reports the summary as incomplete. No compaction entry is recorded, and every retry fails the same way.
+_Avoid_: token cap failure (that is pi's symptom name, not the mechanism), length stop (that is the engine's finish reason), budget exhaustion (too generic)
+
+**Checkpoint**:
+The deterministic extractive summary Safe compaction writes when no LLM summary can be written: the previous summary verbatim, the original request, a capped index of the turn's text and tool activity, and the file lists. It keeps the compaction complete and the session usable; the next successful compaction summarizes it away.
+_Avoid_: fallback (too generic), stub summary, placeholder, degraded summary
+
 ### Skill command
 
 **Skill command**:
