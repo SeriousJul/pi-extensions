@@ -403,8 +403,8 @@ const CASES = [
 	},
 	{
 		name: "a real grep result is capped and spilled",
-			// pi's own match limit is 100, which keeps a grep result inside the
-			// 7KB Bound on its own. Asking for more is what makes the case cross it.
+		// pi's own match limit is 100, which keeps a grep result inside the
+		// 7KB Bound on its own. Asking for more is what makes the case cross it.
 		calls: [{ id: "e2-grep", name: "grep", arguments: { pattern: "export const row", path: ".", limit: 4000 } }],
 		inputTokens: TIGHT_INPUT,
 		assert: ({ file }) => {

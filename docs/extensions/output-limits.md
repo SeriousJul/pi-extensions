@@ -100,7 +100,7 @@ names repointed at the Spill, and adds one line with the real numbers:
 [Showing lines 1-148 of 4000 (50.0KB limit). Full output:
 ~/.pi/agent/output-limits/<session-id>/4-bash-c1d2e3f4.log]
 
-[output-limits: capped to 8KB (4.1k tokens) of the 16k token headroom left for
+[output-limits: capped to 7KB (4.1k tokens) of the 16k token headroom left for
 this message (3 calls); full output:
 ~/.pi/agent/output-limits/<session-id>/4-bash-c1d2e3f4.log]
 ```
@@ -113,7 +113,7 @@ For read, the second half is pi's continuation instead, rewritten to the
 smaller cut:
 
 ```
-[output-limits: capped to 8KB (4.1k tokens) of the 16k token headroom; use
+[output-limits: capped to 7KB (4.1k tokens) of the 16k token headroom; use
 offset=412 to continue]
 ```
 

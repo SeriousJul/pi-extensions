@@ -47,6 +47,7 @@ export class CapturingTerminal {
 	clearScreen() {}
 	setTitle() {}
 	setProgress() {}
+	setProgramStatus() {}
 	get bytes() {
 		return this.chunks.join("");
 	}
