@@ -111,10 +111,16 @@ describe("wrapToolRenderers", () => {
 		const component = wrapped!.renderCall!({}, recTheme, makeContext({}, undefined)) as Component;
 		const lines = component.render(40);
 		// Settled, not an error: the success background spans the whole line,
-		// starting one cell in, like the header of a shell-box row.
-		expect(lines[0]).toBe(` ── edit ${"─".repeat(31)}`);
-		expect(bgs).toEqual([{ color: "toolSuccessBg", text: lines[0] }]);
-		expect(lines[1]).toBe("edit line"); // the tool's own lines keep their own framing
+		// starting one cell in, like the shell-box rows' header. The blank
+		// line ahead of the rule is the padding pi's shell box paints above
+		// the other rows' headers; the self-shell container paints none.
+		expect(lines[0]).toBe(" ".repeat(40));
+		expect(lines[1]).toBe(` ── edit ${"─".repeat(31)}`);
+		expect(bgs).toEqual([
+			{ color: "toolSuccessBg", text: " ".repeat(40) },
+			{ color: "toolSuccessBg", text: lines[1] },
+		]);
+		expect(lines[2]).toBe("edit line"); // the tool's own lines keep their own framing
 	});
 
 	it("follows the edit box's preview state: header and body share one background", () => {
@@ -143,9 +149,15 @@ describe("wrapToolRenderers", () => {
 		box.settledError = true;
 		wrapped!.renderCall!({}, recTheme, makeContext(state, undefined));
 		component.render(40); // a settled execution error without a preview: red
+		// Each render paints two lines - the padding line and the rule - both
+		// in the shared state color.
 		expect(bgs.map((b) => b.color)).toEqual([
 			"toolPendingBg",
+			"toolPendingBg",
 			"toolSuccessBg",
+			"toolSuccessBg",
+			"toolErrorBg",
+			"toolErrorBg",
 			"toolErrorBg",
 			"toolErrorBg",
 		]);

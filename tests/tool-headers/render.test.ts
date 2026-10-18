@@ -35,32 +35,33 @@ describe("paintToolRowHeader", () => {
 	it("paints the short-name form: name in a rule filled to the content edge", () => {
 		const { paint } = recordingPainter();
 		// "read" is 4 cells; width 98 leaves 90 rule cells after `── read `.
-		const line = paintToolRowHeader("read", 98, paint);
-		expect(line).toBe(`── read ${"─".repeat(90)}`);
+		const lines = paintToolRowHeader("read", 98, paint);
+		expect(lines).toEqual([`── read ${"─".repeat(90)}`]);
 	});
 
 	it("shrinks the trailing rule to zero before it touches the name", () => {
 		const { paint } = recordingPainter();
 		// 7-cell name at width 10: `── abcdefg` fills it exactly, no rule left.
-		expect(paintToolRowHeader("abcdefg", 10, paint)).toBe("── abcdefg");
+		expect(paintToolRowHeader("abcdefg", 10, paint)).toEqual(["── abcdefg"]);
 		// 6 cells at width 10: the line is shorter than the width, no rule.
-		expect(paintToolRowHeader("abcdef", 10, paint)).toBe("── abcdef");
+		expect(paintToolRowHeader("abcdef", 10, paint)).toEqual(["── abcdef"]);
 	});
 
 	it("truncates the name with a trailing ellipsis only when the name alone does not fit", () => {
 		const { paint } = recordingPainter();
 		// 8-cell name at width 10: `── ` leaves 7 cells; the name becomes 6 + `…`.
-		expect(paintToolRowHeader("abcdefgh", 10, paint)).toBe("── abcdef…");
+		expect(paintToolRowHeader("abcdefgh", 10, paint)).toEqual(["── abcdef…"]);
 		// A very long name at a narrow width keeps the prefix, ends in `…`.
 		const long = "a".repeat(40);
-		expect(paintToolRowHeader(long, 12, paint)).toBe(`── ${"a".repeat(8)}…`);
+		expect(paintToolRowHeader(long, 12, paint)).toEqual([`── ${"a".repeat(8)}…`]);
 	});
 
-	it("is always exactly one line", () => {
+	it("is one rule line without a background painter", () => {
 		const { paint } = recordingPainter();
 		for (const width of [1, 4, 10, 50, 98]) {
-			const line = paintToolRowHeader("a".repeat(30), width, paint);
-			expect(line.includes("\n")).toBe(false);
+			const lines = paintToolRowHeader("a".repeat(30), width, paint);
+			expect(lines).toHaveLength(1);
+			expect(lines[0].includes("\n")).toBe(false);
 		}
 	});
 
@@ -95,23 +96,33 @@ describe("paintToolRowHeader with a background painter", () => {
 	it("pads the line to the full width before painting, so the background reaches the edge", () => {
 		const { paint, bgs } = bgPainter();
 		// 10 cells: the rule collapses to zero and the line is 9 cells, so bg
-		// sees the line plus 1 padding cell.
+		// sees the line plus 1 padding cell, behind the padding line.
 		paintToolRowHeader("abcdef", 10, paint);
-		expect(bgs).toEqual(["── abcdef "]);
+		expect(bgs).toEqual([" ".repeat(10), "── abcdef "]);
 	});
 
 	it("adds no padding when the rule already fills the width", () => {
 		const { paint, bgs } = bgPainter();
 		// `── read ` leaves 2 rule cells: the line is exactly 10 cells.
 		paintToolRowHeader("read", 10, paint);
-		expect(bgs).toEqual([`── read ${"─".repeat(2)}`]);
+		expect(bgs).toEqual([" ".repeat(10), `── read ${"─".repeat(2)}`]);
 	});
 
 	it("pads after the indent, so the background still spans the whole line", () => {
 		const { paint, bgs } = bgPainter();
 		// Available is 11 cells: `── abcdef` plus 1 rule cell, behind the 1-space indent.
 		paintToolRowHeader("abcdef", 12, paint, 1);
-		expect(bgs).toEqual([` ── abcdef ─`]);
+		expect(bgs).toEqual([" ".repeat(12), ` ── abcdef ─`]);
+	});
+
+	it("paints a blank background line ahead of the rule, the padding pi's shell box paints above the other rows' headers", () => {
+		const { paint, bgs } = bgPainter();
+		const lines = paintToolRowHeader("read", 10, paint);
+		// Two lines: the padding line, then the rule; both painted to the
+		// full width, so the block top is one continuous background.
+		expect(lines).toHaveLength(2);
+		expect(lines[0]).toBe(" ".repeat(10));
+		expect(bgs).toEqual([" ".repeat(10), lines[1]]);
 	});
 });
 
@@ -123,11 +134,11 @@ describe("paintToolRowHeader indent", () => {
 
 	it("prefixes the rule with the indent spaces and fills the rest of the width", () => {
 		// Available is 9 cells: `── read` plus 1 rule cell, behind a 1-space indent.
-		expect(paintToolRowHeader("read", 10, paint, 1)).toBe(" ── read ─");
+		expect(paintToolRowHeader("read", 10, paint, 1)).toEqual([" ── read ─"]);
 	});
 
 	it("keeps the no-indent output exactly as it was", () => {
-		expect(paintToolRowHeader("read", 98, paint, 0)).toBe(`── read ${"─".repeat(90)}`);
+		expect(paintToolRowHeader("read", 98, paint, 0)).toEqual([`── read ${"─".repeat(90)}`]);
 	});
 });
 

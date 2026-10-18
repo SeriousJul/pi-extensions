@@ -45,7 +45,9 @@ timers) forever.
   that same state at paint time, so header and body always share one
   background. A self-shell tool without that state gets the row's pending,
   success, and error colors instead. The header starts one cell in like the
-  shell-box rows' headers.
+  shell-box rows' headers, and it paints the blank padding line pi's shell
+  box paints above the other rows' headers, because the plain container
+  paints none.
 - The wrapper must keep pi's inner component in its own state key and hand
   it back as `context.lastComponent`, because pi's built-in renderers call
   `setText` on that component and would crash on the wrapper.

@@ -37,7 +37,10 @@ The header carries the tool name and nothing else: the call line below already
 carries the argument, and the row's background already carries the pending,
 success, and error states. The green box, its padding, and its state colors
 are untouched - the header is one line added above the call line, inside pi's
-own shell.
+own shell. The `edit` row is the exception to that last part: pi draws it in
+a plain container with no box, so its header paints the state background
+itself, and the blank padding line the box would have painted above it.
+Keeping the padding line is what keeps the block tops uniform.
 
 ## Scope
 

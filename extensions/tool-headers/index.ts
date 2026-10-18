@@ -19,13 +19,15 @@
  * Always on, with no setting and no command. It is a rendering opinion in a
  * personal package; the way to opt out is to not load the file.
  *
- * Self-shell rows (`renderShell: "self"`, today only `edit`) are drawn by pi
- * in a plain container that carries no background, so their header paints
- * that background itself. It follows the body's color: pi's edit box paints
- * its lines from its diff-preview state, and the header reads that same
- * state at paint time, so header and body always agree. A self-shell tool
- * without that state falls back to the row's pending/success/error color.
- * Every header starts one cell in, like the shell-box rows' headers.
+ * A self-shell row's header (`renderShell: "self"`, today only `edit`) is
+ * drawn by pi in a plain container that carries no background and no
+ * padding, so the header paints both: the state background, and the blank
+ * padding line pi's shell box paints above the other rows' headers. It
+ * follows the body's color: pi's edit box paints its lines from its
+ * diff-preview state, and the header reads that same state at paint time,
+ * so header and body always agree. A self-shell tool without that state
+ * falls back to the row's pending/success/error color. Every header starts
+ * one cell in, like the shell-box rows' headers.
  */
 import type { ExtensionAPI, ToolRenderers } from "@earendil-works/pi-coding-agent";
 import { Container, Text, type Component } from "@earendil-works/pi-tui";
@@ -37,8 +39,9 @@ import {
 	type ToolRowHeaderPainter,
 } from "./render.ts";
 
-/** The one line a row draws above its call line: the name in a rule. Rendered
- * at the box's content width, so the rule fills to the content edge. */
+/** The line(s) a row draws above its call line: the name in a rule; on
+ * self-shell rows, one blank background line ahead of the rule. Rendered at
+ * the box's content width, so the rule fills to the content edge. */
 class HeaderLine implements Component {
 	constructor(
 		private readonly displayName: string,
@@ -46,7 +49,7 @@ class HeaderLine implements Component {
 		private readonly indent = 0,
 	) {}
 	render(width: number): string[] {
-		return [paintToolRowHeader(this.displayName, width, this.paint, this.indent)];
+		return paintToolRowHeader(this.displayName, width, this.paint, this.indent);
 	}
 	invalidate(): void {}
 }
@@ -107,13 +110,14 @@ function rowState(state: unknown): RowState {
  * caches the result renderer owns - render exactly as pi would draw them.
  *
  * A self-shell row is drawn by pi in a plain container that carries no
- * background, so the header paints that background itself. It follows the
- * body's color: pi's edit box is the inner component, it keeps its diff
- * preview state on itself, and the header reads that state at paint time -
- * the same mapping pi's box uses - so header and body always share one
- * background. A self-shell tool without that state falls back to the row's
- * pending, success, and error colors. The header starts one cell in,
- * matching the shell-box rows' indent.
+ * background and no padding, so the header paints both: the state colors,
+ * and the blank padding line above the rule that pi's shell box paints for
+ * every other row. It follows the body's color: pi's edit box is the inner
+ * component, it keeps its diff preview state on itself, and the header reads
+ * that state at paint time - the same mapping pi's box uses - so header and
+ * body always share one background. A self-shell tool without that state
+ * falls back to the row's pending, success, and error colors. The header
+ * starts one cell in, matching the shell-box rows' indent.
  */
 export function wrapToolRenderers(toolName: string, inner: ToolRenderers | undefined): ToolRenderers | undefined {
 	if (!inner) return undefined;
@@ -160,7 +164,9 @@ export function wrapToolRenderers(toolName: string, inner: ToolRenderers | undef
  * once the diff preview lands it owns the color (green, or red on a preview
  * error), exactly as pi's box maps it; before that, or on a settled
  * execution error, its `settledError` flag does. Any other inner component
- * has neither field: the row's own state applies.
+ * has neither field: the row's own state applies. The padding line ahead of
+ * the rule takes the same color, so the whole top of the block shares one
+ * background.
  */
 function headerBgColor(entry: RowState): "toolPendingBg" | "toolSuccessBg" | "toolErrorBg" {
 	const inner = entry.inner as { preview?: unknown; settledError?: boolean } | undefined;
