@@ -159,7 +159,7 @@ function payloadWith(denseChars: number, budget: number): unknown {
 	};
 }
 
-const EXPECTED_ESTIMATE = 150; // usage 50 + 400 chars / 4
+const EXPECTED_ESTIMATE = 165; // usage 50 + ceil(400 chars / 3.5), pi's projection rate since 1.1.0
 const LINE = `output starvation: refused (llama.cpp/m1): context estimate ${EXPECTED_ESTIMATE}, Effective window ${WINDOW}, output budget ${PI_OUTPUT_FLOOR}`;
 
 // ---------------------------------------------------------------------------
@@ -315,8 +315,8 @@ describe("output-starvation wiring", () => {
 // content after its last answer is estimated at 50 + chars/2 at the default
 // math, and the Fit leaves window - estimate - pi's margin.
 const DENSE = 40_000;
-const DENSE_ESTIMATE = 50 + DENSE / 2; // 20050
-const DENSE_FIT = WINDOW - DENSE_ESTIMATE - PI_SAFETY_MARGIN; // 16046
+const DENSE_ESTIMATE = 50 + Math.ceil((DENSE * 2) / 3.5); // 22908
+const DENSE_FIT = WINDOW - DENSE_ESTIMATE - PI_SAFETY_MARGIN; // 13188
 
 describe("output overrun: the guard fits the budget", () => {
 	beforeEach(() => {
@@ -397,7 +397,7 @@ describe("output overrun: the guard fits the budget", () => {
 		handlers.sessionStart!({ type: "session_start", reason: "startup" }, ctx);
 		handlers.turnStart!({ type: "turn_start" }, ctx);
 		const sent = handlers.beforeProviderRequest!({ type: "before_provider_request", payload: payloadWith(80_000, 32_768) }, ctx);
-		const estimate = 50 + Math.ceil((80_000 * 2) / 4);
+		const estimate = 50 + Math.ceil((80_000 * 2) / 3.5);
 
 		expect(sent).toBeUndefined();
 		expect(captured.aborts).toBe(1);
@@ -443,7 +443,7 @@ describe("output overrun: the guard fits the budget", () => {
 
 		// 400 system chars + 2 user chars + 4 answer chars + 40000 dense chars,
 		// all of it uncounted, at the default math.
-		const estimate = Math.ceil(((400 + 2 + 4 + DENSE) * 2) / 4);
+		const estimate = Math.ceil(((400 + 2 + 4 + DENSE) * 2) / 3.5);
 		expect(sent.max_tokens).toBe(WINDOW - estimate - PI_SAFETY_MARGIN);
 		expect(captured.notifications[0]!.message).toContain(`context estimate ${estimate}`);
 	});
@@ -521,9 +521,10 @@ describe("output overrun: the guard fits the budget", () => {
 		handlers.turnStart!({ type: "turn_start" }, ctx);
 		const sent = handlers.beforeProviderRequest!({ type: "before_provider_request", payload: payloadWith(DENSE, 32_768) }, ctx) as { max_tokens: number };
 
-		// Inflation 1 halves the trailing estimate, and the guard's own margin
-		// replaces pi's; the raised answer floor still clears here.
-		const estimate = 50 + DENSE / 4;
+		// Inflation 1 drops the trailing estimate to the raw rate, and the
+		// guard's own margin replaces pi's; the raised answer floor still
+		// clears here.
+		const estimate = 50 + Math.ceil(DENSE / 3.5);
 		expect(sent.max_tokens).toBe(WINDOW - estimate - 1024);
 		expect(captured.notifications[0]!.message).toContain(`context estimate ${estimate}`);
 

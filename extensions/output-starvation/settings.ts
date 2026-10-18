@@ -18,7 +18,7 @@
  * `inflation` and `bytesPerChar` carry the same names, and the same
  * defaults, as the keys Output limits and Safe branch summary read, so one
  * mental model covers all three extensions: the guard's Corrected estimate
- * is pi's chars/4 figure times the Inflation factor.
+ * is pi's chars/3.5 figure times the Inflation factor.
  *
  * `safetyMargin` and `minAnswerTokens` default to pi's own figures - the
  * margin its output clamp always leaves and the answer room it always
@@ -45,7 +45,7 @@ import { PI_MIN_ANSWER_TOKENS, PI_SAFETY_MARGIN } from "./guard.ts";
 export interface OutputStarvationSettings {
 	/** Turn the guard on or off. */
 	enabled: boolean;
-	/** The Inflation factor on pi's chars/4 estimate. */
+	/** The Inflation factor on pi's chars/3.5 estimate. */
 	inflation: number;
 	/** The characters per token pi's own estimate assumes. */
 	bytesPerChar: number;
@@ -58,7 +58,7 @@ export interface OutputStarvationSettings {
 
 export const DEFAULT_ENABLED = true;
 export const DEFAULT_INFLATION = 2.0;
-export const DEFAULT_BYTES_PER_CHAR = 4;
+export const DEFAULT_BYTES_PER_CHAR = 3.5;
 export const DEFAULT_SAFETY_MARGIN = PI_SAFETY_MARGIN;
 export const DEFAULT_MIN_ANSWER_TOKENS = PI_MIN_ANSWER_TOKENS;
 

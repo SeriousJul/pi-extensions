@@ -32,8 +32,8 @@ produced. This extension does that, and only ever bounds downward.
   refresh heal and the Context window cap clamp, so all three extensions
   compose for free. Headroom reads pi's values; it never sets them.
 - **Token math.** The extension's own conservative conversion,
-  `ceil(bytes x inflation / bytesPerChar)`. This is pi's chars/4 estimate times
-  the Inflation factor, and it is the correction that catches CJK, where pi's
+  `ceil(bytes x inflation / bytesPerChar)`. This is pi's chars/3.5 estimate
+  times the Inflation factor, and it is the correction that catches CJK, where pi's
   estimate runs three to four times low because `text.length` counts UTF-16
   units.
 - **Per batch, not per call.** The calls one assistant message requested are
@@ -140,8 +140,8 @@ on reload.
 | `enabled` | `true` | Turn the extension on or off. |
 | `maxOutputTokens` | pi's own 50KB content cut plus the slack its notice adds past it, in tokens | The outer max on the byte axis. Always on, and still invisible until Headroom gets tight. |
 | `maxLines` | unset, meaning each tool's own figure from pi: pi's 2000 content lines plus the two lines its notice costs, for bash and read, and no line ceiling for grep, find, and ls | The outer max on the line axis. pi does not cut every tool by line, and neither does this extension by default. |
-| `inflation` | `2.0` | The factor on pi's chars/4 estimate, matching the Safe branch summary. |
-| `bytesPerChar` | `4` | pi's own `CHARS_PER_TOKEN`. |
+| `inflation` | `2.0` | The factor on pi's chars/3.5 estimate, matching the Safe branch summary. |
+| `bytesPerChar` | `3.5` | pi's own `CHARS_PER_TOKEN`, the rate pi's output clamp estimates at since pi 1.1.0. |
 | `shareOfHeadroom` | `0.25` | The share of the Headroom one assistant message may spend. |
 | `minOutputBytes` | `4096` | The per-call floor. A call is never cut below it. |
 | `tools` | `bash, read, grep, find, ls` | The tools this extension bounds. |

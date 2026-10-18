@@ -68,7 +68,7 @@ describe("defaults", () => {
 			// pi", because pi does not cut every bounded tool by line at all.
 			maxLines: null,
 			inflation: 2.0,
-			bytesPerChar: 4,
+			bytesPerChar: 3.5,
 			shareOfHeadroom: DEFAULT_SHARE_OF_HEADROOM,
 			minOutputBytes: DEFAULT_MIN_OUTPUT_BYTES,
 			tools: ["bash", "read", "grep", "find", "ls"],
