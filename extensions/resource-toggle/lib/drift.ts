@@ -71,6 +71,9 @@ const isGlob = (text: string): boolean => text.includes("*") || text.includes("?
 const isPatternEntry = (entry: string): boolean =>
   entry.startsWith("!") || entry.startsWith("+") || entry.startsWith("-");
 
+/** The exact target pi compares: a leading `./` is stripped, as in pi's loader. */
+const exactTarget = (target: string): string => (target.startsWith("./") ? target.slice(2) : target);
+
 const hasOwn = (doc: RawSettingsDocument, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(doc, key);
 
@@ -117,7 +120,11 @@ export function computeDrift(
 /**
  * The override patterns of one settings resource array. Plain entries
  * are not v1 drift: the class covers override patterns here and every
- * entry of a package filter.
+ * entry of a package filter. Pi applies the array's patterns to the
+ * top-level resources only, each against its own base dir (the scope
+ * default when it has none), so the candidates and their bases follow
+ * pi: a pattern that names a `~/.agents` skill resolves against
+ * `~/.agents`, and a package resource is never a candidate.
  */
 function checkResourceArray(
   scope: "global" | "project",
@@ -129,14 +136,19 @@ function checkResourceArray(
   resources: ResourceInfo[],
 ): void {
   const base = defaultBaseDir(scope === "global" ? "user" : "project", machine);
-  const candidates = resources.filter((r) => r.type === type);
+  const candidates = resources.filter((r) => r.type === type && r.origin === "top-level");
   const force = new Map<string, { plus: string[]; minus: string[] }>();
   for (const entry of entries) {
     if (!isPatternEntry(entry)) continue;
     const target = entryTarget(entry);
     const exact = entry.startsWith("+") || entry.startsWith("-");
     const matches = candidates.some((r) =>
-      patternTargetsResource(target, { type: r.type, path: r.path, scope: r.scope }, base, exact),
+      patternTargetsResource(
+        target,
+        { type: r.type, path: r.path, scope: r.scope },
+        r.baseDir ?? defaultBaseDir(r.scope, machine),
+        exact,
+      ),
     );
     if (!matches && staleOnDisk(target, base, pathExists)) {
       findings.push({
@@ -149,9 +161,10 @@ function checkResourceArray(
       });
     }
     if (exact) {
-      const group = force.get(target) ?? { plus: [], minus: [] };
+      const key = exactTarget(target);
+      const group = force.get(key) ?? { plus: [], minus: [] };
       (entry.startsWith("+") ? group.plus : group.minus).push(entry);
-      force.set(target, group);
+      force.set(key, group);
     }
   }
   for (const [target, group] of force) {
@@ -212,9 +225,10 @@ function checkPackageFilters(
           });
         }
         if (exact) {
-          const group = force.get(target) ?? { plus: [], minus: [] };
+          const key = exactTarget(target);
+          const group = force.get(key) ?? { plus: [], minus: [] };
           (pattern.startsWith("+") ? group.plus : group.minus).push(pattern);
-          force.set(target, group);
+          force.set(key, group);
         }
       }
       for (const [target, group] of force) {

@@ -26,7 +26,8 @@ v1 reports exactly three classes:
   any entry of a package filter, whose target matches no loaded resource
   and, where it resolves to a file path, names no file on disk. The
   matching uses the state machine's own pattern rules, resolved against
-  the entry's base (the scope base for a resource-array entry, the
+  the resource's own base (the resource's base dir, falling back to the
+  scope base when the resource has none, for a resource-array entry, the
   package root for a filter entry), so a line pi ignores is what gets
   named.
 - **Conflicting entries**: two entries in one array with the same target

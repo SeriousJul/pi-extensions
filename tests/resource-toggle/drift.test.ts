@@ -193,6 +193,55 @@ describe("computeDrift: stale entry", () => {
     expect(findings[0].scope).toBe("project");
     expect(findings[0].text).toContain("project");
   });
+
+  it("matches a pattern against the resource's own base, not the scope base", () => {
+    // A skill from the shared ~/.agents dir resolves patterns against
+    // ~/.agents, not the agent dir: the pattern is not stale although it
+    // names no file under the scope base.
+    const skill = res({
+      type: "skills",
+      path: "/home/u/.agents/skills/myskill/SKILL.md",
+      displayName: "myskill",
+      baseDir: "/home/u/.agents",
+    });
+    onDisk.add(skill.path);
+    try {
+      const findings = computeDrift(
+        raw(),
+        { resources: [skill], settings: state({ skills: ["-skills/myskill/SKILL.md"] }) },
+        options(),
+      );
+      expect(findings).toEqual([]);
+    } finally {
+      onDisk.delete(skill.path);
+    }
+  });
+
+  it("a pattern that matches nothing in the own base is stale", () => {
+    const skill = res({
+      type: "skills",
+      path: "/home/u/.agents/skills/myskill/SKILL.md",
+      displayName: "myskill",
+      baseDir: "/home/u/.agents",
+    });
+    const findings = computeDrift(
+      raw(),
+      { resources: [skill], settings: state({ skills: ["-skills/gone/SKILL.md"] }) },
+      options(),
+    );
+    expect(kinds(findings)).toEqual(["stale"]);
+    expect(findings[0].entries).toEqual(["-skills/gone/SKILL.md"]);
+  });
+
+  it("a pattern matching only a package resource is stale: the array's patterns reach top-level resources only", () => {
+    const findings = computeDrift(
+      raw(),
+      { resources: catalog, settings: state({ extensions: ["!usage.ts"] }) },
+      options(),
+    );
+    expect(kinds(findings)).toEqual(["stale"]);
+    expect(findings[0].entries).toEqual(["!usage.ts"]);
+  });
 });
 
 describe("computeDrift: conflicting entries", () => {
@@ -214,6 +263,26 @@ describe("computeDrift: conflicting entries", () => {
   it("a conflicting package filter is named with the package source", () => {
     const settings = state({
       packages: [{ source: "/home/u/pkg", extensions: ["+extensions/usage.ts", "-extensions/usage.ts"] }],
+    });
+    const findings = computeDrift(raw(), { resources: catalog, settings }, options());
+    expect(kinds(findings)).toEqual(["conflict"]);
+    expect(findings[0].packageSource).toBe("/home/u/pkg");
+  });
+
+  it("names a conflict across the ./ spelling", () => {
+    // pi strips a leading ./ from exact patterns before comparing, so the
+    // pair is self-contradicting in pi and must group together.
+    const settings = state({ extensions: ["+./extensions/dummy.ts", "-extensions/dummy.ts"] });
+    const findings = computeDrift(raw(), { resources: [catalog[0]], settings }, options());
+    expect(kinds(findings)).toEqual(["conflict"]);
+    expect([...findings[0].entries].sort()).toEqual(["+./extensions/dummy.ts", "-extensions/dummy.ts"]);
+    expect(findings[0].text).toContain("+./extensions/dummy.ts");
+    expect(findings[0].text).toContain("-extensions/dummy.ts");
+  });
+
+  it("names a conflict across the ./ spelling in a package filter", () => {
+    const settings = state({
+      packages: [{ source: "/home/u/pkg", extensions: ["+./extensions/usage.ts", "-extensions/usage.ts"] }],
     });
     const findings = computeDrift(raw(), { resources: catalog, settings }, options());
     expect(kinds(findings)).toEqual(["conflict"]);
