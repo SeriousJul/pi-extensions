@@ -114,12 +114,45 @@ A toggle of a resource from a single-file package source is refused with
 a clear message: pi loads a single-file source unconditionally and never
 applies a packages-array filter to it, so its state cannot be toggled.
 
+## Settings drift
+
+The lists also report settings drift (ADR 0047): lines in the settings
+that express intent that does nothing. The check rides on the same
+resource resolution the lists perform and reports three classes:
+
+- **Stale entry**: an override pattern in a resource array, or an entry of
+  a package filter, that matches no loaded resource and, where it names a
+  file, names no file on disk. A package filter left behind when a sibling
+  package is dropped is a stale entry.
+- **Conflicting entries**: one array that force-includes and
+  force-excludes the same target.
+- **Configured while disabled**: an extension that is disabled while a
+  top-level settings key equal to its name in camelCase (`model-router`
+  to `modelRouter`) exists in the settings. The key match is a name guess,
+  so this class is reported as possible, never as a hard error.
+
+Each finding names its scope - global, project, or the package source - so
+the fix lands in the right file. An untrusted project covers the global
+scope only, matching the rest of the resource view. Findings are
+deduplicated and sorted, so the notice and the tables are stable across
+runs and modes.
+
+The findings render as a read-only Drift group at the top of the
+interactive list, as a section of the headless tables, and in the
+`resource_toggle` tool's list output. One notice at session start reports
+the finding count and points at `/resources` when the findings are
+non-empty; clean settings produce no group, no section, and no notice. The
+check names the drift; deleting the line is the user's edit.
+
 ## Tests
 
 - `npm test` runs the unit suite: the state machine, the resolver, the
-  matcher, the writer, and the TUI component.
+  matcher, the writer, the drift check, and the TUI component.
 - `npm run e2e:resource-toggle` drives a real pi process in RPC mode in a
   sandboxed home and asserts on the settings files and the live command
   and tool lists through a full disable/enable, shadow, and inherit
   cycle, plus a package cycle that starts from the harmed settings shape
-  (an old no-op pattern) and asserts the self-heal.
+  (an old no-op pattern) and asserts the self-heal, and a drift cycle that
+  seeds a stale package-filter entry and a disabled extension under a
+  settings key and asserts the headless tables, the tool output, and the
+  once-per-process session-start notice.

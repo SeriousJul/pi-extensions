@@ -129,10 +129,45 @@ export interface ResourceInfo {
   ownEnabled: boolean;
 }
 
+/** The raw settings document: every top-level key, the resource arrays among them. */
+export type RawSettingsDocument = Record<string, unknown>;
+
 /** The read-only resolution of every loadable resource. */
 export interface ResolvedResources {
   /** Canonical list: every resource, own-scope identity, effective state. */
   resources: ResourceInfo[];
   /** The raw settings arrays of both scopes. */
   settings: SettingsState;
+  /** The raw settings documents of both scopes: the resource arrays plus every other top-level key. */
+  raw: {
+    global: RawSettingsDocument;
+    project: RawSettingsDocument;
+  };
+}
+
+/** The three v1 classes of settings drift (ADR 0047). */
+export type DriftKind = "stale" | "conflict" | "configured-disabled";
+
+/**
+ * One drift finding: a settings line that expresses intent that does
+ * nothing. Findings name the scope - global, project, or the package
+ * source - so the fix lands in the right file. The soft class (a
+ * camelCase name match) is flagged possible, never a hard error.
+ */
+export interface DriftFinding {
+  kind: DriftKind;
+  /** The settings file the line lives in; both, for a key present in both documents. */
+  scope: "global" | "project" | "global+project";
+  /** The settings array the line sits in (stale and conflict findings). */
+  array?: ResourceType;
+  /** The packages source the filter lives in (package-filter findings). */
+  packageSource?: string;
+  /** The settings key the soft class matched. */
+  key?: string;
+  /** The offending entry text; both entries for a conflicting pair. */
+  entries: string[];
+  /** True for the soft class: the camelCase heuristic matched, which is a name guess, not proof. */
+  possible: boolean;
+  /** The one-line report every surface prints. */
+  text: string;
 }

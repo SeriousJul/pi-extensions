@@ -16,6 +16,11 @@
  *   changes on request; with no arguments it opens the interactive list, and
  *   an action without a name relays the no-argument command so the picker
  *   opens for the user.
+ * - The settings drift check (ADR 0047) rides on the same resolution: the
+ *   interactive list shows a read-only Drift group above the resource
+ *   groups, the headless tables and the tool's list output print the same
+ *   findings as a section, and one notice at session start reports the
+ *   finding count when it is non-empty. Clean settings produce nothing.
  *
  * State lives in pi's native settings, the same files and format `pi
  * config` uses (ADR 0012): override patterns in the resource arrays for
@@ -31,9 +36,10 @@ import {
   CONFIG_DIR_NAME,
   getAgentDir,
   type ExtensionAPI,
-  type ExtensionCommandContext,
+  type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { machineContextFor, resolveResources } from "./lib/resolver.ts";
+import { computeDrift, driftNoticeText, renderDriftSection } from "./lib/drift.ts";
 import { completionItems, matchResource } from "./lib/matcher.ts";
 import { writeSettings } from "./lib/writer.ts";
 import { SelfRefusalError, projectOverrideState, resourceLabel, topLevelRefsOf, transition } from "./lib/state-machine.ts";
@@ -54,6 +60,19 @@ import { createResourcePickerTui } from "./picker.ts";
 /** The loaded path of this extension; disabling it is refused (self-guard). */
 const SELF_PATH = fileURLToPath(import.meta.url);
 
+/**
+ * The process-global flag for the drift notice. Module level state resets
+ * on a reload, because pi re-imports the extension module; the notice must
+ * fire once per pi process, so the flag lives in the shared symbol
+ * registry instead.
+ */
+const DRIFT_NOTICE_FLAG = Symbol.for("pi.resource-toggle.drift-notice-sent");
+type DriftNoticeGlobal = typeof globalThis & { [DRIFT_NOTICE_FLAG]?: boolean };
+const driftNoticeSent = (): boolean => (globalThis as DriftNoticeGlobal)[DRIFT_NOTICE_FLAG] === true;
+const markDriftNoticeSent = (): void => {
+  (globalThis as DriftNoticeGlobal)[DRIFT_NOTICE_FLAG] = true;
+};
+
 const RELOAD_NOTE =
   "A reload rebinds every extension, so the in-session state of other extensions resets.";
 
@@ -64,9 +83,29 @@ interface SessionState {
 
 export default function (pi: ExtensionAPI): void {
   const state: SessionState = { cwd: process.cwd(), projectTrusted: false };
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_start", async (_event, ctx) => {
     state.cwd = ctx.cwd;
     state.projectTrusted = ctx.isProjectTrusted();
+    if (driftNoticeSent()) return;
+    try {
+      const resolved = await resolveResources({
+        cwd: state.cwd,
+        agentDir: getAgentDir(),
+        projectTrusted: state.projectTrusted,
+        selfPath: SELF_PATH,
+      });
+      const findings = computeDrift(resolved.raw, resolved, {
+        machine: machine(),
+        projectTrusted: state.projectTrusted,
+      });
+      if (findings.length > 0) {
+        markDriftNoticeSent();
+        report(ctx, driftNoticeText(findings.length), true);
+      }
+    } catch {
+      // A resolution failure at session start leaves the check silent;
+      // the next session start retries, and /resources always reports.
+    }
   });
 
   const machine = (): MachineContext => ({
@@ -90,7 +129,7 @@ export default function (pi: ExtensionAPI): void {
   };
 
   /** Report to the user in whatever mode the session runs in. */
-  const report = (ctx: ExtensionCommandContext, text: string, ok: boolean): void => {
+  const report = (ctx: ExtensionContext, text: string, ok: boolean): void => {
     if (ctx.hasUI) {
       ctx.ui.notify(text, ok ? "info" : "warning");
     } else if (ok) {
@@ -261,6 +300,10 @@ export default function (pi: ExtensionAPI): void {
         projectTrusted: ctx.isProjectTrusted(),
         selfPath: SELF_PATH,
       });
+      const findings = computeDrift(resolved.raw, resolved, {
+        machine: machine(),
+        projectTrusted: ctx.isProjectTrusted(),
+      });
       if (ctx.hasUI && ctx.mode === "tui") {
         let changed = false;
         await ctx.ui.custom((tui, theme, _keybindings, done) =>
@@ -269,6 +312,7 @@ export default function (pi: ExtensionAPI): void {
             theme,
             resources: resolved.resources,
             settings: resolved.settings,
+            drift: findings,
             machine: { ...machine(), topLevelRefs: topLevelRefsOf(resolved.resources) },
             projectTrusted: ctx.isProjectTrusted(),
             apply: (prev, next) =>
@@ -287,7 +331,8 @@ export default function (pi: ExtensionAPI): void {
         return;
       }
       const view: WriteMode = args.trim() === "--project" ? "project" : "global";
-      const text = `resources (${view} view)\n${listText(resolved, view)}`;
+      const section = renderDriftSection(findings);
+      const text = `resources (${view} view)` + (section ? `\n${section}` : "") + `\n${listText(resolved, view)}`;
       if (ctx.hasUI) {
         ctx.ui.notify(text, "info");
       } else {
@@ -321,6 +366,10 @@ export default function (pi: ExtensionAPI): void {
             selfPath: SELF_PATH,
           });
           const viewMode: WriteMode = op === "inherit" ? "project" : (operation as { mode: WriteMode }).mode;
+          const findings = computeDrift(resolved.raw, resolved, {
+            machine: machine(),
+            projectTrusted: ctx.isProjectTrusted(),
+          });
           if (ctx.hasUI && ctx.mode === "tui") {
             let pick: { text: string } | null | undefined;
             await ctx.ui.custom((tui, theme, _keybindings, done) =>
@@ -350,7 +399,8 @@ export default function (pi: ExtensionAPI): void {
             }
             return;
           }
-          const text = `Pick a resource and run /${op} <name>:\nresources (${viewMode} view)\n${listText(resolved, viewMode)}`;
+          const section = renderDriftSection(findings);
+          const text = `Pick a resource and run /${op} <name>:\nresources (${viewMode} view)` + (section ? `\n${section}` : "") + `\n${listText(resolved, viewMode)}`;
           report(ctx, text, true);
           return;
         }
@@ -380,7 +430,7 @@ export default function (pi: ExtensionAPI): void {
     name: "resource_toggle",
     label: "Resource Toggle",
     description:
-      "List or change the state of pi resources (extensions, skills, prompt templates, themes) in the running session. With no arguments it opens the interactive resource list for the user. With action 'list' it returns a text table. With 'enable', 'disable', or 'inherit' plus a name it applies the change, writes the settings, and queues the session reload. With an action but no name it relays the no-argument command, so the resource picker opens for the user (or the resource table prints in the non-TUI modes).",
+      "List or change the state of pi resources (extensions, skills, prompt templates, themes) in the running session. With no arguments it opens the interactive resource list for the user. With action 'list' it returns a text table; when the settings carry drift (stale entries, conflicting entries, or an extension configured while disabled) the table is preceded by the drift findings. With 'enable', 'disable', or 'inherit' plus a name it applies the change, writes the settings, and queues the session reload. With an action but no name it relays the no-argument command, so the resource picker opens for the user (or the resource table prints in the non-TUI modes).",
     promptSnippet: "Enable or disable extensions, skills, prompt templates, and themes in the session",
     parameters: Type.Object({
       action: Type.Optional(
@@ -395,6 +445,7 @@ export default function (pi: ExtensionAPI): void {
     }),
     promptGuidelines: [
       "Use resource_toggle when the user asks which extensions, skills, prompt templates, or themes are active, or asks to enable, disable, or re-inherit one.",
+      "When the resource_toggle list reports settings drift findings, report them to the user: the check names the stale or self-contradicting settings lines, and deleting a line is the user's edit.",
     ],
     async execute(_toolCallId, params) {
       if (params.action === undefined && (params.name === undefined || params.name === "")) {
@@ -419,10 +470,15 @@ export default function (pi: ExtensionAPI): void {
           projectTrusted: state.projectTrusted,
           selfPath: SELF_PATH,
         });
+        const findings = computeDrift(resolved.raw, resolved, {
+          machine: machine(),
+          projectTrusted: state.projectTrusted,
+        });
+        const section = renderDriftSection(findings);
         const global = listText(resolved, "global");
         const project = state.projectTrusted ? `\nresources (project view)\n${listText(resolved, "project")}` : "";
         return {
-          content: [{ type: "text", text: `resources (global view)\n${global}${project}` }],
+          content: [{ type: "text", text: `resources (global view)` + (section ? `\n${section}` : "") + `\n${global}${project}` }],
           details: {},
         };
       }
