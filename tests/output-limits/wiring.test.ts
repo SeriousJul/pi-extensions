@@ -7,10 +7,9 @@ import type { AssistantMessage, ImageContent, TextContent, Usage, UserMessage } 
 import outputLimitsExtension from "../../extensions/output-limits/index";
 import { bytesFromTokens, tokensFromBytes, PI_MAX_OUTPUT_BYTES, PI_MAX_OUTPUT_LINES, PI_NOTICE_SLACK_LINES } from "../../extensions/output-limits/core";
 
-// The primary seam, on the shape `tests/pruning/wiring.test.ts` establishes:
-// the real extension loaded against a fake `ExtensionAPI`, a real
-// `SessionManager`, and a fake `ExtensionContext`, driven with synthetic
-// events. Every case asserts the outgoing patch AND the artifacts on disk,
+// The primary seam: the real extension loaded against a fake
+// `ExtensionAPI`, a real `SessionManager`, and a fake `ExtensionContext`,
+// driven with synthetic events. Every case asserts the outgoing patch AND the artifacts on disk,
 // because the whole promise of this extension is that what the model sees is
 // bounded and what the user keeps is not.
 //

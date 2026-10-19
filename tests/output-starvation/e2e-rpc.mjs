@@ -16,28 +16,23 @@
  *   4. compaction still rescues: the same stale-usage session, but with
  *      auto-compaction on - pi compacts the session on load, the first
  *      request goes out with a healthy budget, and the guard stays silent
- *   5. starved with pruning loaded: the stale-usage session with
- *      auto-compaction off and Pruning loaded. Pruning's first level stays
- *      out (the resumed session's runtime system prompt breaks its entry
- *      alignment), yet the request is still starved on the usage the clamp
- *      reads - the guard refuses and the provider is never contacted
- *   6. output overrun: a session whose Reported context plus one dense
+ *   5. output overrun: a session whose Reported context plus one dense
  *      trailing tool result overruns the window. The request goes out with
  *      a fitted max_tokens and the provider is contacted (pi's own estimate
  *      leaves the budget inside the window, so today this request is a 400
  *      from the provider), the fit line names the figures, and pi's own
  *      compaction then fires on the count the provider reported for the
  *      fitted request
- *   7. overrun with no answer room: the same shape with the anchor pushed
+ *   6. overrun with no answer room: the same shape with the anchor pushed
  *      past the window. The guard refuses rather than fitting, with the
  *      refusal line it already uses, the provider is never contacted, and
  *      the turn ends aborted
- *   8. the fit repeats: a tool-calling turn whose every request is fitted,
+ *   7. the fit repeats: a tool-calling turn whose every request is fitted,
  *      each on its own Corrected estimate, with the notice capped at one
  *      line per turn
- *   9. the same shape with the guard off: the provider enforces its window,
+ *   8. the same shape with the guard off: the provider enforces its window,
  *      refuses the unfitted request, and pi takes its compaction path
- *  10. a fresh session with no Reported context to anchor on: the guard's
+ *   9. a fresh session with no Reported context to anchor on: the guard's
  *      own guess says nothing fits, and it still leaves the request alone;
  *      the provider answers it
  *
@@ -57,7 +52,6 @@ import { startLlamaMockRouter } from "../shared/llama-mock-router.mjs";
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const piCli = join(repoRoot, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "bundle", "cli.js");
 const guardExtension = join(repoRoot, "extensions", "output-starvation", "index.ts");
-const pruningExtension = join(repoRoot, "extensions", "pruning", "index.ts");
 const TIMEOUT_MS = 60_000;
 const MODEL = "m1";
 
@@ -154,9 +148,9 @@ function prepareAgentDir(url, { compactionEnabled = true } = {}) {
 /** The big prompt of scenarios 1-3: ~13.7k tokens of plain text. */
 const BIG_PROMPT = "filler ".repeat(11000);
 
-/** Build the scenario-5 session: one old turn with a big prunable tool
- * output and a final assistant message whose provider usage carries the
- * big context (36500 tokens), over the saturation edge of the 40192 window
+/** Build the scenario-4 session: one old turn with a big tool output and a
+ * final assistant message whose provider usage carries the big context
+ * (36500 tokens), over the saturation edge of the 40192 window
  * (window minus 4096 = 36096). Written with the child's cwd so pi's session
  * cwd check passes. */
 function prebuildStaleSession(agentDir) {
@@ -174,8 +168,7 @@ function prebuildStaleSession(agentDir) {
 		stopReason: "toolUse",
 		timestamp: clock + 1,
 	});
-	// ~590k characters of log output: 147k tokens, the kind of thing Pruning
-	// replaces with a marker on every outgoing request.
+	// ~590k characters of log output: 147k tokens.
 	builder.appendMessage({
 		role: "toolResult",
 		toolCallId: "c1",
@@ -461,45 +454,7 @@ function expectedFit(body, anchor, window, { inflation = 2, bytesPerChar = 3.5, 
 }
 
 // ---------------------------------------------------------------------------
-// 5. Starved with pruning loaded: the same stale-usage session, with
-//    auto-compaction off and Pruning loaded. Pruning's first level stays
-//    out (the resumed session's runtime system prompt breaks its entry
-//    alignment), yet the request is still starved on the usage the clamp
-//    reads. The guard refuses; the provider is never contacted.
-// ---------------------------------------------------------------------------
-{
-	const window = 40192;
-	const { mock, rpc } = await startSession(window, { compactionEnabled: false, extraExtensions: [pruningExtension], prebuild: true });
-
-	// The first request is starved on the stale usage: refused, not sent.
-	// The estimate is the usage anchor (36500) plus whatever the session
-	// carries after it, so pin the lower edge exactly and bound the upper
-	// edge: far above the pruned character view (~3k) and far below the
-	// raw character view (144k), which proves it is the usage-backed
-	// estimate the clamp read.
-	await prompt(rpc, "Reply with exactly: OK");
-	if (mock.requests.length !== 0) fail(`the starved request reached the provider: budgets ${mockBudgets(mock)}`);
-	const lines = starvedNotifies(rpc);
-	if (lines.length !== 1) fail(`expected exactly one refusal, got ${JSON.stringify(lines)}`);
-	const match = lines[0].match(/^output starvation: refused \(llama\.cpp\/m1\): context estimate (\d+), Effective window 40192, output budget 1$/);
-	if (!match) fail(`the refusal is not the one-line report: ${lines[0]}`);
-	const estimate = Number(match[1]);
-	if (estimate < 36506 || estimate >= 60000) fail(`the estimate ${estimate} is not the usage-backed one (expected in [36506, 60000))`);
-	// Pruning was loaded but its first level stayed out (no first-level
-	// activation line): even a layer that prunes the outgoing context cannot
-	// undo the usage the clamp reads.
-	if (rpc.notifies.some((line) => line.startsWith("pruning: first level active"))) {
-		fail(`unexpected pruning activation: ${JSON.stringify(rpc.notifies)}`);
-	}
-	const lastReason = stopReasons(rpc).at(-1);
-	if (lastReason !== "aborted") fail(`the refused turn ended ${lastReason}, expected aborted`);
-	rpc.close();
-	await mock.close();
-	console.log("5. starved with pruning loaded: the loaded pruning layer cannot undo the stale usage, the guard refused");
-}
-
-// ---------------------------------------------------------------------------
-// 6. Output overrun: the request is fitted, not rejected. The session's
+// 5. Output overrun: the request is fitted, not rejected. The session's
 //    Reported context (150,020) plus one dense trailing tool result leaves
 //    the Corrected estimate 180,031 of the 200,000 window, while pi's own
 //    chars/3.5 estimate sees about 167,000 and leaves a budget of about
@@ -563,11 +518,11 @@ function expectedFit(body, anchor, window, { inflation = 2, bytesPerChar = 3.5, 
 	}
 	rpc.close();
 	await mock.close();
-	console.log(`6. output overrun: the request went out fitted (${body.max_tokens} tokens, estimate ${expected.estimate}), the provider answered, and pi compacted on the reported count`);
+	console.log(`5. output overrun: the request went out fitted (${body.max_tokens} tokens, estimate ${expected.estimate}), the provider answered, and pi compacted on the reported count`);
 }
 
 // ---------------------------------------------------------------------------
-// 7. Output overrun with no answer room: the same shape with the Reported
+// 6. Output overrun with no answer room: the same shape with the Reported
 //    context pushed up, so the Corrected estimate sits past the window and
 //    pi's margin leaves nothing a real answer fits in. The guard refuses
 //    rather than sending a budget that cannot hold an answer, and the
@@ -603,11 +558,11 @@ function expectedFit(body, anchor, window, { inflation = 2, bytesPerChar = 3.5, 
 	if (lastReason !== "aborted") fail(`the refused turn ended ${lastReason}, expected aborted`);
 	rpc.close();
 	await mock.close();
-	console.log(`7. output overrun with no answer room: refused (${lines[0]}), the provider never heard`);
+	console.log(`6. output overrun with no answer room: refused (${lines[0]}), the provider never heard`);
 }
 
 // ---------------------------------------------------------------------------
-// 8. The Fit repeats across a turn that asks for a tool call: every request
+// 7. The Fit repeats across a turn that asks for a tool call: every request
 //    goes out on its own fitted budget, never with the budget that just
 //    failed, and the notice stays at one line per turn.
 // ---------------------------------------------------------------------------
@@ -650,14 +605,14 @@ function expectedFit(body, anchor, window, { inflation = 2, bytesPerChar = 3.5, 
 	if (lastReason !== "stop") fail(`the fitted turn ended ${lastReason}, expected stop`);
 	rpc.close();
 	await mock.close();
-	console.log(`8. the fit repeats: both requests went out fitted (${first.fit}, ${second.fit}), one notice per turn`);
+	console.log(`7. the fit repeats: both requests went out fitted (${first.fit}, ${second.fit}), one notice per turn`);
 }
 
 // ---------------------------------------------------------------------------
-// 9. The same session shape with the guard off: the request goes out with
+// 8. The same session shape with the guard off: the request goes out with
 //    the budget pi's own estimate allowed, the provider refuses it, and pi
 //    takes its destructive recovery path. This is the incident, reproduced
-//    against a server that enforces its window; scenario 6 is the same run
+//    against a server that enforces its window; scenario 5 is the same run
 //    with the guard loaded, where the request is answered instead.
 // ---------------------------------------------------------------------------
 {
@@ -687,11 +642,11 @@ function expectedFit(body, anchor, window, { inflation = 2, bytesPerChar = 3.5, 
 	}
 	rpc.close();
 	await mock.close();
-	console.log(`9. the same request without the guard: the provider refused it (${refused.refused.promptTokens} counted + ${refused.maxTokens} asked > ${window}) and pi compacted`);
+	console.log(`8. the same request without the guard: the provider refused it (${refused.refused.promptTokens} counted + ${refused.maxTokens} asked > ${window}) and pi compacted`);
 }
 
 // ---------------------------------------------------------------------------
-// 10. A fresh session that is already large, with no answer to anchor on:
+// 9. A fresh session that is already large, with no answer to anchor on:
 //     the guard's own Inflation-corrected guess over the payload puts the
 //     request over the window, but the guess is not pi's arithmetic and not
 //     the provider's, so the guard never refuses on it. The request goes out
@@ -721,7 +676,7 @@ function expectedFit(body, anchor, window, { inflation = 2, bytesPerChar = 3.5, 
 	if (lastReason !== "stop") fail(`the turn the guard left alone ended ${lastReason}, expected stop`);
 	rpc.close();
 	await mock.close();
-	console.log(`10. no anchor, no refusal: the guard stayed silent on its own guess, the provider answered (${sent.counted} counted + ${sent.maxTokens} asked)`);
+	console.log(`9. no anchor, no refusal: the guard stayed silent on its own guess, the provider answered (${sent.counted} counted + ${sent.maxTokens} asked)`);
 }
 
 console.log("output-starvation e2e: all scenarios passed");

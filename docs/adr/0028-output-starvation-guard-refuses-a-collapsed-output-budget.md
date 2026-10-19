@@ -59,8 +59,7 @@ on every `turn_start` and on `session_start`, so a refusal can never become a
 retry storm and nothing survives a model selection. The guard reads a payload
 that already exists, adds no per-turn network call, never raises a budget,
 and never touches the window, which stays Llama refresh's ownership. It is a
-separate module from llama-refresh and it changes nothing about the pruning
-gate.
+separate module from llama-refresh.
 
 ## Amendment: the guard's second trigger, Output overrun (issue #122)
 
@@ -243,11 +242,11 @@ refusal, once per turn, no storm. With auto-compaction on, a stale-usage
 session is compacted on load and the first request goes out with a healthy
 budget, so the guard stays silent: compaction still rescues when it is enabled,
 and the guard registers no compaction hook, so it cannot stand in the way. With
-Pruning loaded on the same stale session, the first level stays out (the
-resumed session's runtime system prompt breaks Pruning's entry alignment) and
-the request is still starved on the usage the clamp reads, so the guard
-refuses: a layer that prunes the outgoing context cannot undo the usage pi's
-estimate reads.
+Pruning loaded on the same stale session (recorded before ADR 0046 dropped the
+extension), the first level stays out (the resumed session's runtime system
+prompt breaks Pruning's entry alignment) and the request is still starved on
+the usage the clamp reads, so the guard refuses: a layer that prunes the
+outgoing context cannot undo the usage pi's estimate reads.
 
 One finding the e2e forced into the open: in the starved runs, pi's compaction
 never fired, so the pruning gate got no chance to cancel anything. The
@@ -286,10 +285,11 @@ lowering changes nothing either (the payload already carries the floor). The
 Fit is the other direction in the other state, where the payload carries a
 budget the window cannot pay for, and it is what the rejecting provider itself
 suggests. A `session_before_compact` gate change so the pruning gate
-sees the saturation - rejected out of scope: it is a separate ticket and the
-gate is another extension's decision. An upstream pi fix (a real refusal or a
-reported floor) - deliberately not pursued, so the extension carries the whole
-burden, as ADR 0027 already decided for the window.
+sees the saturation - rejected out of scope: it is a separate ticket, and
+the question closed with ADR 0046's drop of the gate's owner. An upstream pi
+fix (a real refusal or a reported floor) - deliberately not pursued, so the
+extension carries the whole burden, as ADR 0027 already decided for the
+window.
 
 **Consequences**: a starved request costs one line and an aborted turn instead
 of a one-token answer and a confused agent. The transcript records `aborted`,
@@ -327,3 +327,8 @@ Since that amendment, pi 1.1.0 moved the output clamp's estimator from 4 to
 3.5 characters per token. The guard's Corrected estimate follows the output
 clamp's rate, so it reads the payload at 3.5 since that release; the
 compaction and branch summary estimators kept 4.
+
+**Pruning dropped.** ADR 0046 dropped the Pruning extension this ADR's e2e
+recorded against. The scenario that loaded it ran before the drop and is
+kept as recorded; the gate-cancels-compaction question left open above is
+closed with the extension, so there is no gate left to change.

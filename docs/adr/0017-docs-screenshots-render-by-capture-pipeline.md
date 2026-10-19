@@ -11,8 +11,9 @@ and fails when a committed Screenshot no longer matches.
 
 ## Considered options
 
-- **Hand-taken terminal screenshots.** Simplest, but the quota numbers are
-  live, some UI is transient, and nothing detects staleness.
+- **Hand-taken terminal screenshots.** Simplest, but the live data (usage
+  counters, server state) and some UI is transient, and nothing detects
+  staleness.
 - **Off-screen rendering only.** Covers the TUI views, but not the real
   terminal surfaces (CLI output, pi's own chrome).
 - **Terminal screencast tooling (VHS family).** A real terminal emulator,

@@ -5,8 +5,7 @@
  * no clock. The two byte cutters are injected, so the wiring hands over pi's
  * own `truncateHead` and `truncateTail` and the cut keeps pi's exact
  * semantics (complete lines only, whichever limit lands first, with pi's one
- * tail edge case) without this module importing pi at all. That is the same
- * seam shape `pruning/core.ts` uses for its estimates.
+ * tail edge case) without this module importing pi at all.
  *
  * Units, stated once. The Bound is named in tokens and enforced in bytes.
  * The conversion is the extension's own conservative estimate,

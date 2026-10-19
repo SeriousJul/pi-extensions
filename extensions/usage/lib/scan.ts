@@ -7,8 +7,9 @@
  * - assistant messages, which carry their own provider and model
  * - tool results that did nested LLM work, which carry usage only
  * - compaction and branch summary entries, which carry usage only
- * - compress-span custom entries (the compress extension's persisted
- *   compression calls), which carry usage plus the compression model
+ * - compress-span custom entries (persisted by the compress extension,
+ *   dropped by ADR 0046; still counted in the sessions that carry them),
+ *   which carry usage plus the compression model
  *
  * Forked and cloned sessions copy their ancestor's entry lines
  * byte-identical, so a usage line is counted once per distinct line

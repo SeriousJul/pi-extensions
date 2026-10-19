@@ -43,10 +43,8 @@ list with `pi list`.
 | [model-router](/extensions/model-router) | Recovers a session from a provider usage-limit halt (switch to a fallback or wait for the reset, then resume). |
 | [llama-refresh](/extensions/llama-refresh) | Self-heals the context window of a session that resolved a local llama.cpp model while it was asleep. |
 | [output-starvation](/extensions/output-starvation) | Judges each request's output budget against the Effective window: refuses a budget that collapsed to pi's floor, and fits one the window cannot pay for. |
-| [quota](/extensions/quota) | Monitors the OpenAI ChatGPT plan quota: a footer line with the used windows, and a `/quota` detail view. |
 | [sync](/extensions/sync/) | Cross-device pi config sync: `/sync` plus the `pi-sync` CLI, three-way merge, v1 backend a secret GitHub Gist. |
 | [usage](/extensions/usage) | The `pi-usage` CLI and the usage report: token and cost usage across all pi sessions. |
-| [compress](/extensions/compress) | Replaces finished turns in outgoing requests with one short standing-in message; the session file stays intact. |
 | [edit-assist](/extensions/edit-assist) | Corrects and diagnoses built-in edit calls: leading-whitespace drift corrected before execution, a Nearest region diff on no-match, occurrence lines on ambiguous matches, one targeted hint on malformed calls; the stock error text is always kept. |
 | [lsp](/extensions/lsp) | Post-edit diagnostics from the project's real Language server, attached to the edit result: the turn-end Sweep catches edits made outside pi's edit tools; `lsp_diagnostics`, `lsp_references`, and `lsp_hover` for the rest; `/lsp` shows servers and state. |
 | [bash-no-match](/extensions/bash-no-match) | Returns a no-match search (`rg`/`grep` exit 1 with an empty stream) to the agent as a normal result with a "(no matches)" note, instead of an error. |

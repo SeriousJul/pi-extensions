@@ -4,7 +4,11 @@ pi has no extension API to re-run a failed turn: the only way an extension can
 start agent work again is `pi.sendUserMessage()`, which appends a real user
 message to the transcript. The Model router therefore sends one fixed Recovery
 message after a wait or a model switch, telling the model that the previous
-turn was cut off by a usage limit and to resume the task.
+turn was cut off by a usage limit and to resume the task. The wait strategy
+and the switch-back read the plan's quota windows through the router's own
+Quota source module (`extensions/model-router/source.ts`), which also owns the
+ChatGPT token refresh (ADR 0005, carried into ADR 0046 when the Quota
+extension was dropped and the module moved in).
 
 Rejected alternatives: provider-level retry, because pi's own settings docs
 warn it can block the agent until the quota resets; manual re-trigger, because

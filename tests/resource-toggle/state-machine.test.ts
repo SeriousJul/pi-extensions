@@ -46,7 +46,7 @@ const projExt = (name = "bar.ts"): ResourceRef => ({
 
 // A package-bundled extension installed at /opt/pkgs/my-pkg: its state
 // lives in the packages filter, never in a resource array.
-const pkgExt = (name = "extensions/quota/index.ts"): ResourceRef => ({
+const pkgExt = (name = "extensions/usage/index.ts"): ResourceRef => ({
   type: "extensions",
   path: `/opt/pkgs/my-pkg/${name}`,
   scope: "user",
@@ -281,16 +281,16 @@ describe("transition: package resources (packages-array filter)", () => {
     prev.global.packages.push("git:github.com/acme/my-pkg");
     const next = transition(prev, pkgExt(), { op: "disable", mode: "global" }, ctx);
     expect(next.global.packages).toEqual([
-      { source: "git:github.com/acme/my-pkg", extensions: ["-extensions/quota/index.ts"] },
+      { source: "git:github.com/acme/my-pkg", extensions: ["-extensions/usage/index.ts"] },
     ]);
   });
 
   it("global enable swaps the - pattern for +", () => {
     const prev = empty();
-    prev.global.packages.push({ source: "git:github.com/acme/my-pkg", extensions: ["-extensions/quota/index.ts"] });
+    prev.global.packages.push({ source: "git:github.com/acme/my-pkg", extensions: ["-extensions/usage/index.ts"] });
     const next = transition(prev, pkgExt(), { op: "enable", mode: "global" }, ctx);
     expect(next.global.packages).toEqual([
-      { source: "git:github.com/acme/my-pkg", extensions: ["+extensions/quota/index.ts"] },
+      { source: "git:github.com/acme/my-pkg", extensions: ["+extensions/usage/index.ts"] },
     ]);
   });
 
@@ -300,7 +300,7 @@ describe("transition: package resources (packages-array filter)", () => {
     const first = transition(once, pkgExt(), { op: "disable", mode: "global" }, ctx);
     const second = transition(first, pkgExt(), { op: "disable", mode: "global" }, ctx);
     expect(second.global.packages).toEqual([
-      { source: "git:github.com/acme/my-pkg", extensions: ["-extensions/quota/index.ts"] },
+      { source: "git:github.com/acme/my-pkg", extensions: ["-extensions/usage/index.ts"] },
     ]);
   });
 
@@ -315,14 +315,14 @@ describe("transition: package resources (packages-array filter)", () => {
       "npm:pi-web-access",
       {
         source: "git:github.com/acme/my-pkg",
-        extensions: ["-extensions/other/index.ts", "-extensions/quota/index.ts"],
+        extensions: ["-extensions/other/index.ts", "-extensions/usage/index.ts"],
       },
     ]);
   });
 
   it("an emptied filter collapses the entry back to the plain source string", () => {
     const prev = empty();
-    prev.project.packages.push({ source: "git:github.com/acme/my-pkg", extensions: ["-extensions/quota/index.ts"] });
+    prev.project.packages.push({ source: "git:github.com/acme/my-pkg", extensions: ["-extensions/usage/index.ts"] });
     const next = transition(prev, pkgExt(), { op: "inherit" }, ctx);
     expect(next.project.packages).toEqual(["git:github.com/acme/my-pkg"]);
   });
@@ -331,7 +331,7 @@ describe("transition: package resources (packages-array filter)", () => {
     const prev = empty();
     prev.project.packages.push({
       source: "git:github.com/acme/my-pkg",
-      extensions: ["-extensions/quota/index.ts", "-extensions/other/index.ts"],
+      extensions: ["-extensions/usage/index.ts", "-extensions/other/index.ts"],
     });
     const next = transition(prev, pkgExt(), { op: "inherit" }, ctx);
     expect(next.project.packages).toEqual([
@@ -344,7 +344,7 @@ describe("transition: package resources (packages-array filter)", () => {
     prev.global.packages.push("git:github.com/acme/my-pkg");
     const next = transition(prev, pkgExt(), { op: "enable", mode: "project" }, ctx);
     expect(next.project.packages).toEqual([
-      { source: "git:github.com/acme/my-pkg", extensions: ["+extensions/quota/index.ts"] },
+      { source: "git:github.com/acme/my-pkg", extensions: ["+extensions/usage/index.ts"] },
     ]);
     expect(next.global.packages).toEqual(["git:github.com/acme/my-pkg"]);
   });
@@ -354,17 +354,17 @@ describe("transition: package resources (packages-array filter)", () => {
     prev.global.packages.push("git:github.com/acme/my-pkg");
     const next = transition(prev, pkgExt(), { op: "disable", mode: "project" }, ctx);
     expect(next.project.packages).toEqual([
-      { source: "git:github.com/acme/my-pkg", extensions: ["-extensions/quota/index.ts"] },
+      { source: "git:github.com/acme/my-pkg", extensions: ["-extensions/usage/index.ts"] },
     ]);
   });
 
   it("project mode on a globally disabled resource loads it for the project", () => {
     const prev = empty();
-    prev.global.packages.push({ source: "git:github.com/acme/my-pkg", extensions: ["-extensions/quota/index.ts"] });
+    prev.global.packages.push({ source: "git:github.com/acme/my-pkg", extensions: ["-extensions/usage/index.ts"] });
     const ref: ResourceRef = { ...pkgExt(), scope: "user" };
     const next = transition(prev, ref, { op: "enable", mode: "project" }, ctx);
     expect(next.project.packages).toEqual([
-      { source: "git:github.com/acme/my-pkg", extensions: ["+extensions/quota/index.ts"] },
+      { source: "git:github.com/acme/my-pkg", extensions: ["+extensions/usage/index.ts"] },
     ]);
     // Replace-not-merge: the project entry decides, the resource is enabled.
     const projectRef: ResourceRef = { ...pkgExt(), scope: "project" };
@@ -376,14 +376,14 @@ describe("transition: package resources (packages-array filter)", () => {
     prev.global.packages.push("/home/u/src/pi-extensions");
     const ref: ResourceRef = {
       type: "extensions",
-      path: "/home/u/src/pi-extensions/extensions/quota/index.ts",
+      path: "/home/u/src/pi-extensions/extensions/usage/index.ts",
       scope: "user",
       baseDir: "/home/u/src/pi-extensions",
       packageSource: "/home/u/src/pi-extensions",
     };
     const next = transition(prev, ref, { op: "disable", mode: "project" }, ctx);
     expect(next.project.packages).toEqual([
-      { source: "../../home/u/src/pi-extensions", extensions: ["-extensions/quota/index.ts"] },
+      { source: "../../home/u/src/pi-extensions", extensions: ["-extensions/usage/index.ts"] },
     ]);
   });
 
@@ -405,32 +405,32 @@ describe("transition: package resources (packages-array filter)", () => {
     prev.global.packages.push("~/src/pi-extensions");
     const ref: ResourceRef = {
       type: "extensions",
-      path: `${home}/src/pi-extensions/extensions/quota/index.ts`,
+      path: `${home}/src/pi-extensions/extensions/usage/index.ts`,
       scope: "user",
       baseDir: `${home}/src/pi-extensions`,
       packageSource: "~/src/pi-extensions",
     };
     const next = transition(prev, ref, { op: "disable", mode: "project" }, ctx);
     expect(next.project.packages).toEqual([
-      { source: relative(join("/proj", ".pi"), join(home, "src", "pi-extensions")), extensions: ["-extensions/quota/index.ts"] },
+      { source: relative(join("/proj", ".pi"), join(home, "src", "pi-extensions")), extensions: ["-extensions/usage/index.ts"] },
     ]);
   });
 
   it("self-heals an old no-op pattern from the global resource array", () => {
     const prev = empty();
     prev.global.packages.push("git:github.com/acme/my-pkg");
-    prev.global.extensions.push("-extensions/quota/index.ts");
+    prev.global.extensions.push("-extensions/usage/index.ts");
     const next = transition(prev, pkgExt(), { op: "disable", mode: "global" }, { ...ctx, topLevelRefs: [] });
     expect(next.global.extensions).toEqual([]);
     expect(next.global.packages).toEqual([
-      { source: "git:github.com/acme/my-pkg", extensions: ["-extensions/quota/index.ts"] },
+      { source: "git:github.com/acme/my-pkg", extensions: ["-extensions/usage/index.ts"] },
     ]);
   });
 
   it("self-heals an old shadow pair from the project resource array", () => {
     const prev = empty();
     prev.global.packages.push("git:github.com/acme/my-pkg");
-    prev.project.extensions.push("/opt/pkgs/my-pkg/extensions/quota/index.ts", "-/opt/pkgs/my-pkg/extensions/quota/index.ts");
+    prev.project.extensions.push("/opt/pkgs/my-pkg/extensions/usage/index.ts", "-/opt/pkgs/my-pkg/extensions/usage/index.ts");
     const next = transition(prev, pkgExt(), { op: "disable", mode: "project" }, { ...ctx, topLevelRefs: [] });
     expect(next.project.extensions).toEqual([]);
   });
@@ -438,29 +438,29 @@ describe("transition: package resources (packages-array filter)", () => {
   it("does not self-heal without a top-level resource list", () => {
     const prev = empty();
     prev.global.packages.push("git:github.com/acme/my-pkg");
-    prev.global.extensions.push("-extensions/quota/index.ts");
+    prev.global.extensions.push("-extensions/usage/index.ts");
     const next = transition(prev, pkgExt(), { op: "disable", mode: "global" }, ctx);
-    expect(next.global.extensions).toEqual(["-extensions/quota/index.ts"]);
+    expect(next.global.extensions).toEqual(["-extensions/usage/index.ts"]);
   });
 
   it("keeps a global pattern that a top-level resource at the same relative path relies on", () => {
     const prev = empty();
     prev.global.packages.push("git:github.com/acme/my-pkg");
-    prev.global.extensions.push("-extensions/quota/index.ts");
+    prev.global.extensions.push("-extensions/usage/index.ts");
     const topRef: ResourceRef = {
       type: "extensions",
-      path: "/home/u/.pi/agent/extensions/quota/index.ts",
+      path: "/home/u/.pi/agent/extensions/usage/index.ts",
       scope: "user",
       baseDir: "/home/u/.pi/agent",
     };
     const next = transition(prev, pkgExt(), { op: "disable", mode: "global" }, { ...ctx, topLevelRefs: [topRef] });
-    expect(next.global.extensions).toEqual(["-extensions/quota/index.ts"]);
+    expect(next.global.extensions).toEqual(["-extensions/usage/index.ts"]);
   });
 
   it("removes the no-op pattern when the top-level resources rely on different patterns", () => {
     const prev = empty();
     prev.global.packages.push("git:github.com/acme/my-pkg");
-    prev.global.extensions.push("-extensions/quota/index.ts");
+    prev.global.extensions.push("-extensions/usage/index.ts");
     const next = transition(prev, pkgExt(), { op: "disable", mode: "global" }, { ...ctx, topLevelRefs: [ext("foo.ts")] });
     expect(next.global.extensions).toEqual([]);
   });
@@ -468,15 +468,15 @@ describe("transition: package resources (packages-array filter)", () => {
   it("keeps a project pattern that a top-level project resource relies on", () => {
     const prev = empty();
     prev.global.packages.push("git:github.com/acme/my-pkg");
-    prev.project.extensions.push("-extensions/quota/index.ts");
+    prev.project.extensions.push("-extensions/usage/index.ts");
     const topRef: ResourceRef = {
       type: "extensions",
-      path: "/proj/.pi/extensions/quota/index.ts",
+      path: "/proj/.pi/extensions/usage/index.ts",
       scope: "project",
       baseDir: "/proj/.pi",
     };
     const next = transition(prev, pkgExt(), { op: "disable", mode: "project" }, { ...ctx, topLevelRefs: [topRef] });
-    expect(next.project.extensions).toEqual(["-extensions/quota/index.ts"]);
+    expect(next.project.extensions).toEqual(["-extensions/usage/index.ts"]);
   });
 
   it("does not write a package-relative pattern into a resource array", () => {
@@ -512,7 +512,7 @@ describe("derived state of package resources", () => {
       global: { ...emptyScopeState(), packages: [{ source: src, extensions }] },
       project: emptyScopeState(),
     });
-    const rel = "extensions/quota/index.ts";
+    const rel = "extensions/usage/index.ts";
     expect(scopeEnabled(withEntry([`-${rel}`]), pkgExt(), ctx)).toBe(false);
     expect(scopeEnabled(withEntry([`+${rel}`]), pkgExt(), ctx)).toBe(true);
     expect(scopeEnabled(withEntry([`!${rel}`]), pkgExt(), ctx)).toBe(false);
@@ -549,17 +549,17 @@ describe("derived state of package resources", () => {
     const projectState = (entry: PackageEntry) => ({ global: emptyScopeState(), project: { ...emptyScopeState(), packages: [entry] } });
     expect(packageOverrideState(empty(), pkgExt(), ctx)).toBe("inherit");
     expect(packageOverrideState(projectState(src), pkgExt(), ctx)).toBe("inherit");
-    expect(packageOverrideState(projectState({ source: src, extensions: ["-extensions/quota/index.ts"] }), pkgExt(), ctx)).toBe("unload");
-    expect(packageOverrideState(projectState({ source: src, extensions: ["+extensions/quota/index.ts"] }), pkgExt(), ctx)).toBe("load");
+    expect(packageOverrideState(projectState({ source: src, extensions: ["-extensions/usage/index.ts"] }), pkgExt(), ctx)).toBe("unload");
+    expect(packageOverrideState(projectState({ source: src, extensions: ["+extensions/usage/index.ts"] }), pkgExt(), ctx)).toBe("load");
     expect(packageOverrideState(projectState({ source: src, extensions: ["-extensions/other/index.ts"] }), pkgExt(), ctx)).toBe("inherit");
     expect(packageOverrideState(projectState({ source: src, extensions: [] }), pkgExt(), ctx)).toBe("unload");
     // A project entry of another package is not an override.
-    expect(packageOverrideState(projectState({ source: "npm:other", extensions: ["-extensions/quota/index.ts"] }), pkgExt(), ctx)).toBe("inherit");
+    expect(packageOverrideState(projectState({ source: "npm:other", extensions: ["-extensions/usage/index.ts"] }), pkgExt(), ctx)).toBe("inherit");
   });
 
   it("replace-not-merge: a project entry with no filter for the resource enables it over a global -", () => {
     const s = empty();
-    s.global.packages.push({ source: "git:github.com/acme/my-pkg", extensions: ["-extensions/quota/index.ts"] });
+    s.global.packages.push({ source: "git:github.com/acme/my-pkg", extensions: ["-extensions/usage/index.ts"] });
     s.project.packages.push({ source: "git:github.com/acme/my-pkg", extensions: ["+extensions/other/index.ts"] });
     const ref: ResourceRef = { ...pkgExt(), scope: "project" };
     expect(scopeEnabled(s, ref, ctx)).toBe(true);
@@ -569,7 +569,7 @@ describe("derived state of package resources", () => {
 
   it("a global - disables while no project entry exists", () => {
     const s = empty();
-    s.global.packages.push({ source: "git:github.com/acme/my-pkg", extensions: ["-extensions/quota/index.ts"] });
+    s.global.packages.push({ source: "git:github.com/acme/my-pkg", extensions: ["-extensions/usage/index.ts"] });
     const ref: ResourceRef = pkgExt();
     expect(scopeEnabled(s, ref, ctx)).toBe(false);
     expect(packageOverrideState(s, ref, ctx)).toBe("inherit");
@@ -578,8 +578,8 @@ describe("derived state of package resources", () => {
 
   it("packageEntryEnabled mirrors the loader for a single entry", () => {
     expect(packageEntryEnabled("git:github.com/acme/my-pkg", pkgExt(), ctx)).toBe(true);
-    expect(packageEntryEnabled({ source: "x", extensions: ["-extensions/quota/index.ts"] }, pkgExt(), ctx)).toBe(false);
-    expect(packageEntryEnabled({ source: "x", extensions: ["+extensions/quota/index.ts"] }, pkgExt(), ctx)).toBe(true);
+    expect(packageEntryEnabled({ source: "x", extensions: ["-extensions/usage/index.ts"] }, pkgExt(), ctx)).toBe(false);
+    expect(packageEntryEnabled({ source: "x", extensions: ["+extensions/usage/index.ts"] }, pkgExt(), ctx)).toBe(true);
     expect(packageEntryEnabled({ source: "x", extensions: [] }, pkgExt(), ctx)).toBe(false);
     expect(packageEntryEnabled({ source: "x" }, pkgExt(), ctx)).toBe(true);
   });
@@ -587,7 +587,7 @@ describe("derived state of package resources", () => {
 
 describe("package source matching", () => {
   it("packagePattern is relative to the package root", () => {
-    expect(packagePattern(pkgExt())).toBe("extensions/quota/index.ts");
+    expect(packagePattern(pkgExt())).toBe("extensions/usage/index.ts");
   });
 
   it("exact strings match; local sources match by resolved path", () => {

@@ -98,7 +98,7 @@ describe("the default manifest", () => {
 	it("includes the settings, extensions, skills, themes, models, web-search config, and the three home md files", () => {
 		const cases: [string, boolean][] = [
 			[".pi/agent/settings.json", true],
-			[".pi/agent/extensions/quota/index.ts", true],
+			[".pi/agent/extensions/usage/index.ts", true],
 			[".pi/agent/skills/tdd/SKILL.md", true],
 			[".pi/agent/themes/dark.json", true],
 			[".pi/agent/models.json", true],

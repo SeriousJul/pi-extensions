@@ -14,10 +14,10 @@ import {
 } from "../../extensions/output-limits/settings";
 import { DEFAULT_MAX_OUTPUT_TOKENS, PI_MAX_OUTPUT_BYTES } from "../../extensions/output-limits/core";
 
-// The settings seam, on the same conventions as `pruning/settings.ts`: the
-// project `.pi/settings.json` overrides `$PI_CODING_AGENT_DIR/settings.json`
-// key by key, a malformed value falls back to its default and is reported,
-// and nothing here ever throws.
+// The settings seam, on the package's own conventions: the project
+// `.pi/settings.json` overrides `$PI_CODING_AGENT_DIR/settings.json` key by
+// key, a malformed value falls back to its default and is reported, and
+// nothing here ever throws.
 
 let cwd: string;
 let agentDir: string;

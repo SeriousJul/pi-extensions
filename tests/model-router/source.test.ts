@@ -7,7 +7,7 @@ import {
 	createQuotaSource,
 	parseUsageResponse,
 	type QuotaSourceOptions,
-} from "../../extensions/quota/source";
+} from "../../extensions/model-router/source";
 
 const NOW = 1_700_000_000_000;
 const FIVE_H = 5 * 3600 * 1000;

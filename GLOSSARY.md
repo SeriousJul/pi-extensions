@@ -1,15 +1,14 @@
 # Pi Extensions
 
-Extensions for the pi coding agent. Twenty-one today: Codegraph (semantic
+Extensions for the pi coding agent. Eighteen today: Codegraph (semantic
 search over the current project's symbols), Tools (enable and disable tools
 per session), Context cap (cap the context window so compaction fires
-early), Model router (automatic recovery from quota exhaustion), Llama
-refresh (self-heal of the context window for a lazily loaded local model),
-Quota (subscription quota monitor), Resource toggle (enable and disable
-extensions, skills, prompts, and themes from inside a session), Usage
+early), Model router (automatic recovery from quota exhaustion, with the
+Quota source for the OpenAI ChatGPT plan), Llama refresh (self-heal of the
+context window for a lazily loaded local model), Resource toggle (enable and
+disable extensions, skills, prompts, and themes from inside a session), Usage
 (token and cost reporting across all sessions), Sync (device file sync),
-Compress (request-time compression of finished turns), Pruning (two-level
-context control in front of native compaction), Output limits (bound tool
+Output limits (bound tool
 results against the session's headroom, losslessly), Output starvation
 (refuse a collapsed output budget), Edit assist (corrects and diagnoses
 failing edit calls around the built-in edit tool), Bash no-match (a
@@ -208,7 +207,7 @@ pays no context cost by default and the agent has no path to it.
 _Avoid_: hidden tool (nothing is hidden; it is simply inactive by default),
 admin tool, console tool
 
-### Quota
+### Model router
 
 **Quota window**:
 One rolling usage budget reported by a subscription plan: a used fraction and
@@ -218,16 +217,15 @@ _Avoid_: rate limit (a request-rate ceiling, not a budget), bucket, period
 
 **Usage snapshot**:
 The latest successful read of a plan's quota windows, stamped with the time it
-was fetched. It becomes stale the moment a later read fails; a stale snapshot
-is still shown, marked, rather than hidden.
+was fetched. A failed read reports its reason and carries no snapshot; the
+router treats an unreadable quota as wait-not-viable.
 _Avoid_: cache (too generic), state, sample
 
 **Quota source**:
-One subscription plan the Quota extension reads windows from. Examples: the
-OpenAI ChatGPT plan, the Qwen token plan.
+The model-router extension's module for one subscription plan: it reads the
+plan's quota windows and owns the plan's token refresh. v1 reads the OpenAI
+ChatGPT plan only.
 _Avoid_: provider (pi's word for a model API), backend, account
-
-### Model router
 
 **Quota halt**:
 The state in which the active model's provider reported a terminal usage
@@ -342,7 +340,7 @@ _Avoid_: plugin (pi's word is extension), feature, component
 
 **Resource description**:
 The one-line text that says what a resource does, derived from its source file: the frontmatter of the SKILL.md for a skill, the frontmatter or first non-empty line of the template for a prompt, the leading block comment of the entry file for an extension, and none for a theme. Read-only: never written to settings, never part of the Toggle state.
-_Avoid_: summary (the Compression and compaction word), annotation, blurb
+_Avoid_: summary (the compaction word), annotation, blurb
 
 **Resource picker**:
 The single-pick selection that opens when /enable, /disable, or /inherit runs without a name: every resource as a row with its state and description, type-anywhere filter, and a pick that applies the one toggle, closes, and reloads. Its counterpart is the interactive list, the multi-toggle grid of /resources.
@@ -542,59 +540,15 @@ _Avoid_: indexer (implies stored state), crawl, telemetry
 The (provider, model) pair after the alias rules: spelling variants of one
 provider merge to one name, and a model ID is folded (lowercased, quantization
 suffix dropped, `-GGUF` infix dropped). A name no rule touches stays raw.
-_Avoid_: normalization (generic), dedup (the scan's job), account (a Quota word)
+_Avoid_: normalization (generic), dedup (the scan's job), account (a
+model-router word)
 
 **Usage report**:
 A bucketed, grouped view of LLM token and cost usage across all sessions:
 one row per time bucket and Canonical identity, with the token columns, cost,
 and a grand total. Derived on demand by a Usage scan; never stored.
-_Avoid_: usage log (codegraph's per-call log), usage snapshot (Quota's plan
-read), metrics (implies stored aggregates)
-
-### Pruning
-
-**Pruning**:
-The first level of the two-level context control: replacing large tool
-outputs in the request context with short references. Applied per request on
-the message list, re-derived every turn, and never written to the session
-file. Pruning therefore keeps whatever pi recorded for the call; it never
-promises that pi recorded everything, because the Bound decides what pi
-recorded.
-_Avoid_: compaction (that is the second level, pi's native summarization),
-offloading (implies the content moves to another store), truncation
-(implies the content is lost), spill (that is Output limits writing a cut
-result to a file at execution time, not a projection over stored messages)
-
-**Engagement**:
-Whether the pruning first level is active for the session right now. It is a
-sticky session state, not a per-request re-check: once the context estimate
-crosses pi's own compaction threshold, it engages and keeps engaging on every
-later request until a reset, so the outgoing prefix holds one shape and the
-provider's prompt cache stays hot. A reset is a compaction that runs or a
-session start, after which the session runs raw again until it re-crosses.
-_Avoid_: threshold check (that is the stateless per-request comparison the
-sticky state wraps), activation (too generic), on/off (hides the reset)
-
-**Recall reference**:
-The pointer a pruned output carries: the line number of the entry in the
-session file, resolved by the recall tool back to the full output. When no
-session file exists, the reference is the entry id instead.
-_Avoid_: link (implies a URL or file path), citation, pointer (too generic)
-
-**Recall**:
-The tool that resolves a Recall reference to the full text of one pruned
-tool output. Direct lookup by session file line number or entry id, not
-search.
-_Avoid_: search (implies ranking), retrieval (too generic), drill-down
-(blackhole's word for its richer tool)
-
-**Prune gate**:
-The decision made when pi is about to compact: estimate the context size
-after pruning. Pruning wins, and the compaction is cancelled, only when the
-estimate falls to at most the context window minus twice the reserve. Any
-other outcome lets pi's native compaction run.
-_Avoid_: threshold check (that is pi's own single-level check), two-stage
-compact (the levels are pruning and compaction, not two compactions)
+_Avoid_: usage log (codegraph's per-call log), usage snapshot (the
+model-router's plan read), metrics (implies stored aggregates)
 
 ### Output limits
 
@@ -603,8 +557,8 @@ The most one tool result may cost, in tokens, at the moment pi finishes
 producing it. A share of the Headroom, split across the calls one assistant
 message asked for, and never above pi's own per-call figure.
 _Avoid_: cap, ceiling, limit (these name the Context window cap or the read
-tool's `limit` parameter), quota (that is a subscription plan's rolling
-usage), budget (that is the Ledger's running total, not one call's share)
+tool's `limit` parameter), quota window (that is the model-router's
+subscription budget), budget (that is the Ledger's running total, not one call's share)
 
 **Headroom**:
 Tokens a session can still take before pi's compaction threshold: the
@@ -656,8 +610,7 @@ truncation, cap
 The lossless file copy of a result this extension cut, held under the agent
 directory beside the sessions. The cut text goes to the model; the whole
 result stays in the Spill file, which is the only place it exists.
-_Avoid_: offload (Pruning rejects that word for its own projection), temp
-file (pi's own throwaway carries no naming contract), overflow file, dump
+_Avoid_: offload, temp file (pi's own throwaway carries no naming contract), overflow file, dump
 
 **Ledger**:
 What one assistant message has admitted so far against its Bound. Kept by
@@ -673,37 +626,6 @@ bytes are reserved out of the Bound before the cut runs rather than added after
 it.
 _Avoid_: kept output, retained output (pi's head and tail choice says which
 end survives, not that a cut happened)
-
-### Compression
-
-**Compression model**:
-The auxiliary model that writes the compressed form of a compression span.
-It is a separate choice from the active model, so a small cheap model can
-serve a large expensive one.
-_Avoid_: reference model (in the prompt-compression literature the reference
-model is the LLM that receives the compressed prompt), backup model,
-summarizer (compaction summarizes into the session; this writes outside it)
-
-**Compression span**:
-A finished turn that has fallen out of the keep window. Outgoing requests
-carry the span's compressed form instead of the original messages. The
-session keeps the originals, so the compression is reversible at any time.
-_Avoid_: compaction (compaction rewrites the session, compression never does),
-window, summary
-
-**Keep window**:
-The recent finished turns that outgoing requests carry as-is, plus the turn
-in progress. A turn that leaves the window becomes a compression span.
-_Avoid_: recent context, raw tail, tail
-
-**Compressed form**:
-The short text a compression span carries in outgoing requests in place of
-its original messages. The compression model writes it once, and every later
-request reuses the same text, so the prefix stays stable for the provider's
-cache. User instructions inside the span appear in it verbatim.
-_Avoid_: summary (a summary is what compaction writes into the session), gist
-(gist tokens are the research form of soft-prompt compression; this works in
-text), digest
 
 ### Edit assist
 

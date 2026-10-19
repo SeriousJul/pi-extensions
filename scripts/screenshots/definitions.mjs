@@ -206,22 +206,6 @@ async function buildIndexedRepo() {
 
 export const CAPTURES = [
 	// -----------------------------------------------------------------
-	// quota
-	// -----------------------------------------------------------------
-	{
-		id: "quota-detail",
-		out: "docs/extensions/quota-detail.png",
-		kind: "offscreen",
-		build: (tui) => views.quotaDetailView(),
-	},
-	{
-		id: "quota-footer",
-		out: "docs/extensions/quota-footer.png",
-		kind: "offscreen",
-		build: (tui) => views.quotaFooterLine(),
-	},
-
-	// -----------------------------------------------------------------
 	// usage
 	// -----------------------------------------------------------------
 	{
@@ -304,22 +288,6 @@ export const CAPTURES = [
 				timeoutMs: 60_000,
 			};
 		},
-	},
-
-	// -----------------------------------------------------------------
-	// pruning, compress
-	// -----------------------------------------------------------------
-	{
-		id: "pruning-settings",
-		out: "docs/extensions/pruning-settings.png",
-		kind: "offscreen",
-		build: (tui) => views.pruningSettingsLines(),
-	},
-	{
-		id: "compress-status",
-		out: "docs/extensions/compress-status.png",
-		kind: "offscreen",
-		build: (tui) => views.compressStatusLine(),
 	},
 
 	// -----------------------------------------------------------------

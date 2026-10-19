@@ -10,8 +10,9 @@ switches back to the original model once the quota recovers and the
 session is idle.
 
 Works from any session. It reads the OpenAI ChatGPT plan's quota windows
-through the Quota source module (`extensions/quota/source.ts`, issue
-#28), which owns the ChatGPT token refresh (ADR 0005).
+through its own Quota source module
+(`extensions/model-router/source.ts`, issue #28), which owns the ChatGPT
+token refresh (ADR 0046).
 
 ## Screenshot
 

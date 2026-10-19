@@ -60,8 +60,6 @@
     "e2e:lsp": "node tests/lsp/e2e-rpc.mjs",
     "e2e:output-limits": "node tests/output-limits/e2e-rpc.mjs",
     "e2e:output-starvation": "node tests/output-starvation/e2e-rpc.mjs",
-    "e2e:pruning": "node tests/pruning/e2e-rpc.mjs",
-    "e2e:quota": "node tests/quota/e2e-rpc.mjs",
     "e2e:resource-toggle": "node tests/resource-toggle/e2e-rpc.mjs",
     "e2e:safe-branch-summary": "node tests/safe-branch-summary/e2e.mjs",
     "e2e:skill-command": "node tests/skill-command/e2e-rpc.mjs",

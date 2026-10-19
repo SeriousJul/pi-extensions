@@ -2,11 +2,11 @@
  * Shared footer status line for pi-extensions (issue: footer layout).
  *
  * Pi renders one footer line for all extension statuses: the entries are
- * sorted by key and joined with a single space, left-aligned. Three of this
- * package's extensions want a different shape: ctx on the left, quota and
- * sync on the right, in the column above the provider/model text, and the
+ * sorted by key and joined with a single space, left-aligned. Two of this
+ * package's extensions want a different shape: ctx on the left, sync on the
+ * right, in the column above the provider/model text, and the
  * plain text in the footer's dim color (pi's chrome color), while semantic
- * colors (the sync arrows, quota FULL) keep their theme colors.
+ * colors (the sync arrows) keep their theme colors.
  *
  * This module owns the line. Extensions register a *piece* with a group
  * (left/right) instead of calling ctx.ui.setStatus; the module composes all

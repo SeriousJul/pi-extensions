@@ -14,7 +14,6 @@ import { getSettingsListTheme, initTheme } from "@earendil-works/pi-coding-agent
 import { WORK_ROOT } from "./look.mjs";
 import { darkTheme } from "./theme.mjs";
 import {
-	QUOTA_SNAPSHOT,
 	NOW_MS,
 	initialContextOptions,
 	PINNED_PI_PACKAGE_DIR,
@@ -34,62 +33,12 @@ initTheme("dark");
 const theme = darkTheme();
 
 /**
- * The /quota detail view: the exact component the /quota command mounts
- * (createQuotaDetailComponent in quota/index.ts), over the fixture snapshot.
- */
-export async function quotaDetailView() {
-	const { renderQuotaDetail } = await import("../../extensions/quota/render.ts");
-	const { createQuotaDetailComponent } = await import("../../extensions/quota/index.ts");
-	return createQuotaDetailComponent(renderQuotaDetail(QUOTA_SNAPSHOT, false, NOW_MS), theme, () => {});
-}
-
-/**
  * The /sync status view: the exact component the /sync command mounts
  * (createSyncStatusComponent in sync/index.ts), over the report lines.
  */
 export async function syncStatusView(lines) {
 	const { createSyncStatusComponent } = await import("../../extensions/sync/index.ts");
 	return createSyncStatusComponent(lines, false, theme, () => {});
-}
-
-/** The quota footer line, as a plain terminal line. */
-export async function quotaFooterLine() {
-	const { renderFooter } = await import("../../extensions/quota/render.ts");
-	const { paintQuotaLine } = await import("../../extensions/quota/index.ts");
-	const text = renderFooter(QUOTA_SNAPSHOT, false)
-		.map((line) => paintQuotaLine(line, theme))
-		.join("");
-	return {
-		render: (width) => [text, ...Array.from({ length: Math.max(0, width - 1) }, () => " ")],
-		invalidate: () => {},
-		handleInput: () => {},
-	};
-}
-
-/** The compress status bar piece, as a plain terminal line. */
-export function compressStatusLine() {
-	const spans = 3;
-	const tokensSaved = 12400;
-	const formatTokens = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
-	const text = theme.fg("dim", `${spans} span${spans === 1 ? "" : "s"}, ${formatTokens(tokensSaved)} saved`);
-	return {
-		render: () => [text, " "],
-		invalidate: () => {},
-		handleInput: () => {},
-	};
-}
-
-/** The pruning settings view: the two notify lines the command prints. */
-export function pruningSettingsLines() {
-	const lines = [
-		theme.fg("dim", "pruning: enabled=true, minResultTokens=1000, protectCurrentTurn=true"),
-		theme.fg("dim", "state: no outputs pruned yet; last gate: none"),
-	];
-	return {
-		render: () => [...lines, " ", " "],
-		invalidate: () => {},
-		handleInput: () => {},
-	};
 }
 
 /** The /usage TUI over the committed session fixture. */

@@ -20,37 +20,6 @@ export const NOW_MS = Date.parse("2026-01-15T14:00:00.000Z");
 export const now = () => NOW_MS;
 
 // ---------------------------------------------------------------------------
-// quota: the /quota detail view and the footer line
-// ---------------------------------------------------------------------------
-
-/**
- * The plan snapshot behind the quota screenshots. The numbers are the
- * example the quota docs page shows, so the text and the pixels agree:
- * plan plus, the 5h window at 42% resetting at 19:00 the same day, the 7d
- * window at 18% resetting the following Thursday at 14:00, fetched at
- * 13:56:00 (4m before the canonical clock).
- */
-export const QUOTA_SNAPSHOT = {
-	planType: "plus",
-	accountEmail: "julian@example.com",
-	fetchedAtMs: Date.parse("2026-01-15T13:56:00.000Z"),
-	windows: [
-		{
-			label: "5h",
-			usedPercent: 42,
-			resetsAtMs: Date.parse("2026-01-15T19:00:00.000Z"),
-			windowLengthMs: 5 * 60 * 60 * 1000,
-		},
-		{
-			label: "7d",
-			usedPercent: 18,
-			resetsAtMs: Date.parse("2026-01-22T14:00:00.000Z"),
-			windowLengthMs: 7 * 24 * 60 * 60 * 1000,
-		},
-	],
-};
-
-// ---------------------------------------------------------------------------
 // sync: the /sync status view and the pi-sync status CLI
 // ---------------------------------------------------------------------------
 
@@ -308,7 +277,7 @@ export function resourceSettings() {
 			themes: [],
 			packages: [
 				"npm:pi-web-access",
-				{ source: "git:github.com/SeriousJul/pi-extensions", extensions: ["-extensions/quota/index.ts"] },
+				{ source: "git:github.com/SeriousJul/pi-extensions", extensions: ["-extensions/context-cap/index.ts"] },
 			],
 		},
 		project: {

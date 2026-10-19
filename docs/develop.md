@@ -14,7 +14,6 @@ test commands.
 │   ├── tools.ts
 │   ├── context-cap/  # multi-file extension, entry point at context-cap/index.ts
 │   ├── model-router/ # multi-file extension, entry point at model-router/index.ts
-│   ├── quota/        # multi-file extension, entry point at quota/index.ts
 │   ├── sync/         # multi-file extension, entry point at sync/index.ts, plus the pi-sync CLI
 │   └── codegraph/    # multi-file extension, entry point at codegraph/index.ts
 ├── docs/adr/         # architecture decision records

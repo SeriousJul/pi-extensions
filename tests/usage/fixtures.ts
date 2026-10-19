@@ -4,8 +4,8 @@
  *
  * a.jsonl: assistant, model change, second assistant, a tool result with
  *         nested LLM usage, a compaction with a retained tail, and a
- *         compress-span custom entry (the compress extension's persisted
- *         compression call).
+ *         compress-span custom entry (persisted by the compress extension,
+ *         dropped by ADR 0046; old sessions still carry the lines).
  * b.jsonl: a fork of a.jsonl (byte-identical copied lines, including the
  *         compress-span line) plus one new event on openai-codex.
  * c.jsonl: a branch back to the first model, plus an unparseable partial

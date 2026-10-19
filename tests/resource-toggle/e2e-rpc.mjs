@@ -37,14 +37,14 @@
  *   9. a resource_toggle tool action without a name relays the
  *      no-argument command, so the table prints for the user.
  *
- *   Deliberate deviation from the spec's Seam 2: the spec pins a local
- *   install of this repository with the real quota extension and an
- *   assertion on its footer status piece. The quota piece depends on a
- *   live quota read and stays invisible without a login, so it cannot be
- *   observed in a sandboxed home. The package cycle asserts on command
- *   and tool liveness instead: the dummy command reports the live tool
- *   registry from the session, so a still-live command and tool are direct
- *   evidence the package factory did not run the filter.
+ *   The package cycle asserts on command and tool liveness: the dummy
+ *   command reports the live tool registry from the session, so a
+ *   still-live command and tool are direct evidence the package factory
+ *   did not run the filter. (An earlier draft of the spec pinned a local
+ *   install of this repository with the then-shipped quota extension and
+ *   an assertion on its footer status piece; that piece depends on a live
+ *   quota read and stays invisible without a login, and ADR 0046 dropped
+ *   the extension, so the dummy keeps the same coverage.)
  *
  *   node tests/resource-toggle/e2e-rpc.mjs
  */
@@ -111,7 +111,7 @@ writeFileSync(
 	join(pkgDir, "package.json"),
 	JSON.stringify({ name: "e2e-pkg", version: "0.0.0" }, null, 2) + "\n",
 );
-writeFileSync(join(pkgDir, "extensions", "quota.ts"), dummyBody("quota", "quota_tool"));
+writeFileSync(join(pkgDir, "extensions", "usage.ts"), dummyBody("usage", "usage_tool"));
 writeFileSync(join(pkgDir, "extensions", "pkgother.ts"), dummyBody("pkgother", "pkgother_tool"));
 // A single-file local package source: pi loads the file unconditionally and
 // never applies a packages-array filter to it, so its state cannot be
@@ -122,7 +122,7 @@ const globalSeed = {
 	// "~/pkg": HOME is the sandbox, so the entry names the local package with
 	// a tilde, exactly as a user would write it.
 	packages: ["~/pkg", "~/single.ts"],
-	extensions: ["-extensions/quota.ts"],
+	extensions: ["-extensions/usage.ts"],
 };
 writeFileSync(globalSettingsPath, JSON.stringify(globalSeed, null, 2) + "\n");
 
@@ -394,18 +394,18 @@ try {
 
 	// The incident: the old no-op pattern did not disable the package
 	// extension, so its command is active despite the settings file.
-	await waitForCommands(["quota", "pkgother"], true);
-	await rpc.request("prompt", { message: "/quota" });
+	await waitForCommands(["usage", "pkgother"], true);
+	await rpc.request("prompt", { message: "/usage" });
 	note = await waitFor(
-		() => rpc.notifies.find((n) => (n.message ?? "").startsWith("quota active tools:")),
-		"quota notify at start",
+		() => rpc.notifies.find((n) => (n.message ?? "").startsWith("usage active tools:")),
+		"usage notify at start",
 		rpc.getStderr,
 	);
-	if (!note.message.includes("quota_tool")) fail(`/quota missing quota_tool:\n${note.message}`);
+	if (!note.message.includes("usage_tool")) fail(`/usage missing usage_tool:\n${note.message}`);
 	console.log("ok: the no-op pattern leaves the package command active (incident reproduced)");
 
 	seen = rpc.notifies.length;
-	await rpc.request("prompt", { message: "/disable quota.ts" });
+	await rpc.request("prompt", { message: "/disable usage.ts" });
 	note = await waitFor(
 		() => rpc.notifies.slice(seen).find((n) => (n.message ?? "").startsWith("Disabled extension")),
 		"package disable report",
@@ -416,21 +416,21 @@ try {
 		() => {
 			const g = readGlobal();
 			const entry = (g.packages ?? []).find((p) => typeof p === "object" && p.source === "~/pkg");
-			return entry && JSON.stringify(entry.extensions) === JSON.stringify(["-extensions/quota.ts"]);
+			return entry && JSON.stringify(entry.extensions) === JSON.stringify(["-extensions/usage.ts"]);
 		},
 		"packages filter in global settings",
 		rpc.getStderr,
 	);
 	await waitFor(
-		() => !(readGlobal().extensions ?? []).some((e) => String(e).includes("quota")),
+		() => !(readGlobal().extensions ?? []).some((e) => String(e).includes("usage")),
 		"no-op pattern self-healed out of the extensions array",
 		rpc.getStderr,
 	);
-	await waitForCommands(["quota"], false);
+	await waitForCommands(["usage"], false);
 	console.log("ok: package disable lands the packages filter, self-heals the no-op, and the command is gone");
 
 	seen = rpc.notifies.length;
-	await rpc.request("prompt", { message: "/enable quota.ts" });
+	await rpc.request("prompt", { message: "/enable usage.ts" });
 	await waitFor(
 		() => rpc.notifies.slice(seen).find((n) => (n.message ?? "").startsWith("Enabled extension")),
 		"package enable report",
@@ -440,16 +440,16 @@ try {
 		() => {
 			const g = readGlobal();
 			const entry = (g.packages ?? []).find((p) => typeof p === "object" && p.source === "~/pkg");
-			return entry && JSON.stringify(entry.extensions) === JSON.stringify(["+extensions/quota.ts"]);
+			return entry && JSON.stringify(entry.extensions) === JSON.stringify(["+extensions/usage.ts"]);
 		},
 		"enable filter in global settings",
 		rpc.getStderr,
 	);
-	await waitForCommands(["quota"], true);
+	await waitForCommands(["usage"], true);
 	console.log("ok: package enable swaps the filter and the command returns");
 
 	seen = rpc.notifies.length;
-	await rpc.request("prompt", { message: "/disable quota.ts --project" });
+	await rpc.request("prompt", { message: "/disable usage.ts --project" });
 	await waitFor(
 		() => rpc.notifies.slice(seen).find((n) => (n.message ?? "").startsWith("Disabled extension")),
 		"project package disable report",
@@ -461,17 +461,17 @@ try {
 			const entry = (p.packages ?? []).find((e) => typeof e === "object");
 			// A local source is rewritten relative to the project dir for
 			// portability: sandbox/project/.pi -> sandbox/pkg is ../../pkg.
-			return entry && entry.source === "../../pkg" && JSON.stringify(entry.extensions) === JSON.stringify(["-extensions/quota.ts"]);
+			return entry && entry.source === "../../pkg" && JSON.stringify(entry.extensions) === JSON.stringify(["-extensions/usage.ts"]);
 		},
 		"packages filter in project settings",
 		rpc.getStderr,
 	);
 	// The global + filter stays; the project - entry replaces it for this session.
-	await waitForCommands(["quota"], false);
+	await waitForCommands(["usage"], false);
 	console.log("ok: project mode writes the project filter that replaces the global one");
 
 	seen = rpc.notifies.length;
-	await rpc.request("prompt", { message: "/inherit quota.ts" });
+	await rpc.request("prompt", { message: "/inherit usage.ts" });
 	note = await waitFor(
 		() => rpc.notifies.slice(seen).find((n) => (n.message ?? "").startsWith("Cleared the project override")),
 		"package inherit report",
@@ -482,7 +482,7 @@ try {
 		"project entry collapsed to the plain relative source string",
 		rpc.getStderr,
 	);
-	await waitForCommands(["quota"], true);
+	await waitForCommands(["usage"], true);
 	console.log("ok: inherit collapses the project entry to the plain string and the command returns");
 
 	// --- Phase 8: single-file package refusal ---------------------------------
@@ -513,9 +513,9 @@ try {
 		"/resources table after package toggles",
 		rpc.getStderr,
 	);
-	const quotaLine = (note.message ?? "").split("\n").find((l) => l.startsWith("quota.ts")) ?? "";
-	if (!quotaLine.includes("(package)") || !quotaLine.includes("enabled")) {
-		fail(`/resources does not show quota.ts as an enabled package resource:\n${note.message}`);
+	const usageLine = (note.message ?? "").split("\n").find((l) => l.startsWith("usage.ts")) ?? "";
+	if (!usageLine.includes("(package)") || !usageLine.includes("enabled")) {
+		fail(`/resources does not show usage.ts as an enabled package resource:\n${note.message}`);
 	}
 	console.log("ok: the headless table agrees with the live session");
 	// --- Phase 9: no-argument state commands -------------------------------------

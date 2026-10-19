@@ -9,20 +9,20 @@ chosen option, and the options that were considered.
 | [0002](/adr/0002-per-worktree-index-seeded-from-sibling) | Per-worktree index, seeded from a sibling worktree. |
 | [0003](/adr/0003-named-project-roots-for-dependency-sources) | Named project roots for dependency sources. |
 | [0004](/adr/0004-context-window-cap-via-provider-reregistration) | Context window cap via provider re-registration. |
-| [0005](/adr/0005-quota-owns-chatgpt-token-refresh) | Quota extension refreshes the ChatGPT token itself. |
+| [0005](/adr/0005-quota-owns-chatgpt-token-refresh) | Quota extension refreshes the ChatGPT token itself. Superseded by ADR 0046 (the Quota source moved into model-router, which owns the refresh). |
 | [0006](/adr/0006-model-router-resumes-via-user-message) | Model router resumes a quota-halted turn with a synthetic user message. |
 | [0007](/adr/0007-sync-uses-oauth-device-flow-with-expiring-tokens) | Sync authenticates with the OAuth device flow and expiring tokens. |
 | [0008](/adr/0008-usage-report-derived-from-session-scan) | Usage reports are derived from session files, not a stored index. |
 | [0009](/adr/0009-usage-events-counted-once-per-distinct-line) | Usage events are counted once, keyed by the full session line. |
 | [0010](/adr/0010-gist-names-encode-paths-empty-files-absent) | Gist names percent-encode sync paths, and empty files are absent. |
-| [0011](/adr/0011-pruning-is-a-request-projection) | Pruning is a request-level projection; the session file is the store. |
+| [0011](/adr/0011-pruning-is-a-request-projection) | Pruning is a request-level projection; the session file is the store. Superseded by ADR 0046 (Pruning dropped). |
 | [0012](/adr/0012-resource-toggles-write-native-settings-patterns) | Resource toggles write the native settings override patterns. |
 | [0013](/adr/0013-skill-tree-tracks-upstream-sources-with-per-source-pins) | The skill tree tracks upstream sources with per-source pins. |
 | [0014](/adr/0014-tool-usage-counts-cached-session-scan) | Tool usage counts are derived from a session scan with a per-file stat-keyed cache. |
-| [0015](/adr/0015-compression-is-a-request-time-view) | Compression is a request-time view; the compressed form is text. |
+| [0015](/adr/0015-compression-is-a-request-time-view) | Compression is a request-time view; the compressed form is text. Superseded by ADR 0046 (Compress dropped). |
 | [0016](/adr/0016-dependency-indexes-build-on-first-query) | Dependency indexes build on first query, with streamed progress. |
 | [0017](/adr/0017-docs-screenshots-render-by-capture-pipeline) | Docs screenshots render by a capture pipeline; none is taken by hand. |
-| [0018](/adr/0018-pruning-engagement-is-sticky) | Pruning engagement is sticky for the session; it holds until a reset. |
+| [0018](/adr/0018-pruning-engagement-is-sticky) | Pruning engagement is sticky for the session; it holds until a reset. Superseded by ADR 0046 (Pruning dropped). |
 | [0019](/adr/0019-llama-refresh-self-heals-the-fallback-window) | The fallback window self-heals via a one-shot re-resolution after the model's wake. |
 | [0020](/adr/0020-edit-assist-corrects-by-mutating-tool-call-input) | Edit assist corrects failing edit calls by mutating tool input; it never writes files. |
 | [0021](/adr/0021-ctx-shows-the-base-prompt-as-split-rows) | /ctx shows the default base prompt as split rows: boilerplate, snippets, one row per guideline. |
@@ -50,3 +50,4 @@ chosen option, and the options that were considered.
 | [0043](/adr/0043-language-servers-are-lazy-per-root-and-never-shared) | Language servers are lazy, one per (language, root) pair, bounded to four per session, and never shared across sessions. |
 | [0044](/adr/0044-the-typescript-7-native-server-is-found-per-root) | The TypeScript 7 native server is found per root: the project's own typescript@7 wins ahead of every PATH binary, and a PATH tsc only counts when it reports version 7 or newer. |
 | [0045](/adr/0045-the-tool-row-header-names-the-tool-origin) | The Tool row header names the Tool origin too: `built-in`, `mcp`, or the extension's own name, with the MCP case read from pi's name rule because pi reports its MCP tools as built-in. Amends ADR 0038. |
+| [0046](/adr/0046-drop-pruning-compress-and-quota) | The pruning, compress, and quota extensions are dropped, and the Quota source module moves into the model-router extension, which owns the ChatGPT token refresh. Supersedes ADRs 0005, 0011, 0015, and 0018. |
