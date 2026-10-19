@@ -32,7 +32,8 @@
  *   normalizes image blocks after this hook. No all-image result is
  *   special-cased.
  * - The extension never re-reads or rewrites the session file. It changes
- *   what gets stored, which is all Pruning and Compression can ever see.
+ *   what gets stored, so the compaction that reads the session works from
+ *   the same bytes.
  */
 import fs from "node:fs";
 import os from "node:os";

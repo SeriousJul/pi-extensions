@@ -9,16 +9,6 @@
  * image; the golden test asserts them for the fast captures as well.
  */
 export const EXPECTED_LINES = {
-	"quota-detail": [
-		"ChatGPT plan quota",
-		"Plan: plus",
-		"Account: julian@example.com",
-		"5h  42%   resets 19:00 (in 5h)",
-		"7d  18%   resets Thu 14:00 (in 7d)",
-		"Fetched: 13:56:00 (4m ago)",
-		"Press Enter or Esc to close",
-	],
-	"quota-footer": ["GPT 5h 42% · 7d 18%"],
 	"usage-tui": [
 		"pi usage",
 		"b week   w all   g provider+model   s time   c full   p none   m none",
@@ -67,11 +57,6 @@ export const EXPECTED_LINES = {
 		"in sync",
 	],
 	"sync-status": ["pi sync status (gist 9f2c41ab)", "ahead 0, behind 0", "in sync"],
-	"pruning-settings": [
-		"pruning: enabled=true, minResultTokens=1000, protectCurrentTurn=true",
-		"state: no outputs pruned yet; last gate: none",
-	],
-	"compress-status": ["3 spans, 12.4k saved"],
 	"codegraph-status": [
 		// The status block shows once, as the info notification in the
 		// transcript; /codegraph no longer sets the persistent widget (#80).

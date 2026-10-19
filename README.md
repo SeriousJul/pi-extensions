@@ -9,12 +9,9 @@ VitePress from the [`docs/`](docs/) folder.
 - **context-cap** - `--context-window <tokens>` caps the session's context window so compaction fires early.
 - **model-router** - recovers a session from a provider usage-limit halt (switch to a fallback or wait for the reset, then resume).
 - **llama-refresh** - self-heals the context window of a session that resolved a local llama.cpp model while it was asleep.
-- **quota** - monitors the OpenAI ChatGPT plan quota: a footer line with the used windows, and a `/quota` detail view.
 - **resource-toggle** - `/resources`, `/enable`, `/disable`, `/inherit`: enable and disable extensions, skills, prompt templates, and themes from inside a running session. A state command with no name opens the resource picker in TUI mode (a resource table in the headless modes), and every surface shows the one-line description derived from the resource's source file.
 - **usage** - token and cost reporting across all pi sessions: the `/usage` TUI view, the `usage_report` agent tool, and the `pi-usage` CLI.
 - **sync** - cross-device pi config sync: `/sync` plus the `pi-sync` CLI, three-way merge, v1 backend a secret GitHub Gist.
-- **compress** - replaces finished turns in outgoing requests with one short standing-in message; the session file stays intact.
-- **pruning** - two-level context control: prunes large tool outputs out of the request at pi's compaction threshold, and lets the prune gate cancel the compaction when pruning alone frees enough headroom.
 - **output-limits** - bounds the size of a tool result before pi stores it, against a share of the session's headroom, and keeps the whole result in a spill file so the cut is lossless.
 - **output-starvation** - judges each request's output budget against the Effective window: refuses a budget that collapsed to pi's floor, and fits one the window cannot pay for, so the provider answers instead of rejecting.
 - **edit-assist** - corrects and diagnoses built-in edit calls: an oldText that differs from the file only in leading whitespace is corrected before execution, and the success result carries a one-line honesty note naming the line; a no-match failure gets the Nearest region with a unified diff, an ambiguous match gets the occurrence line numbers, a malformed call gets one targeted hint, and the stock error text is always kept. Also injects the standing edit-tool prompt rule while the edit tool is active.
@@ -36,16 +33,17 @@ See the [pi packages docs](https://github.com/earendil-works/pi/blob/main/packag
 | context-cap | [docs](https://seriousjul.github.io/pi-extensions/extensions/context-cap.html) |
 | initial-context | [docs](https://seriousjul.github.io/pi-extensions/extensions/initial-context.html) |
 | model-router | [docs](https://seriousjul.github.io/pi-extensions/extensions/model-router.html) |
-| quota | [docs](https://seriousjul.github.io/pi-extensions/extensions/quota.html) |
+| llama-refresh | [docs](https://seriousjul.github.io/pi-extensions/extensions/llama-refresh.html) |
+| resource-toggle | [docs](https://seriousjul.github.io/pi-extensions/extensions/resource-toggle.html) |
 | sync | [user page](https://seriousjul.github.io/pi-extensions/extensions/sync/) / [internals](https://seriousjul.github.io/pi-extensions/extensions/sync/internals.html) |
 | usage | [docs](https://seriousjul.github.io/pi-extensions/extensions/usage.html) |
-| compress | [docs](https://seriousjul.github.io/pi-extensions/extensions/compress.html) |
-| pruning | [docs](https://seriousjul.github.io/pi-extensions/extensions/pruning.html) |
 | output-limits | [docs](https://seriousjul.github.io/pi-extensions/extensions/output-limits.html) |
 | output-starvation | [docs](https://seriousjul.github.io/pi-extensions/extensions/output-starvation.html) |
 | edit-assist | [docs](https://seriousjul.github.io/pi-extensions/extensions/edit-assist.html) |
+| lsp | [docs](https://seriousjul.github.io/pi-extensions/extensions/lsp.html) |
 | bash-no-match | [docs](https://seriousjul.github.io/pi-extensions/extensions/bash-no-match.html) |
 | background-jobs | [docs](https://seriousjul.github.io/pi-extensions/extensions/background-jobs.html) |
+| safe-branch-summary | [docs](https://seriousjul.github.io/pi-extensions/extensions/safe-branch-summary.html) |
 | skill-command | [docs](https://seriousjul.github.io/pi-extensions/extensions/skill-command.html) |
 | skill-migrate | [README](extensions/skill-migrate/README.md) |
 | skill-tool | [docs](https://seriousjul.github.io/pi-extensions/extensions/skill-tool.html) |
@@ -115,14 +113,11 @@ policy.
 │   ├── tools.ts
 │   ├── context-cap/  # multi-file extension, entry point at context-cap/index.ts
 │   ├── model-router/ # multi-file extension, entry point at model-router/index.ts
-│   ├── quota/        # multi-file extension, entry point at quota/index.ts
 │   ├── resource-toggle/  # multi-file extension, entry point at resource-toggle/index.ts
 │   ├── usage/        # multi-file extension, entry point at usage/index.ts, plus the pi-usage CLI
 │   ├── sync/         # multi-file extension, entry point at sync/index.ts, plus the pi-sync CLI
 │   ├── skill-migrate/  # multi-file extension, entry point at skill-migrate/index.ts, plus the CLI
-│   ├── codegraph/    # multi-file extension, entry point at codegraph/index.ts
-│   ├── compress/     # multi-file extension, entry point at compress/index.ts
-│   └── pruning/      # multi-file extension, entry point at pruning/index.ts
+│   └── codegraph/    # multi-file extension, entry point at codegraph/index.ts
 ├── docs/             # VitePress site root, canonical source for all documentation
 │   ├── .vitepress/   # site config; its own package.json + lockfile for site tooling
 │   ├── adr/          # architecture decision records

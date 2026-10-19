@@ -20,7 +20,7 @@
  * persist action so the extension can store it as a session entry and
  * re-arm it after a restart (see rearm()).
  */
-import type { QuotaRead } from "../quota/source";
+import type { QuotaRead } from "./source";
 
 export type StrategyName = "switch" | "wait";
 

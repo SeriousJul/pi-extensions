@@ -184,8 +184,7 @@ router, which enforces its own window: it refuses a request whose prompt plus
 its requested ceiling exceeds `n_ctx`, the way a real server does. A healthy
 turn goes out untouched and unmentioned; a starved turn is refused verbatim
 with the provider never contacted; the refusal is once per turn; compaction
-still rescues a stale-usage session; a starved session with Pruning loaded is
-still refused. The overrun scenarios then show a session whose Reported context
+still rescues a stale-usage session. The overrun scenarios then show a session whose Reported context
 plus one dense trailing tool result overruns the window going out *fitted* and
 accepted by that enforcing provider, and pi's own threshold compaction firing
 in the same run on the count the provider reported for the fitted request; the

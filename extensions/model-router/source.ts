@@ -1,11 +1,11 @@
 /**
  * Quota source module: the one module that owns all data logic for reading
- * the OpenAI ChatGPT plan's quota windows (issue #28 design, ADR 0005).
+ * the OpenAI ChatGPT plan's quota windows (issue #28 design; moved into the
+ * model-router extension by ADR 0046, which supersedes ADR 0005).
  *
- * It is a library module loaded by two extensions, each with its own
- * entry point: the Quota extension's UI (index.ts: footer, /quota, polling)
- * and the Model router, which reuses it for every usage read and token
- * refresh. Neither duplicates endpoint parsing or OAuth plumbing.
+ * It is the model-router extension's own module: the router's wait strategy
+ * and switch-back use it for every usage read and token refresh. No other
+ * extension duplicates the endpoint parsing or OAuth plumbing.
  *
  * Credentials come from pi's own auth store (~/.pi/agent/auth.json, or
  * $PI_CODING_AGENT_DIR/auth.json). When the access token is expired, or a
@@ -149,7 +149,7 @@ async function readUsage(ctx: ReadContext): Promise<QuotaRead> {
 
 	let response = await fetchUsage(credential, ctx);
 	// One retry after a re-read: pi may have rotated the same refresh token in
-	// between, and the re-read picks that up (ADR 0005).
+	// between, and the re-read picks that up (ADR 0005, carried by ADR 0046).
 	if (response.status === 401 && !refreshed) {
 		const refresh = await refreshCredential(credential, ctx);
 		if (!refresh.ok) return { ok: false, reason: "login-dead", message: refresh.message };

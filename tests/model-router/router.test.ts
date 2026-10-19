@@ -7,7 +7,7 @@ import {
 	type ModelRouter,
 	type PendingRecovery,
 } from "../../extensions/model-router/router";
-import type { QuotaRead, UsageSnapshot } from "../../extensions/quota/source";
+import type { QuotaRead, UsageSnapshot } from "../../extensions/model-router/source";
 
 const CODEX = "openai-codex";
 const NOW0 = 1_700_000_000_000;

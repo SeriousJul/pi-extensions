@@ -84,7 +84,7 @@ settings, where the package's entry becomes object form carrying a
 per-resource-type filter, with patterns relative to the package root:
 
 ```json
-{ "source": "git:github.com/acme/pkg", "extensions": ["-extensions/quota/index.ts"] }
+{ "source": "git:github.com/acme/pkg", "extensions": ["-extensions/usage/index.ts"] }
 ```
 
 - **Global mode** writes the filter into the packages entry of the

@@ -185,13 +185,11 @@ undo is not one.
 
 ## How it composes
 
-The Bound is computed from what pi is about to store, so the extension changes
-the input to both other levels of context control rather than competing with
-them. Pruning and Compression are request-time projections and never rewrite
-the session file, so a tool result that is too large can only be bounded as it
-is produced. What the Bound leaves out of the session is out of Recall's reach
-too: Recall resolves a session entry, and the cut text lives in the Spill
-instead.
+The Bound is computed from what pi is about to store, so the extension
+changes the input to pi's own compaction rather than competing with it. A
+tool result that is too large can only be bounded as it is produced. What
+the Bound leaves out of the session is gone from the model's view too: the
+cut text lives in the Spill file instead.
 
 ## Tests
 

@@ -12,7 +12,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-import { createQuotaSource } from "../quota/source.ts";
+import { createQuotaSource } from "./source.ts";
 import { isQuotaHaltError } from "./classifier.ts";
 import {
 	createModelRouter,
