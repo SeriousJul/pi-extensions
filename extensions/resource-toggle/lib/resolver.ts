@@ -19,6 +19,7 @@ import {
 import type {
   MachineContext,
   PackageEntry,
+  RawSettingsDocument,
   ResolvedResources,
   ResourceInfo,
   ResourceRef,
@@ -210,6 +211,12 @@ export async function resolveResources(options: ResolveOptions): Promise<Resolve
     settings: {
       global: pickScope(trustedManager.getGlobalSettings()),
       project: pickScope(trustedManager.getProjectSettings()),
+    },
+    // The raw documents carry the top-level keys beyond the resource
+    // arrays; the drift check reads the extension-named keys from them.
+    raw: {
+      global: trustedManager.getGlobalSettings() as unknown as RawSettingsDocument,
+      project: trustedManager.getProjectSettings() as unknown as RawSettingsDocument,
     },
   };
 }

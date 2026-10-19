@@ -183,13 +183,13 @@ export function packagePattern(ref: ResourceRef): string {
 }
 
 /**
- * The absolute path a local package source resolves to, for comparison.
- * Mirrors pi's `resolvePath`: a leading `~` expands to the home directory
- * and a file: URL translates to its path, before the source resolves
- * against the scope's base directory.
+ * The path on disk a settings entry target names, with pi's tilde and
+ * file: URL expansion: a leading `~` expands to the home directory, a
+ * file: URL translates to its path, and a relative target resolves
+ * against the given base directory.
  */
-export function resolvedLocalSource(source: string, scope: Scope, ctx: MachineContext): string {
-  let path = source.trim();
+export function entryPath(target: string, baseDir: string): string {
+  let path = target.trim();
   const home = homedir();
   if (path === "~") path = home;
   else if (path.startsWith("~/") || (sep === "\\" && path.startsWith("~\\"))) path = join(home, path.slice(2));
@@ -200,7 +200,16 @@ export function resolvedLocalSource(source: string, scope: Scope, ctx: MachineCo
       // A malformed URL: fall through with the raw value.
     }
   }
-  return toPosix(resolve(defaultBaseDir(scope, ctx), path));
+  return toPosix(resolve(baseDir, path));
+}
+
+/**
+ * The absolute path a local package source resolves to, for comparison.
+ * Mirrors pi's `resolvePath`: the source resolves against the scope's
+ * base directory, tilde and file: URL expansion included.
+ */
+export function resolvedLocalSource(source: string, scope: Scope, ctx: MachineContext): string {
+  return entryPath(source, defaultBaseDir(scope, ctx));
 }
 
 /** Mirrors pi: a source is local when it carries no npm/git/remote prefix. */
@@ -494,14 +503,25 @@ function globMatch(pattern: string, text: string): boolean {
   }
 }
 
+/**
+ * Whether a pattern targets this resource, resolved against the given
+ * base directory - the entry's own base for a settings-array entry, the
+ * package root for a package filter. Exact (`+`/`-`) patterns match only
+ * the base-relative and absolute paths; glob patterns also match the bare
+ * file name and, for a skill file, the skill folder.
+ */
+export function patternTargetsResource(pattern: string, ref: ResourceRef, baseDir: string, exact: boolean): boolean {
+  const normalized = exact ? (pattern.startsWith("./") ? pattern.slice(2) : toPosix(pattern)) : toPosix(pattern);
+  const targets = patternTargets(ref, baseDir, exact);
+  return exact ? targets.includes(normalized) : targets.some((target) => globMatch(normalized, target));
+}
+
 function exactMatches(pattern: string, ref: ResourceRef, ctx: MachineContext): boolean {
-  const normalized = pattern.startsWith("./") ? pattern.slice(2) : toPosix(pattern);
-  return patternTargets(ref, matchBaseDir(ref, ctx), true).includes(normalized);
+  return patternTargetsResource(pattern, ref, matchBaseDir(ref, ctx), true);
 }
 
 function globPatternMatches(pattern: string, ref: ResourceRef, ctx: MachineContext): boolean {
-  const normalized = toPosix(pattern);
-  return patternTargets(ref, matchBaseDir(ref, ctx), false).some((target) => globMatch(normalized, target));
+  return patternTargetsResource(pattern, ref, matchBaseDir(ref, ctx), false);
 }
 
 /**

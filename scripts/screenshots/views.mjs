@@ -116,6 +116,7 @@ export async function resourcesTui(tui) {
 		theme,
 		resources: resourceInfos(),
 		settings: resourceSettings(),
+		drift: [],
 		machine: RESOURCE_MACHINE,
 		projectTrusted: true,
 		apply: async () => ({ ok: true }),

@@ -366,6 +366,22 @@ _Avoid_: enabled flag (only two of the states), on/off (hides the override layer
 A plain path plus a `+` or `-` pattern for the same path, written together into the project settings. It re-registers a global resource at project scope, where it wins over the global copy, so the project decides the resource's state without touching the global file.
 _Avoid_: alias (implies the path stays one resource), per-project copy, override rule
 
+**Drift finding**:
+One settings line that expresses intent that does nothing: a Stale entry, a pair of Conflicting entries, or an extension Configured while disabled. The resource list computes the findings from the raw settings documents and the resolved resource catalog (ADR 0047) and renders them as a read-only group in the interactive list, a section of the headless tables and the tool output, and one session-start notice when they are non-empty. Findings name their scope so the fix lands in the right file; the check names the drift, and deleting the line is the user's edit.
+_Avoid_: lint, validation error (the check reads resource semantics, not the settings format), warning
+
+**Stale entry**:
+A drift finding class: an override pattern in a settings resource array, or an entry of a package filter, whose target matches no loaded resource and, where it names a file, names no file on disk. A sibling drop of packages is what leaves stale filter entries behind.
+_Avoid_: dead pattern (the resource-array spelling only), orphan (the v2 word for a key whose extension is gone)
+
+**Conflicting entries**:
+A drift finding class: two entries in one array with the same target and opposite polarity: one force-includes the target, the other force-excludes it, so the array contradicts itself.
+_Avoid_: clash, collision
+
+**Configured while disabled**:
+A drift finding class: an extension disabled in the effective view while a top-level settings key equal to its name in camelCase (model-router to modelRouter) exists in the settings. The key match is a name guess, so the finding is flagged possible: an extension that breaks the convention degrades to a soft finding, never a hard error.
+_Avoid_: orphaned key (the v2 class for a key whose extension is deleted), hard error
+
 ### Package install
 
 **Install root**:

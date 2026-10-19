@@ -35,7 +35,15 @@
  *   8. a state command without a name prints the resource table, with the
  *      DESCRIPTION column, in the headless modes;
  *   9. a resource_toggle tool action without a name relays the
- *      no-argument command, so the table prints for the user.
+ *      no-argument command, so the table prints for the user;
+ *   10. the settings drift check (ADR 0047): the sandboxed settings carry
+ *      a stale package-filter entry (a file the package does not have),
+ *      the old no-op pattern, and a disabled extension whose name maps to
+ *      a settings key. One session-start notice reports the count and
+ *      fires exactly once across the reloads, the headless /resources
+ *      table carries the drift lines, and the tool's list output does too.
+ *      When the package disable self-heals the no-op pattern out of the
+ *      resource array, the drift count drops by one.
  *
  *   The package cycle asserts on command and tool liveness: the dummy
  *   command reports the live tool registry from the session, so a
@@ -98,13 +106,18 @@ export default function (pi: any): void {
 }
 `;
 writeFileSync(join(agentDir, "extensions", "dummy.ts"), dummyBody("dummy", "dummy_tool"));
+// A global extension disabled by the seeded pattern whose name maps to a
+// settings key in camelCase: the configured-while-disabled drift class.
+writeFileSync(join(agentDir, "extensions", "camel-ext.ts"), dummyBody("camel-ext", "camel_tool"));
 writeFileSync(join(project, ".pi", "extensions", "dummy2.ts"), dummyBody("dummy2", "dummy2_tool"));
 
 // A local package with two extensions. The global settings carry the
-// package as a plain entry plus an old no-op package-relative pattern in
-// the extensions array, exactly the harmed shape the incident left behind:
-// the pattern resolves against the agent dir, where nothing matches, so pi
-// ignores it and the "disabled" command is still active.
+// package in object form with a stale filter entry (gone.ts is not in the
+// package), plus an old no-op package-relative pattern in the extensions
+// array, exactly the harmed shape the incident left behind: the pattern
+// resolves against the agent dir, where nothing matches, so pi ignores it
+// and the "disabled" command is still active. The settings also carry the
+// camelExt key: configured while the camel-ext extension is disabled.
 const pkgDir = join(sandbox, "pkg");
 mkdirSync(join(pkgDir, "extensions"), { recursive: true });
 writeFileSync(
@@ -121,8 +134,9 @@ const globalSeed = {
 	defaultProjectTrust: "always",
 	// "~/pkg": HOME is the sandbox, so the entry names the local package with
 	// a tilde, exactly as a user would write it.
-	packages: ["~/pkg", "~/single.ts"],
-	extensions: ["-extensions/usage.ts"],
+	packages: [{ source: "~/pkg", extensions: ["-extensions/gone.ts"] }, "~/single.ts"],
+	extensions: ["-extensions/usage.ts", "-extensions/camel-ext.ts"],
+	camelExt: { enabled: true },
 };
 writeFileSync(globalSettingsPath, JSON.stringify(globalSeed, null, 2) + "\n");
 
@@ -214,7 +228,21 @@ try {
 	for (const name of ["dummy", "dummy2", "resources", "enable", "disable", "inherit"]) {
 		if (!commands.includes(name)) fail(`missing command ${name} at start: ${commands}`);
 	}
+	// The seeded -extensions/camel-ext.ts pattern disables the camel-ext
+	// fixture: the command is gone from the start, and its settings key is
+	// the configured-while-disabled drift finding.
+	if (commands.includes("camel-ext")) fail(`camel-ext command should be disabled at start: ${commands}`);
 	console.log("ok: resource-toggle and both dummies are visible at start");
+
+	// The session-start notice reports the seeded drift: the stale
+	// package-filter entry, the old no-op pattern, and the camelExt key.
+	const notice = await waitFor(
+		() => rpc.notifies.find((n) => (n.message ?? "").includes("run /resources to see them")),
+		"session-start drift notice",
+		rpc.getStderr,
+	);
+	if (!notice.message.includes("3 settings drift findings")) fail(`drift notice count is wrong:\n${notice.message}`);
+	console.log("ok: the session-start notice reports the drift count and points at /resources");
 
 	await rpc.request("prompt", { message: "/dummy" });
 	let note = await waitFor(
@@ -263,7 +291,13 @@ try {
 	if (!dummyLine.includes("disabled")) fail(`/resources does not show dummy.ts disabled:\n${note.message}`);
 	const dummy2Line = (note.message ?? "").split("\n").find((l) => l.startsWith("dummy2.ts")) ?? "";
 	if (!dummy2Line.includes("enabled")) fail(`/resources does not show dummy2.ts enabled:\n${note.message}`);
+	// The drift section: the stale package-filter entry, the no-op pattern,
+	// and the camelExt key - three findings, above the table.
+	if (!note.message.includes("drift (3)")) fail(`/resources table missing the drift section:\n${note.message}`);
+	if (!note.message.includes("gone.ts")) fail(`/resources drift section missing the stale package-filter entry:\n${note.message}`);
+	if (!note.message.includes("camelExt")) fail(`/resources drift section missing the configured-disabled finding:\n${note.message}`);
 	console.log("ok: /resources in RPC mode prints the text table with the right states");
+	console.log("ok: the headless /resources table carries the drift section");
 
 	// --- Phase 3: re-enable ---------------------------------------------------------
 
@@ -416,7 +450,7 @@ try {
 		() => {
 			const g = readGlobal();
 			const entry = (g.packages ?? []).find((p) => typeof p === "object" && p.source === "~/pkg");
-			return entry && JSON.stringify(entry.extensions) === JSON.stringify(["-extensions/usage.ts"]);
+			return entry && JSON.stringify(entry.extensions) === JSON.stringify(["-extensions/gone.ts", "-extensions/usage.ts"]);
 		},
 		"packages filter in global settings",
 		rpc.getStderr,
@@ -440,7 +474,7 @@ try {
 		() => {
 			const g = readGlobal();
 			const entry = (g.packages ?? []).find((p) => typeof p === "object" && p.source === "~/pkg");
-			return entry && JSON.stringify(entry.extensions) === JSON.stringify(["+extensions/usage.ts"]);
+			return entry && JSON.stringify(entry.extensions) === JSON.stringify(["-extensions/gone.ts", "+extensions/usage.ts"]);
 		},
 		"enable filter in global settings",
 		rpc.getStderr,
@@ -517,7 +551,11 @@ try {
 	if (!usageLine.includes("(package)") || !usageLine.includes("enabled")) {
 		fail(`/resources does not show usage.ts as an enabled package resource:\n${note.message}`);
 	}
+	// The no-op pattern self-healed out of the resource array, so the drift
+	// count drops to the stale filter entry and the camelExt key.
+	if (!note.message.includes("drift (2)")) fail(`/resources table lost or kept the wrong drift findings:\n${note.message}`);
 	console.log("ok: the headless table agrees with the live session");
+	console.log("ok: the drift count tracks the self-heal");
 	// --- Phase 9: no-argument state commands -------------------------------------
 
 	seen = rpc.notifies.length;
@@ -534,6 +572,7 @@ try {
 	}
 	const dummyRow = (note.message ?? "").split("\n").find((l) => l.startsWith("dummy.ts")) ?? "";
 	if (!dummyRow.includes("enabled")) fail(`no-name table missing the dummy.ts state:\n${note.message}`);
+	if (!note.message.includes("drift (2)")) fail(`no-name table missing the drift section:\n${note.message}`);
 	console.log("ok: /disable with no name prints the resource table with the DESCRIPTION column");
 
 	seen = rpc.notifies.length;
@@ -573,6 +612,37 @@ try {
 		rpc.getStderr,
 	);
 	console.log("ok: a no-name tool action relays the no-argument command to the user");
+
+	// --- Phase 11: the tool's list output carries the drift section -------------
+
+	writeFileSync(
+		caseFile,
+		JSON.stringify({ runId: 2, toolCall: { id: "drift-list", name: "resource_toggle", arguments: { action: "list" } } }),
+	);
+	await rpc.request("prompt", { message: "please run the list case" });
+	await waitFor(
+		async () => {
+			const messages = (await rpc.request("get_messages")).data.messages;
+			return messages.find(
+				(m) => m.role === "toolResult" && m.toolCallId === "drift-list" && JSON.stringify(m.content).includes("drift ("),
+			);
+		},
+		"list tool result with drift section",
+		rpc.getStderr,
+	);
+	const listResult = (await rpc.request("get_messages")).data.messages.find(
+		(m) => m.role === "toolResult" && m.toolCallId === "drift-list",
+	);
+	const listText = JSON.stringify(listResult.content);
+	if (!listText.includes("gone.ts")) fail(`tool list output missing the stale finding:\n${listText}`);
+	if (!listText.includes("camelExt")) fail(`tool list output missing the configured-disabled finding:\n${listText}`);
+	console.log("ok: the resource_toggle tool list output carries the drift findings");
+
+	// The session-start notice fired exactly once across the whole run, no
+	// matter how many reloads the toggle cycle triggered.
+	const driftNotices = rpc.notifies.filter((n) => (n.message ?? "").includes("run /resources to see them"));
+	if (driftNotices.length !== 1) fail(`the session-start drift notice fired ${driftNotices.length} times, expected exactly 1: ${JSON.stringify(driftNotices)}`);
+	console.log("ok: the session-start notice fired exactly once");
 } finally {
 	if (rpc.extensionErrors.length > 0) fail(`extension_error events: ${JSON.stringify(rpc.extensionErrors)}`);
 	rpc.close();

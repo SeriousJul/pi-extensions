@@ -13,6 +13,11 @@
  * The list and the resource picker (picker.ts) share the row building and
  * row rendering: every row has the state mark, display name, scope, and
  * path, and the dimmed Resource description line beneath.
+ *
+ * When the settings carry drift (ADR 0047), a read-only Drift group sits
+ * above the resource groups: one line per finding, no toggles. The group
+ * borrows rows from the item viewport, and it is never affected by the
+ * search filter.
  */
 import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { TUI } from "@earendil-works/pi-tui";
@@ -29,6 +34,7 @@ import {
   transition,
 } from "./lib/state-machine.ts";
 import type {
+  DriftFinding,
   MachineContext,
   OverrideState,
   ResourceInfo,
@@ -169,6 +175,8 @@ export interface ResourceTuiDeps {
   resources: ResourceInfo[];
   /** The settings arrays; the component keeps its own copy. */
   settings: SettingsState;
+  /** The settings drift findings; the read-only Drift group above the list. */
+  drift: DriftFinding[];
   machine: MachineContext;
   /** Whether the project view is available (project trusted). */
   projectTrusted: boolean;
@@ -322,12 +330,27 @@ export function createResourceToggleTui(deps: ResourceTuiDeps) {
       "",
     ];
 
+    // The read-only Drift group: a header and one line per finding, above
+    // the resource groups. It borrows rows from the item viewport.
+    const driftLines: string[] = [];
+    if (deps.drift.length > 0) {
+      driftLines.push(theme.fg("accent", `Drift (${deps.drift.length})`));
+      for (const finding of deps.drift) {
+        driftLines.push(truncateToWidth(theme.fg("warning", `  ${finding.text}`), width));
+      }
+    }
+
     if (visible.length === 0) {
+      lines.push(...driftLines);
       lines.push(theme.fg("dim", "  No resources found"));
     } else {
       const h = Math.max(1, deps.viewport());
       // Count item lines and group headers both against the viewport.
       let budget = h;
+      for (const line of driftLines) {
+        lines.push(line);
+        budget--;
+      }
       let inGroup: ResourceType | undefined;
       let rendered = 0;
       for (let i = top; i < visible.length && budget > 0; i++, rendered++) {

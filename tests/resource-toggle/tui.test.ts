@@ -8,7 +8,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import { createResourceToggleTui } from "../../extensions/resource-toggle/tui.ts";
 import { createResourcePickerTui } from "../../extensions/resource-toggle/picker.ts";
-import type { MachineContext, ResourceInfo, SettingsState, ToggleOp, WriteMode } from "../../extensions/resource-toggle/lib/types.ts";
+import type { DriftFinding, MachineContext, ResourceInfo, SettingsState, ToggleOp, WriteMode } from "../../extensions/resource-toggle/lib/types.ts";
 import { emptyScopeState } from "../../extensions/resource-toggle/lib/types.ts";
 import type { WriteOutcome } from "../../extensions/resource-toggle/lib/writer.ts";
 
@@ -65,6 +65,7 @@ function makeRig(
   applyImpl?: (next: SettingsState) => Promise<WriteOutcome>,
   theme: Theme = fakeTheme,
   rigResources: ResourceInfo[] = resources,
+  drift: DriftFinding[] = [],
 ): Rig {
   const applyCalls: SettingsState[] = [];
   const closed = { called: false } as { called: boolean; changed?: boolean };
@@ -73,6 +74,7 @@ function makeRig(
     theme,
     resources: rigResources,
     settings: settings ?? { global: emptyScopeState(), project: emptyScopeState() },
+    drift,
     machine,
     projectTrusted: true,
     apply: (_prev, next) => {
@@ -279,6 +281,7 @@ describe("resource list TUI", () => {
       theme: fakeTheme,
       resources,
       settings: { global: emptyScopeState(), project: emptyScopeState() },
+      drift: [],
       machine,
       projectTrusted: false,
       apply: async (_prev, _next) => ({ ok: true }),
@@ -305,6 +308,81 @@ describe("resource list TUI", () => {
     const cursorRow = visible.find((l) => /^> +\[/.test(l)) ?? "";
     const full = ">  [x] dummy.ts  global  /home/u/.pi/agent/extensions/dummy.ts";
     expect(cursorRow).toBe(`${full.slice(0, width - 3)}...`);
+  });
+});
+
+describe("resource list TUI drift group", () => {
+  const drift: DriftFinding[] = [
+    {
+      kind: "stale",
+      scope: "global",
+      array: "extensions",
+      entries: ["-extensions/gone.ts"],
+      possible: false,
+      text: 'stale entry: "-extensions/gone.ts" (global, extensions) matches no resource or file',
+    },
+    {
+      kind: "configured-disabled",
+      scope: "global",
+      key: "modelRouter",
+      entries: ["modelRouter"],
+      possible: true,
+      text: 'possible: extension "model-router" is disabled, but global settings carry the key "modelRouter"',
+    },
+  ];
+
+  it("renders the read-only Drift group above the resource groups", () => {
+    const rig = makeRig(undefined, undefined, fakeTheme, resources, drift);
+    const lines = rig.render();
+    const text = lines.join("\n");
+    expect(text).toContain("Drift (2)");
+    expect(text).toContain("-extensions/gone.ts");
+    expect(text).toContain('the key "modelRouter"');
+    // The group sits above the first resource group.
+    const driftIndex = lines.findIndex((l) => l.includes("Drift (2)"));
+    const extensionsIndex = lines.findIndex((l) => l === "Extensions");
+    expect(driftIndex).toBeGreaterThan(-1);
+    expect(driftIndex).toBeLessThan(extensionsIndex);
+  });
+
+  it("drift rows are not toggleable: the cursor only crosses the resource rows", () => {
+    const rig = makeRig(undefined, undefined, fakeTheme, resources, drift);
+    // The cursor starts on the first resource row, not on a drift line.
+    rig.press(" ");
+    rig.tick();
+    void 0;
+    expect(rig.applyCalls.length).toBe(1);
+    expect(rig.applyCalls[0].global.extensions).toEqual(["-extensions/dummy.ts"]);
+    // The resource rows still number as before: the drift lines take
+    // viewport rows but no cursor stops.
+    const lines = rig.render();
+    const resourceRows = lines.filter((l) => /^> +\[|^ +\[/.test(l));
+    expect(resourceRows.length).toBe(4);
+  });
+
+  it("clean settings produce no Drift group", () => {
+    const rig = makeRig();
+    expect(rig.render().join("\n")).not.toContain("Drift");
+  });
+
+  it("the drift group shows with no resource rows", () => {
+    const rig = makeRig(
+      undefined,
+      undefined,
+      fakeTheme,
+      [],
+      drift,
+    );
+    const text = rig.render().join("\n");
+    expect(text).toContain("Drift (2)");
+    expect(text).toContain("No resources found");
+  });
+
+  it("clips long finding lines to the visible width", () => {
+    const rig = makeRig(undefined, undefined, ansiTheme, resources, drift);
+    for (const line of rig.render(40)) {
+      expect(stripAnsi(line).length, `line overflows the grid: ${line}`).toBeLessThanOrEqual(40);
+    }
   });
 });
 
@@ -601,6 +679,7 @@ describe("grid description line", () => {
       theme: fakeTheme,
       resources: pickerResources,
       settings: pickerSettings(),
+      drift: [],
       machine,
       projectTrusted: true,
       apply: async () => ({ ok: true }),

@@ -16,6 +16,9 @@ inside a running session, without editing settings files by hand.
   modes the command prints the resource table instead.
 - While typing a state command, matching display names autocomplete
   inline, each with the resource's description.
+- The lists also report settings drift: a read-only Drift group at the top
+  of the interactive list, a section of the headless tables and the tool
+  output, and one notice at session start when the findings are non-empty.
 - The `resource_toggle` tool lets the agent list resources and apply
   changes on request; with no arguments it opens the interactive list, and
   an action without a name relays the no-argument command, so the picker
@@ -61,6 +64,21 @@ a resource is its description, derived from the source file.
   from a single-file package source is refused with a clear message: pi
   loads a single-file source unconditionally, so its state cannot be
   toggled.
+- **Settings drift.** The lists report settings drift
+  ([ADR 0047](/adr/0047-the-resource-list-reports-settings-drift)): the
+  check rides on the same resource resolution the lists perform and names
+  three classes: a stale entry (an override pattern or package-filter
+  entry that matches no loaded resource and, where it names a file, no
+  file on disk), conflicting entries (one array that force-includes and
+  force-excludes the same target), and an extension configured while
+  disabled (a disabled extension whose name in camelCase, `model-router`
+  to `modelRouter`, exists as a settings key; this class is a name guess,
+  so it is reported as possible, never as a hard error). Each finding
+  names its scope - global, project, or the package source. In an
+  untrusted project the check covers the global scope only, matching the
+  rest of the resource view. Clean settings produce no group, no section,
+  and no notice. The check names the drift; deleting the line is the
+  user's edit.
 - **Descriptions.** The one-line description of a resource is derived from
   its source file at list time, never stored: the skill `SKILL.md`
   frontmatter `description`, the prompt template frontmatter `description`
@@ -83,6 +101,8 @@ a resource is its description, derived from the source file.
   settings.
 - Toggling pi's built-in tools. The [tools extension](/extensions/tools)
   covers built-in tools.
+- Fixing the drift: the check names it; deletion is the user's edit. An
+  in-session fix action is a v2 question.
 
 ## Tests
 
@@ -92,8 +112,14 @@ a resource is its description, derived from the source file.
   scopes and the description derivation per resource kind.
 - `tests/resource-toggle/state-machine.test.ts` - the pattern transitions
   for enable, disable, and inherit in both write modes.
-- `tests/resource-toggle/tui.test.ts` - the interactive list rendering.
+- `tests/resource-toggle/drift.test.ts` - the drift check per class, the
+  clean case, the untrusted-project case, and deduplication and ordering.
+- `tests/resource-toggle/tui.test.ts` - the interactive list rendering,
+  including the read-only Drift group.
 - `npm run e2e:resource-toggle` - a real pi RPC session: list, toggle,
   reload, the self-guard, the packages-array filter cycle (including the
   self-heal and a tilde-spelled local source), the single-file refusal,
-  the no-name resource table, and the tool relay of a no-name action.
+  the no-name resource table, the tool relay of a no-name action, and the
+  drift cycle: a stale package-filter entry and a disabled extension under
+  a settings key, the headless tables and the tool output carrying the
+  findings, and the once-per-process session-start notice.
