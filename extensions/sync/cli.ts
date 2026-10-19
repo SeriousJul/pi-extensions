@@ -15,26 +15,38 @@ import { createBackend } from "./backends.ts";
 import { createAuthSession, type AuthSession, type DeviceFlowHooks } from "./auth.ts";
 import { resolveClientId } from "./config.ts";
 import { runDeviceFlow, type DeviceFlowResult } from "./deviceflow.ts";
+import { accountSetup, cliCommand } from "./paths.ts";
 import { runInit, runPull, runPush, runStatus, type SyncOutcome, type SyncRuntime } from "./ops.ts";
-import { GITHUB_BASE_URL_ENV, HOME_ENV, STATE_DIR_ENV, TOKEN_ENV, homeFor, stateDirFor } from "./token.ts";
+import { CLIENT_ID_ENV, GITHUB_BASE_URL_ENV, HOME_ENV, STATE_DIR_ENV, TOKEN_ENV, homeFor, stateDirFor } from "./token.ts";
 import type { SyncManifest } from "./types.ts";
 
-const HELP = `pi-sync: cross-device pi config sync (issue #32)
+/**
+ * The help text, built at print time: the command lines it names are the
+ * runnable absolute lines for this install (ADR 0039), and the first step
+ * degrades to the env escape hatch when the Account setup script is not
+ * present in this install.
+ */
+function helpText(): string {
+	const setup = accountSetup();
+	const firstStep = setup.present
+		? `  1. ${setup.command}    register the GitHub OAuth app (human step)`
+		: `  1. set ${CLIENT_ID_ENV} for this run (the Account setup script ${setup.path} is not present in this install)`;
+	return `pi-sync: cross-device pi config sync (issue #32)
 
 usage:
-  pi-sync init [gist-id] [--yes] [--force]
+  ${cliCommand("init")} [gist-id] [--yes] [--force]
       no id:   create the shared secret gist from this device's tree
       with id: join this device to an existing gist
       --yes    confirm the preview without prompting; the preview is still shown (non-tty runs need this)
       --force  re-init an already-joined device without prompting
-  pi-sync push             resolve the merge, then upload this device's tree
-  pi-sync pull             fetch and three-way merge the remote into this tree
-  pi-sync status           compare without moving anything
+  ${cliCommand("push")}    resolve the merge, then upload this device's tree
+  ${cliCommand("pull")}    fetch and three-way merge the remote into this tree
+  ${cliCommand("status")}  compare without moving anything
 
 first run (once per device):
-  1. scripts/setup-sync-wizard.sh   register the GitHub OAuth app (human step)
-  2. pi-sync init                   device flow, create the gist, confirm
-  other devices: pi-sync init <gist-id>
+${firstStep}
+  2. ${cliCommand("init")}    device flow, create the gist, confirm
+  other devices: ${cliCommand("init [gist-id]")}
 
 token:    the device flow stores a gist-only token (JSON) in the state dir;
           the tool renews it while it lives. A hand-written plain-text token
@@ -42,6 +54,7 @@ token:    the device flow stores a gist-only token (JSON) in the state dir;
 state dir: ${STATE_DIR_ENV} (default <home>/.pi/sync)
 home:     ${HOME_ENV} (default the OS home)
 github:   ${GITHUB_BASE_URL_ENV} (default https://api.github.com)`;
+}
 
 export interface CliOutput {
 	out: (line: string) => void;
@@ -154,7 +167,7 @@ export async function main(argv: string[], output: CliOutput = { out: (l) => con
 				const parsed = parseInitArgs(rest);
 				if (parsed.error) {
 					output.err(`pi-sync: ${parsed.error}`);
-					output.err("usage: pi-sync init [gist-id] [--yes] [--force]");
+					output.err(`usage: ${cliCommand("init")} [gist-id] [--yes] [--force]`);
 					return 2;
 				}
 				return finish(await withSession((rt) => runInit(rt, parsed.gistId, { yes: parsed.yes, force: parsed.force, ask })), output);
@@ -167,11 +180,11 @@ export async function main(argv: string[], output: CliOutput = { out: (l) => con
 				return finish(await withSession((rt) => runStatus(rt)), output);
 			case undefined:
 			case "help":
-				output.out(HELP);
+				output.out(helpText());
 				return command === undefined ? 2 : 0;
 			default:
 				output.err(`unknown command: ${command}`);
-				output.err(HELP);
+				output.err(helpText());
 				return 2;
 		}
 	} catch (err) {

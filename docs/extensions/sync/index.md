@@ -28,13 +28,22 @@ The same status from the `pi-sync status` CLI:
 The whole setup is a guided wizard. Each human action is either one
 browser page or one key press.
 
+Every command a sync message prints is runnable as printed, from any
+working directory (ADR 0039): absolute, anchored at the **Install root**
+- the directory the package is installed into (a clone under pi's git
+directory, a copy under pi's npm root, or the checkout itself for a
+local install). In these docs, `<install>` stands for that directory.
+
 **Once per account (the only account-level step):**
 
+The **Account setup script** is a bash script: run it with `bash` (an
+install can lose the file's exec bit, while `bash <path>` never cares):
+
 ```bash
-scripts/setup-sync-wizard.sh
+bash <install>/scripts/setup-sync-wizard.sh
 ```
 
-The bash wizard opens the GitHub OAuth app page, walks the form (name,
+The wizard opens the GitHub OAuth app page, walks the form (name,
 a `http://127.0.0.1` callback URL that is never used, the **Use
 expiring tokens** checkbox that ADR 0007 needs, and the **device flow
 opt-in** box that GitHub now requires on every app), and stores the
@@ -49,12 +58,15 @@ contexts can set `PI_SYNC_OAUTH_CLIENT_ID` instead.
 
 **On each device:**
 
+The commands are the `pi-sync` verbs, run through the CLI entry:
+`node <install>/extensions/sync/cli.mjs <verb>`.
+
 ```bash
-pi-sync init             # first device: create the shared secret gist
-pi-sync init <gist-id>   # every later device: join that gist
-pi-sync push             # upload this device's changes (merged)
-pi-sync pull             # take the other devices' changes
-pi-sync status           # ahead / behind / conflict, no side effects
+node <install>/extensions/sync/cli.mjs init             # first device: create the shared secret gist
+node <install>/extensions/sync/cli.mjs init <gist-id>   # every later device: join that gist
+node <install>/extensions/sync/cli.mjs push             # upload this device's changes (merged)
+node <install>/extensions/sync/cli.mjs pull             # take the other devices' changes
+node <install>/extensions/sync/cli.mjs status           # ahead / behind / conflict, no side effects
 ```
 
 What `init` does, step by step:

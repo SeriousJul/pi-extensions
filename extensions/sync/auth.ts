@@ -15,9 +15,10 @@
  * - a 404 never touches this module: the backend only renews on 401/403.
  */
 import { resolveClientId } from "./config.ts";
+import { accountSetup } from "./paths.ts";
 import type { DeviceFlowResult, OAuthTransport } from "./deviceflow.ts";
 import { needsProactiveRefresh, refreshAccessToken } from "./refresh.ts";
-import { GITHUB_BASE_URL_ENV, homeFor, resolveToken, stateDirFor, tokenPathFor, type ManagedTokenData, type TokenSource } from "./token.ts";
+import { CLIENT_ID_ENV, GITHUB_BASE_URL_ENV, homeFor, resolveToken, stateDirFor, tokenPathFor, type ManagedTokenData, type TokenSource } from "./token.ts";
 
 export interface DeviceFlowHooks {
 	/** One user-facing status line (the code to enter, expiry, storage). */
@@ -127,8 +128,13 @@ export async function createAuthSession(sessionEnv: AuthSessionEnv): Promise<{ s
 			}
 			// Transient failure with an unexpired token: proceed; renew() retries once.
 		} else if (current.managed.expiresMs <= Date.now()) {
+			const setup = accountSetup();
 			return {
-				error: `the stored token is expired and its refresh needs the OAuth client id. Run scripts/setup-sync-wizard.sh once, or re-run in a terminal.`,
+				error:
+					`the stored token is expired and its refresh needs the OAuth client id. ` +
+					(setup.present
+						? `Run ${setup.command} once, or re-run in a terminal.`
+						: `Set ${CLIENT_ID_ENV} (the Account setup script ${setup.path} is not present in this install), or re-run in a terminal.`),
 			};
 		}
 	}

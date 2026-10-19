@@ -275,6 +275,35 @@ fi
 
 # ──────────────────────────────────────────────────────────────────────────
 finish
-say "Next step: run 'pi-sync init' (no arguments). It opens the device flow,"
-say "shows a short code, and you enter that code in the browser. The gist is"
-say "created only after you confirm the preview."
+
+# The Install root this wizard runs from: the script lives at
+# <install root>/scripts, so the root is one level up from $0. Resolving
+# makes it absolute even for a relative invocation
+# (bash scripts/setup-sync-wizard.sh).
+SOURCE="$0"
+case "$SOURCE" in
+	/*) ;;
+	*) SOURCE="$PWD/$SOURCE" ;;
+esac
+INSTALL_ROOT="$(cd "$(dirname "$SOURCE")/.." && pwd)"
+CLI_ENTRY="$INSTALL_ROOT/extensions/sync/cli.mjs"
+
+# Quote a path for shell paste: clean paths stay bare; anything the shell
+# acts on (space, tab, & ( ) ' and friends) is single-quoted, ' escaped as
+# '\''.
+shell_quote() {
+	local value="$1"
+	case "$value" in
+	"" | *[!A-Za-z0-9_./:@%+=~-]*)
+		local escaped=${value//"'"/"'\\''"}
+		printf "'%s'" "$escaped"
+		;;
+	*)
+		printf '%s' "$value"
+		;;
+	esac
+}
+
+say "Next step: run node $(shell_quote "$CLI_ENTRY") init (no arguments)."
+say "It opens the device flow, shows a short code, and you enter that code"
+say "in the browser. The gist is created only after you confirm the preview."

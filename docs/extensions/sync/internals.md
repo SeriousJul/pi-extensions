@@ -112,7 +112,7 @@ advisory: the operation still runs. This implements the spec's
 | --- | --- |
 | `~/.pi/sync/token` (or `$PI_SYNC_STATE_DIR/token`) | The GitHub token, mode 600: managed JSON (device flow) or hand-written plain text. A group/world-readable file produces a warning in every report (CLI and pi commands). |
 | `PI_SYNC_TOKEN` | Overrides the file for one run. Never managed. |
-| `~/.pi/sync/oauth-client.json` | The public OAuth client id, written by `scripts/setup-sync-wizard.sh`. |
+| `~/.pi/sync/oauth-client.json` | The public OAuth client id, written by the Account setup script (`bash <install>/scripts/setup-sync-wizard.sh`; `<install>` is the Install root, defined in the index's onboarding section). |
 | `PI_SYNC_OAUTH_CLIENT_ID` | Overrides the client id file for one run. |
 | `~/.pi/sync/manifest.json` | The device's manifest copy (carries the local gist id). |
 | `~/.pi/sync/base-state.json` | The device's last-synced Base (owner-only). |
@@ -136,6 +136,7 @@ advisory: the operation still runs. This implements the spec's
 | `backends.ts` | Backend registry. |
 | `backends/github-gist.ts` | The Gist backend over the `GistTransport` seam; 401/403 hands back to the auth session for one renewal + retry. |
 | `ops.ts` | The five operations; one `SyncRuntime` for CLI and pi. |
+| `paths.ts` | The Install root and the runnable command lines the tool prints (ADR 0039). |
 | `cli.ts` / `cli.mjs` | The `pi-sync` CLI (jiti-loaded TS, no build step). |
 | `index.ts` | The pi extension: `/sync`, the TUI wizard, the startup notice. |
 
