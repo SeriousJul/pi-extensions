@@ -13,6 +13,8 @@ import type { ExtensionAPI, ExtensionContext, Theme, ToolInfo } from "@earendil-
 import { getSettingsListTheme } from "@earendil-works/pi-coding-agent";
 import { Container, type SettingItem, SettingsList } from "@earendil-works/pi-tui";
 
+import { classifyToolOrigin, originDescription } from "./shared/tool-origin.ts";
+
 // User-only tools (GLOSSARY.md, "Tool exposure", issue #72): the operator has
 // the capability as a command, so as agent tools they start inactive in
 // every new session and can be enabled per session through /tools. They pay
@@ -26,42 +28,26 @@ interface ToolsState {
 	enabledTools: string[];
 }
 
-// Short origin tag for non-built-in tools, e.g. "pi-web-access" or "sdk".
-// Returns undefined for built-in tools so the list stays clean.
-// pi marks built-ins "builtin" and SDK tools "sdk". Every loaded extension
-// file (npm, git, user, project) gets "local", so fall back to the file
-// path for a useful name.
-export function originTag(tool: ToolInfo): string | undefined {
-	const source = tool.sourceInfo.source;
-	if (source === "sdk") return "sdk";
-	if (source === "builtin") return undefined;
-	const path = tool.sourceInfo.path;
-	const pkg = path.match(/node_modules\/((?:@[^/]+\/)?[^/]+)\//);
-	if (pkg) return pkg[1];
-	const file = path.split("/").pop() ?? path;
-	return file.replace(/\.[cm]?[jt]s$/, "");
-}
-
-export function originDescription(tool: ToolInfo): string {
-	const info = tool.sourceInfo;
-	if (info.source === "builtin") return "Built-in pi tool";
-	if (info.source === "sdk") return "Custom tool registered via SDK";
-	return `Extension tool from ${originTag(tool)}: ${info.path}`;
-}
-
 /**
  * One settings row per tool, as /tools shows it. Shared with the
  * screenshot pipeline (issue #73), which mounts the same rows over a
  * fixture catalogue.
+ *
+ * The tag is the shared classifier's Origin tag (issue #154, ADR 0045):
+ * the extension's own name for an extension's tool, `mcp` for an MCP
+ * server's tool. The list keeps its compact convention of no tag for a
+ * built-in, which is also the shape an `unknown` origin takes. The same
+ * classifier serves the Tool row header, which tags every row.
  */
 export function toolSettingItems(tools: ToolInfo[], isEnabled: (name: string) => boolean, theme: Theme): SettingItem[] {
 	return tools.map((tool) => {
-		const tag = originTag(tool);
+		const origin = classifyToolOrigin(tool.name, tool.sourceInfo);
+		const tag = origin.kind === "builtin" ? undefined : origin.tag;
 		const label = tag ? `${tool.name} ${theme.fg("muted", `(${tag})`)}` : tool.name;
 		return {
 			id: tool.name,
 			label,
-			description: originDescription(tool),
+			description: originDescription(tool.name, tool.sourceInfo),
 			currentValue: isEnabled(tool.name) ? "enabled" : "disabled",
 			values: ["enabled", "disabled"],
 		};
@@ -73,7 +59,7 @@ export function toolsHeader(theme: Theme): { render: (width: number) => string[]
 	return {
 		render: () => [
 			theme.fg("accent", theme.bold("Tool Configuration")),
-			theme.fg("muted", "Tag = extension or SDK origin. No tag = built-in."),
+			theme.fg("muted", "Tag = Tool origin. No tag = built-in."),
 			"",
 		],
 		invalidate: () => {},
