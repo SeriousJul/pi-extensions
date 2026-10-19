@@ -41,10 +41,12 @@ export const EXPECTED_LINES = {
 	],
 	tools: [
 		"Tool Configuration",
-		"Tag = extension or SDK origin. No tag = built-in.",
-		"→ read                     enabled",
-		"resource_toggle (index)  enabled",
-		"web_search (web-search)  enabled",
+		"Tag = Tool origin. No tag = built-in.",
+		// The list pads labels to the widest one (resource_toggle's extension
+		// tag, ADR 0045) before the two-cell separator and the value.
+		"→ read" + " ".repeat(31) + "enabled",
+		"resource_toggle (resource-toggle)  enabled",
+		"web_search (web-search)" + " ".repeat(12) + "enabled",
 	],
 	resources: [
 		"pi resources",
@@ -95,13 +97,15 @@ export const EXPECTED_LINES = {
 		"Hello! I am the fallback model.",
 	],
 	"tool-headers": [
-		// The header lines are the point of the extension: the tool name set
-		// in a rule above each call line.
-		"── read ──",
-		"── bash ──",
+		// The header lines are the point of the extension: the tool name and
+		// its Origin tag set in a rule above each call line.
+		"── read · built-in ──",
+		"── note_search · note-search ──",
 		"read note.txt",
+		'note_search query="tool row headers"',
 		"$ sleep 0.2; echo greeting",
 		"greeting",
+		"1 note: tool row headers",
 		"Took 0.2s",
 		"Done.",
 	],
@@ -109,8 +113,10 @@ export const EXPECTED_LINES = {
 		// The same session without the extension: the rows name nothing, which
 		// is exactly what the header fixes. No `── … ──` line may be asserted.
 		"read note.txt",
+		'note_search query="tool row headers"',
 		"$ sleep 0.2; echo greeting",
 		"greeting",
+		"1 note: tool row headers",
 		"Took 0.2s",
 		"Done.",
 	],

@@ -5,8 +5,9 @@
  *   - mock-orig:    every request fails with a terminal 429 usage-limit body
  *                   (the exact shape the model-router classifier matches)
  *   - mock-fallback: answers with a fixed text reply
- *   - mock-tools:   answers the first turn with two tool calls (a real `read`
- *                   and a real `bash`), so pi runs real tools and draws real
+ *   - mock-tools:   answers the first turn with three tool calls (a real
+ *                   `read`, a real `bash`, and the capture-only
+ *                   `note_search`), so pi runs real tools and draws real
  *                   Tool rows; the follow-up turn (the request now carries the
  *                   tool results) closes with a fixed reply
  * No request leaves the machine.
@@ -26,11 +27,15 @@ export const FALLBACK_REPLY = "Hello! I am the fallback model.";
 /**
  * The tool calls the tool-headers capture drives. `note.txt` must exist in
  * the capture's cwd; `sleep 0.2` puts the bash wall time in a stable 0.2s
- * bucket, so the settled screen is byte-identical on every machine.
+ * bucket, so the settled screen is byte-identical on every machine. The
+ * `note_search` call runs the capture-only fixture extension, so the pair
+ * shows a directory-style extension row with stable bytes (a real `bash_bg`
+ * row is never byte-stable: job id, pid, log path).
  */
 const TOOLS_TOOL_CALLS = [
 	{ index: 0, id: "call-read", name: "read", arguments: { path: "note.txt" } },
 	{ index: 1, id: "call-bash", name: "bash", arguments: { command: "sleep 0.2; echo greeting" } },
+	{ index: 2, id: "call-note-search", name: "note_search", arguments: { query: "tool row headers" } },
 ];
 const TOOLS_FINAL_REPLY = "Done.";
 
