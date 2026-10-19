@@ -4,8 +4,11 @@ The `/tools` command opens a TUI list of every tool in the session.
 Toggle a tool to enable or disable it; the change applies immediately.
 The selection persists in the session (a `tools-config` entry) and is
 restored on session start and branch navigation, so it respects the
-session tree. Non-built-in tools show a tag with their origin (package
-name or file name), so you can see which extension provides each tool.
+session tree. Non-built-in tools show their Origin tag: the extension's
+own name for an extension's tool, `mcp` for an MCP server's tool. The tag
+comes from the same shared classifier the Tool row header wears (ADR
+0045), and the list keeps its compact convention of no tag for a
+built-in, so you can see which extension provides each tool.
 
 ## User-only tools start inactive
 
@@ -25,8 +28,8 @@ The command requires TUI mode; in print or RPC modes it reports that.
 
 ## Screenshot
 
-The list with the fixture tool set: built-in tools, a package extension
-tool tagged with its origin, and a local extension tool tagged with its
-file name.
+The list with the fixture tool set: built-in tools, an extension tool
+tagged with its extension's own name (the `resource-toggle` directory, not
+`index`), and a local extension tool tagged with its file name.
 
 ![tools list TUI](./tools.png)

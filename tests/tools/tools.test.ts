@@ -1,27 +1,36 @@
 /**
  * Tests for the tools extension (/tools): the default-disabled list of
- * user-only tools (issue #72). A session with no saved selection starts
- * with the listed tools inactive; a session with a saved selection restores
- * it exactly, and the defaults are not applied on top.
+ * user-only tools (issue #72), and the rows over the shared Tool origin
+ * classifier (issue #154, ADR 0045).
  *
- * The mock-extension-API pattern follows the codegraph entrypoint tests:
- * capture the activation calls and fire the session events without a live
- * pi.
+ * A session with no saved selection starts with the listed tools inactive;
+ * a session with a saved selection restores it exactly, and the defaults are
+ * not applied on top. The mock-extension-API pattern follows the codegraph
+ * entrypoint tests: capture the activation calls and fire the session events
+ * without a live pi. The row tests mount the same functions the /tools list
+ * and the screenshot pipeline mount, over a fake theme that emits no escape
+ * codes, so the rows are asserted as plain text.
  */
 import { describe, expect, it } from "vitest";
-import toolsExtension from "../../extensions/tools.ts";
-import type { ExtensionAPI, ToolInfo } from "@earendil-works/pi-coding-agent";
+import toolsExtension, { toolSettingItems, toolsHeader } from "../../extensions/tools.ts";
+import type { ExtensionAPI, SourceInfo, Theme, ToolInfo } from "@earendil-works/pi-coding-agent";
 
 const TOOL_NAMES = ["read", "bash", "edit", "write", "usage_report", "resource_toggle"];
 
-function makeTool(name: string): ToolInfo {
+function makeTool(name: string, sourceInfo?: Partial<SourceInfo>): ToolInfo {
   return {
     name,
     label: name,
     description: `test tool ${name}`,
-    sourceInfo: { source: "builtin", path: `/x/${name}.ts`, scope: "global", origin: "top-level" },
+    sourceInfo: { source: "builtin", path: `/x/${name}.ts`, scope: "global", origin: "top-level", ...sourceInfo },
   } as unknown as ToolInfo;
 }
+
+/** A theme that emits no escape codes, so the rows are plain text. */
+const fakeTheme = {
+	fg: (_color: string, text: string) => text,
+	bold: (text: string) => text,
+} as unknown as Theme;
 
 interface Harness {
   /** Every setActiveTools call, in order, as the names it received. */
@@ -47,7 +56,7 @@ function makeHarness(branch: unknown[], active: string[] = [...TOOL_NAMES]): Har
     ui: { notify: () => undefined },
   };
   const pi = {
-    getAllTools: () => TOOL_NAMES.map(makeTool),
+    getAllTools: () => TOOL_NAMES.map((n) => makeTool(n)),
     getActiveTools: () => active,
     setActiveTools: (names: string[]) => {
       harness.setActiveCalls.push([...names]);
@@ -100,7 +109,7 @@ describe("default-disabled user-only tools (issue #72)", () => {
     expect(h.setActiveCalls[1].sort()).toEqual(["bash", "edit", "read", "write"]);
   });
 
-  it("keeps the saved selection on tree navigation once it exists", () => {
+	  it("keeps the saved selection on tree navigation once it exists", () => {
     const branch = [saved(["bash", "usage_report"])];
     const h = makeHarness(branch);
     h.sessionStart();
@@ -108,4 +117,54 @@ describe("default-disabled user-only tools (issue #72)", () => {
     expect(h.setActiveCalls).toHaveLength(2);
     for (const call of h.setActiveCalls) expect(call.sort()).toEqual(["bash", "usage_report"]);
   });
+});
+
+describe("/tools rows over the shared Tool origin classifier (issue #154)", () => {
+	it("shows no tag for a built-in, keeping the list's compact convention", () => {
+		const items = toolSettingItems([makeTool("read")], () => true, fakeTheme);
+		expect(items[0].label).toBe("read");
+		expect(items[0].description).toBe("Built-in pi tool");
+	});
+
+	it("names a git-package extension by its directory, where it used to say index", () => {
+		const items = toolSettingItems(
+			[makeTool("resource_toggle", { source: "local", path: "/x/extensions/resource-toggle/index.ts", baseDir: "/x/extensions/resource-toggle" })],
+			() => true,
+			fakeTheme,
+		);
+		expect(items[0].label).toBe("resource_toggle (resource-toggle)");
+		expect(items[0].description).toBe("Extension tool from resource-toggle: /x/extensions/resource-toggle/index.ts");
+	});
+
+	it("names a single-file extension by its file name without the extension", () => {
+		const items = toolSettingItems([makeTool("web_search", { source: "local", path: "/x/extensions/web-search.ts" })], () => true, fakeTheme);
+		expect(items[0].label).toBe("web_search (web-search)");
+	});
+
+	it("tags an MCP tool mcp, the name rule winning over its builtin metadata", () => {
+		const items = toolSettingItems([makeTool("mcp__docs__search", { source: "builtin", path: "builtin:mcp" })], () => true, fakeTheme);
+		expect(items[0].label).toBe("mcp__docs__search (mcp)");
+		expect(items[0].description).toBe("Tool from an MCP server");
+	});
+
+	it("shows no tag for an unknown origin, and describes it as such", () => {
+		const items = toolSettingItems([makeTool("ghost", { source: "sdk", path: "<sdk:ghost>" })], () => true, fakeTheme);
+		expect(items[0].label).toBe("ghost");
+		expect(items[0].description).toBe("Tool with an unknown origin");
+	});
+
+	it("keeps the enable state on the row next to the tag", () => {
+		const items = toolSettingItems([makeTool("resource_toggle", { source: "local", path: "/x/extensions/resource-toggle/index.ts" })], () => false, fakeTheme);
+		expect(items[0].currentValue).toBe("disabled");
+		expect(items[0].label).toBe("resource_toggle (resource-toggle)");
+	});
+});
+
+describe("the /tools header text", () => {
+	it("says the tag is the Tool origin, mentions no SDK, and keeps no tag = built-in", () => {
+		const lines = toolsHeader(fakeTheme).render(100);
+		expect(lines[0]).toBe("Tool Configuration");
+		expect(lines[1]).toBe("Tag = Tool origin. No tag = built-in.");
+		expect(lines.join("\n").toLowerCase()).not.toContain("sdk");
+	});
 });

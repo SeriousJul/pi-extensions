@@ -1,15 +1,17 @@
 /**
  * Tool row headers display module: the header line and the fallback call
- * line (issue #137, ADR 0038).
+ * line (issue #137, ADR 0038; the Origin tag is issue #154, ADR 0045).
  *
  * Pure and engine-free: it knows no theme object and no pi API. The header
- * is the tool name set in a rule, one line above the call line. The rule is
- * `borderMuted`, the name is bold `toolTitle`; the name carries nothing
- * else, and the rule is exactly one row at any width. Self-shell headers
- * add one blank background line ahead of the rule. The extension wiring
- * (index.ts) applies the theme and builds the component, so the exact line
- * is unit tested here.
+ * is the tool name and its Origin tag set in a rule, one line above the
+ * call line. The rule is `borderMuted`, the name is bold `toolTitle`, the
+ * tag is `muted` and unbold after a `borderMuted` `·` separator, and the
+ * rule is exactly one row at any width. Self-shell headers add one blank
+ * background line ahead of the rule. The extension wiring (index.ts)
+ * applies the theme and builds the component, so the exact line is unit
+ * tested here.
  */
+import { mcpToolNameParts } from "../shared/tool-origin.ts";
 
 /** The least of a theme the header and the fallback call line need. The
  * real Theme satisfies it structurally, so the wiring passes it through
@@ -29,14 +31,24 @@ const RULE = "─"; // U+2500, the character pi uses for its editor scroll borde
 const PREFIX = "── "; // Two rule cells plus a space, ahead of the name.
 const PREFIX_LEN = 3;
 
+/** The `·` (U+00B7) separator between the name and the tag, painted in
+ * `borderMuted` like the rule. A plain `-` was rejected: it sits badly
+ * inside a rule of `─`.
+ */
+const TAG_SEP = " · ";
+
 /**
- * The header line: `indent` spaces, then `── <name> ` filled with `─` to
- * the right edge of the area the painter is given, which is `width`.
+ * The header line: `indent` spaces, then `── <name>` (and, when the origin
+ * is known, ` · <tag>`) filled with `─` to the right edge of the area the
+ * painter is given, which is `width`.
  *
- * Shrinking spends the rule first, then the name: the trailing rule
- * collapses to zero (`── <name>`), and only if the name alone no longer
- * fits is the name truncated, ending in `…`. The name is the payload, so it
- * truncates last. The rule is always exactly one row.
+ * Shrinking spends the rule first, then the tag, then the name: the
+ * trailing rule collapses to zero, then the whole tag and its separator
+ * disappear together (never a shortened form of the tag), and only if the
+ * name alone no longer fits is the name truncated, ending in `…`. The name
+ * is the payload, so it truncates last. Below the point where the tag no
+ * longer fits the line is exactly the one ADR 0038 described. The rule is
+ * always exactly one row.
  *
  * When the painter carries a `bg`, the line is padded to the full `width`
  * before the background is applied, so the state background reaches the box
@@ -49,18 +61,48 @@ export function paintToolRowHeader(
 	displayName: string,
 	width: number,
 	paint: ToolRowHeaderPainter,
+	tag: string | undefined,
 	indent = 0,
 ): string[] {
 	const available = Math.max(0, width - indent);
-	const line = paintRuleLine(displayName, available, paint);
+	const line = paintRuleLine(displayName, tag, available, paint);
 	const prefix = " ".repeat(indent);
 	if (!paint.bg) return [prefix + line];
 	const padded = line + " ".repeat(Math.max(0, available - line.length));
 	return [paint.bg(" ".repeat(width)), paint.bg(prefix + padded)];
 }
 
-/** The rule line itself: `── <name>` filled with `─` to `width` cells. */
-function paintRuleLine(displayName: string, width: number, paint: ToolRowHeaderPainter): string {
+/** The rule line itself: `── <name> · <tag>` filled with `─` to `width` cells. */
+function paintRuleLine(displayName: string, tag: string | undefined, width: number, paint: ToolRowHeaderPainter): string {
+	if (tag !== undefined) {
+		const content = displayName + TAG_SEP + tag;
+		// `── <name> · <tag> ` plus at least one rule cell: the full rule form.
+		if (content.length <= width - PREFIX_LEN - 2) {
+			const fill = width - PREFIX_LEN - 1 - content.length;
+			return (
+				paint.fg("borderMuted", RULE.repeat(2)) +
+				" " +
+				paint.fg("toolTitle", paint.bold(displayName)) +
+				paint.fg("borderMuted", TAG_SEP) +
+				paint.fg("muted", tag) +
+				" " +
+				paint.fg("borderMuted", RULE.repeat(fill))
+			);
+		}
+		// The rule is gone; the name and the whole tag still fit after the
+		// prefix.
+		if (content.length <= width - PREFIX_LEN) {
+			return (
+				paint.fg("borderMuted", RULE.repeat(2)) +
+				" " +
+				paint.fg("toolTitle", paint.bold(displayName)) +
+				paint.fg("borderMuted", TAG_SEP) +
+				paint.fg("muted", tag)
+			);
+		}
+		// The tag and its separator are gone together; the name-only ladder
+		// below is exactly the ADR 0038 line.
+	}
 	const nameLen = displayName.length;
 	// `── <name> ` plus at least one rule cell: the full rule form.
 	if (nameLen <= width - PREFIX_LEN - 2) {
@@ -87,11 +129,13 @@ function paintRuleLine(displayName: string, width: number, paint: ToolRowHeaderP
  * The MCP header name: pi spells its tools `mcp__<server>__<tool>`; the
  * header drops that spelling and shows `server/tool`, the same form the
  * row's call line uses, so the two agree. Every other tool keeps its raw
- * name. The rule is pi's own, from its MCP extension.
+ * name. The name rule is pi's own, from its MCP extension, and the shared
+ * classifier (which tags those rows `mcp`) reads it from the one owner in
+ * tool-origin.ts.
  */
 export function mcpDisplayName(toolName: string): string {
-	const match = /^mcp__(.+?)__(.+)$/.exec(toolName);
-	return match ? `${match[1]}/${match[2]}` : toolName;
+	const parts = mcpToolNameParts(toolName);
+	return parts ? `${parts.server}/${parts.tool}` : toolName;
 }
 
 /**

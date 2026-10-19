@@ -90,12 +90,25 @@ function mockProviderExtension() {
 	return file;
 }
 
+/** The note-search fixture extension at a fixed work-root path. */
+function noteSearchExtension() {
+	const dir = join(WORK_ROOT, "note-search");
+	mkdirSync(dir, { recursive: true });
+	const file = join(dir, "index.mjs");
+	cpSync(fixtures.NOTE_SEARCH_EXTENSION, file);
+	return file;
+}
+
 /**
- * The tool-headers before/after pair (issue #137): real pi at the pinned grid
- * drives the mock model's one `tool_calls` completion (a real `read` and a
- * real `bash`), so pi runs real tools and draws real Tool rows. The `after`
- * capture loads the tool-headers extension; the `before` capture is the same
- * session without it, so the only visible difference is the header lines.
+ * The tool-headers before/after pair (issue #137, widened by issue #154):
+ * real pi at the pinned grid drives the mock model's one `tool_calls`
+ * completion (a real `read`, a real `bash`, and the capture-only
+ * `note_search`), so pi runs real tools and draws real Tool rows. The
+ * `after` capture loads the tool-headers extension; the `before` capture is
+ * the same session without it, so the only visible difference is the
+ * header lines. `note_search` stands in for an extension row with stable
+ * bytes: a real `bash_bg` row is not used because its job id, pid, and log
+ * path are never byte-stable.
  */
 function toolHeadersCapture(ctx, { dir, headers }) {
 	const root = join(WORK_ROOT, dir);
@@ -114,6 +127,8 @@ function toolHeadersCapture(ctx, { dir, headers }) {
 			"mock/mock-tools",
 			"--extension",
 			extension,
+			"--extension",
+			noteSearchExtension(),
 			...headerArgs,
 		],
 		cwd,

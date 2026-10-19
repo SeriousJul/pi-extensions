@@ -396,3 +396,11 @@ export function buildCodegraphFixture() {
 
 /** The extension file that registers the "mock" provider. */
 export const MOCK_PROVIDER_EXTENSION = join(FIXTURES_ROOT, "mock-provider", "mock-provider.mjs");
+
+/**
+ * The capture-only fixture extension the tool-headers screenshot loads in
+ * both its captures (issue #154): one tool, note_search, with fixed
+ * arguments and fixed output. The directory-style layout is the point: its
+ * Origin tag is its own directory name, not an entry file name.
+ */
+export const NOTE_SEARCH_EXTENSION = join(FIXTURES_ROOT, "note-search", "index.mjs");

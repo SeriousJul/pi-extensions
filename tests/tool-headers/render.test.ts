@@ -1,8 +1,10 @@
 /**
- * Unit tests that pin the Tool row header painter (issue #137, ADR 0038).
+ * Unit tests that pin the Tool row header painter (issue #137, ADR 0038;
+ * the Origin tag and the widened ladder are issue #154, ADR 0045).
  *
  * The painter is pure and theme-light, so the tests drive it with a fake
- * painter and assert the exact line: the short-name form, the shrunk rule and
+ * painter and assert the exact line: the tagged and untagged forms, the
+ * shrunk rule, the whole tag and its separator disappearing together,
  * the `…` truncation at a narrow width, the MCP name form, and the theme
  * calls. No pi or TUI is loaded.
  */
@@ -32,48 +34,130 @@ function recordingPainter() {
 }
 
 describe("paintToolRowHeader", () => {
-	it("paints the short-name form: name in a rule filled to the content edge", () => {
+	it("paints the tagged form: name, tag, and rule filled to the content edge", () => {
+		const { paint } = recordingPainter();
+		// `read · built-in` is 15 cells; width 98 leaves 79 rule cells.
+		const lines = paintToolRowHeader("read", 98, paint, "built-in");
+		expect(lines).toEqual([`── read · built-in ${"─".repeat(79)}`]);
+	});
+
+	it("paints the untagged form exactly as ADR 0038 described it", () => {
 		const { paint } = recordingPainter();
 		// "read" is 4 cells; width 98 leaves 90 rule cells after `── read `.
-		const lines = paintToolRowHeader("read", 98, paint);
+		const lines = paintToolRowHeader("read", 98, paint, undefined);
 		expect(lines).toEqual([`── read ${"─".repeat(90)}`]);
 	});
 
-	it("shrinks the trailing rule to zero before it touches the name", () => {
+	it("shrinks the trailing rule to zero before it touches the name or the tag", () => {
 		const { paint } = recordingPainter();
 		// 7-cell name at width 10: `── abcdefg` fills it exactly, no rule left.
-		expect(paintToolRowHeader("abcdefg", 10, paint)).toEqual(["── abcdefg"]);
+		expect(paintToolRowHeader("abcdefg", 10, paint, undefined)).toEqual(["── abcdefg"]);
 		// 6 cells at width 10: the line is shorter than the width, no rule.
-		expect(paintToolRowHeader("abcdef", 10, paint)).toEqual(["── abcdef"]);
+		expect(paintToolRowHeader("abcdef", 10, paint, undefined)).toEqual(["── abcdef"]);
+		// Tagged, the rule collapses to zero and the tag stays whole.
+		expect(paintToolRowHeader("abcdef", 16, paint, "ghij")).toEqual(["── abcdef · ghij"]);
+	});
+
+	it("drops the whole tag and its separator together, never a shortened tag", () => {
+		const { paint } = recordingPainter();
+		// 8-cell name, 8-cell tag: `name · tag` is 19 cells. At width 18 the
+		// tagged line no longer fits, and the line is the ADR 0038 form: the
+		// name alone in the rule, no fragment of the tag anywhere.
+		const line = paintToolRowHeader("abcdefgh", 18, paint, "ijklmnop")[0];
+		expect(line).toBe(`── abcdefgh ${"─".repeat(6)}`);
+		expect(line.includes("ijklmnop")).toBe(false);
 	});
 
 	it("truncates the name with a trailing ellipsis only when the name alone does not fit", () => {
 		const { paint } = recordingPainter();
 		// 8-cell name at width 10: `── ` leaves 7 cells; the name becomes 6 + `…`.
-		expect(paintToolRowHeader("abcdefgh", 10, paint)).toEqual(["── abcdef…"]);
+		expect(paintToolRowHeader("abcdefgh", 10, paint, undefined)).toEqual(["── abcdef…"]);
 		// A very long name at a narrow width keeps the prefix, ends in `…`.
 		const long = "a".repeat(40);
-		expect(paintToolRowHeader(long, 12, paint)).toEqual([`── ${"a".repeat(8)}…`]);
+		expect(paintToolRowHeader(long, 12, paint, undefined)).toEqual([`── ${"a".repeat(8)}…`]);
+		// A tagged line that is too narrow for the tag truncates the name, tag gone.
+		expect(paintToolRowHeader(long, 12, paint, "tag")).toEqual([`── ${"a".repeat(8)}…`]);
 	});
 
-	it("is one rule line without a background painter", () => {
+	it("is one rule line without a background painter, tagged or not", () => {
 		const { paint } = recordingPainter();
 		for (const width of [1, 4, 10, 50, 98]) {
-			const lines = paintToolRowHeader("a".repeat(30), width, paint);
+			const lines = paintToolRowHeader("a".repeat(30), width, paint, "built-in");
 			expect(lines).toHaveLength(1);
 			expect(lines[0].includes("\n")).toBe(false);
 		}
 	});
 
-	it("styles the rule in borderMuted and the name bold in toolTitle", () => {
+	it("styles the rule borderMuted, the name bold toolTitle, the separator borderMuted, the tag muted and unbold", () => {
 		const { paint, calls } = recordingPainter();
-		paintToolRowHeader("read", 20, paint);
+		// `── read · built-in ` is 19 cells; the fill is 1 rule cell.
+		paintToolRowHeader("read", 20, paint, "built-in");
+		expect(calls).toEqual([
+			{ color: "borderMuted", text: "──" },
+			{ bold: "read" },
+			{ color: "toolTitle", text: "read" },
+			{ color: "borderMuted", text: " · " },
+			{ color: "muted", text: "built-in" },
+			{ color: "borderMuted", text: "─" },
+		]);
+	});
+
+	it("keeps the untagged styling exactly as ADR 0038 styled it", () => {
+		const { paint, calls } = recordingPainter();
 		// `── read ` is 8 cells; the fill is 12 rule cells.
+		paintToolRowHeader("read", 20, paint, undefined);
 		expect(calls).toEqual([
 			{ color: "borderMuted", text: "──" },
 			{ bold: "read" },
 			{ color: "toolTitle", text: "read" },
 			{ color: "borderMuted", text: "─".repeat(12) },
+		]);
+	});
+});
+
+/**
+ * The narrow-width ladder, one rung per width. The 8-cell name and 8-cell
+ * tag make `name · tag` 19 cells, so the rungs fall at the widths below:
+ * full rule and tag, rule collapsed with the tag whole, tag and separator
+ * gone with the name in the full rule, name alone without a rule, and the
+ * name truncated with `…`.
+ */
+describe("paintToolRowHeader: the ladder at the widths that force each rung", () => {
+	const { paint } = recordingPainter();
+
+	it("rung 1: full rule and tag", () => {
+		// 19 cells + prefix + space + 1 rule cell = width 24.
+		expect(paintToolRowHeader("abcdefgh", 24, paint, "ijklmnop")).toEqual(["── abcdefgh · ijklmnop ─"]);
+	});
+
+	it("rung 2: rule collapsed to nothing, tag still whole", () => {
+		// 19 cells + prefix = 22 cells, in a 23-wide line.
+		expect(paintToolRowHeader("abcdefgh", 23, paint, "ijklmnop")).toEqual(["── abcdefgh · ijklmnop"]);
+	});
+
+	it("rung 3: tag and separator gone together, name whole", () => {
+		// The name alone in the full rule: `── abcdefgh ` + 6 rule cells.
+		expect(paintToolRowHeader("abcdefgh", 18, paint, "ijklmnop")).toEqual([`── abcdefgh ${"─".repeat(6)}`]);
+	});
+
+	it("rung 4: name alone, no rule", () => {
+		// `── abcdefgh` is 11 cells, in a 12-wide line.
+		expect(paintToolRowHeader("abcdefgh", 12, paint, "ijklmnop")).toEqual(["── abcdefgh"]);
+	});
+
+	it("rung 5: name truncated with …", () => {
+		// 9-wide line: `── ` leaves 6 cells; the name becomes 5 + `…`.
+		expect(paintToolRowHeader("abcdefgh", 9, paint, "ijklmnop")).toEqual(["── abcde…"]);
+	});
+
+	it("walks the rungs in order as the width shrinks, never skipping a form", () => {
+		const form = (width: number) => paintToolRowHeader("abcdefgh", width, paint, "ijklmnop")[0];
+		expect([form(24), form(22), form(21), form(12), form(10)]).toEqual([
+			"── abcdefgh · ijklmnop ─", // full rule and tag
+			"── abcdefgh · ijklmnop", // rule collapsed to nothing, tag still whole
+			`── abcdefgh ${"─".repeat(9)}`, // tag and separator gone together, name whole
+			"── abcdefgh", // name alone, no rule
+			"── abcdef…", // name truncated with …
 		]);
 	});
 });
@@ -97,27 +181,34 @@ describe("paintToolRowHeader with a background painter", () => {
 		const { paint, bgs } = bgPainter();
 		// 10 cells: the rule collapses to zero and the line is 9 cells, so bg
 		// sees the line plus 1 padding cell, behind the padding line.
-		paintToolRowHeader("abcdef", 10, paint);
+		paintToolRowHeader("abcdef", 10, paint, undefined);
 		expect(bgs).toEqual([" ".repeat(10), "── abcdef "]);
 	});
 
 	it("adds no padding when the rule already fills the width", () => {
 		const { paint, bgs } = bgPainter();
 		// `── read ` leaves 2 rule cells: the line is exactly 10 cells.
-		paintToolRowHeader("read", 10, paint);
+		paintToolRowHeader("read", 10, paint, undefined);
 		expect(bgs).toEqual([" ".repeat(10), `── read ${"─".repeat(2)}`]);
+	});
+
+	it("pads a tagged line to the full width before painting", () => {
+		const { paint, bgs } = bgPainter();
+		// `── read · built-in ` leaves 1 rule cell: the line is exactly 20 cells.
+		paintToolRowHeader("read", 20, paint, "built-in");
+		expect(bgs).toEqual([" ".repeat(20), `── read · built-in ${"─".repeat(1)}`]);
 	});
 
 	it("pads after the indent, so the background still spans the whole line", () => {
 		const { paint, bgs } = bgPainter();
 		// Available is 11 cells: `── abcdef` plus 1 rule cell, behind the 1-space indent.
-		paintToolRowHeader("abcdef", 12, paint, 1);
+		paintToolRowHeader("abcdef", 12, paint, undefined, 1);
 		expect(bgs).toEqual([" ".repeat(12), ` ── abcdef ─`]);
 	});
 
 	it("paints a blank background line ahead of the rule, the padding pi's shell box paints above the other rows' headers", () => {
 		const { paint, bgs } = bgPainter();
-		const lines = paintToolRowHeader("read", 10, paint);
+		const lines = paintToolRowHeader("read", 10, paint, undefined);
 		// Two lines: the padding line, then the rule; both painted to the
 		// full width, so the block top is one continuous background.
 		expect(lines).toHaveLength(2);
@@ -134,11 +225,16 @@ describe("paintToolRowHeader indent", () => {
 
 	it("prefixes the rule with the indent spaces and fills the rest of the width", () => {
 		// Available is 9 cells: `── read` plus 1 rule cell, behind a 1-space indent.
-		expect(paintToolRowHeader("read", 10, paint, 1)).toEqual([" ── read ─"]);
+		expect(paintToolRowHeader("read", 10, paint, undefined, 1)).toEqual([" ── read ─"]);
+	});
+
+	it("pads a tagged line behind the indent to the full width", () => {
+		// Available is 23 cells: `── read · built-in ` plus 4 rule cells, behind a 1-space indent.
+		expect(paintToolRowHeader("read", 24, paint, "built-in", 1)).toEqual([` ── read · built-in ${"─".repeat(4)}`]);
 	});
 
 	it("keeps the no-indent output exactly as it was", () => {
-		expect(paintToolRowHeader("read", 98, paint, 0)).toEqual([`── read ${"─".repeat(90)}`]);
+		expect(paintToolRowHeader("read", 98, paint, undefined, 0)).toEqual([`── read ${"─".repeat(90)}`]);
 	});
 });
 

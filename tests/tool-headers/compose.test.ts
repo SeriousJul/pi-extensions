@@ -6,8 +6,11 @@
  * call line. These tests pin the composition rules without a live pi:
  * `renderShell` from `next()` is preserved, the wrapped renderer receives its
  * own component back as `context.lastComponent` on the second render, a
- * `next()` of `undefined` yields `undefined`, and a tool with no renderer
- * gains a header above its stock call line.
+ * `next()` of `undefined` yields `undefined`, a tool with no renderer gains a
+ * header above its stock call line, and the header line carries the shared
+ * classifier's Origin tag - `built-in` for pi's own tool, the extension's
+ * own name for an extension's tool, `mcp` for an MCP row - with an
+ * `unknown` origin drawing exactly the ADR 0038 name-only line.
  */
 import { describe, expect, it } from "vitest";
 import type { Component } from "@earendil-works/pi-tui";
@@ -170,5 +173,62 @@ describe("wrapToolRenderers", () => {
 		const lines = component.render(40);
 		expect(lines[0]).toBe(`── bash ${"─".repeat(32)}`); // no indent, no background
 		expect(bgs).toEqual([]);
+	});
+});
+
+describe("wrapToolRenderers: the Origin tag on the header line", () => {
+	it("paints the built-in tag on a pi tool's row", () => {
+		const wrapped = wrapToolRenderers("read", { renderCall: () => fakeComponent(["read note.txt"]) } as never, {
+			kind: "builtin",
+			tag: "built-in",
+		});
+		const component = wrapped!.renderCall!({}, theme, makeContext({}, undefined)) as Component;
+		const lines = component.render(40);
+		expect(lines[0]).toBe(`── read · built-in ${"─".repeat(21)}`);
+	});
+
+	it("paints the extension's own name on an extension's tool row", () => {
+		const wrapped = wrapToolRenderers("bash_bg", { renderCall: () => fakeComponent(["$ sleep 1"]) } as never, {
+			kind: "extension",
+			tag: "background-jobs",
+		});
+		const component = wrapped!.renderCall!({}, theme, makeContext({}, undefined)) as Component;
+		const lines = component.render(40);
+		expect(lines[0]).toBe(`── bash_bg · background-jobs ${"─".repeat(11)}`);
+	});
+
+	it("paints the mcp tag on an MCP row, whose name is server/tool", () => {
+		const wrapped = wrapToolRenderers("mcp__docs__search", { renderCall: () => fakeComponent(["call line"]) } as never, {
+			kind: "mcp",
+			tag: "mcp",
+		});
+		const component = wrapped!.renderCall!({}, theme, makeContext({}, undefined)) as Component;
+		const lines = component.render(40);
+		expect(lines[0]).toBe(`── docs/search · mcp ${"─".repeat(19)}`);
+	});
+
+	it("paints no tag for an unknown origin: exactly the ADR 0038 line", () => {
+		const wrapped = wrapToolRenderers("mcp__docs__search", { renderCall: () => fakeComponent(["call line"]) } as never, {
+			kind: "unknown",
+		});
+		const component = wrapped!.renderCall!({}, theme, makeContext({}, undefined)) as Component;
+		const lines = component.render(40);
+		expect(lines[0]).toBe(`── docs/search ${"─".repeat(25)}`);
+	});
+
+	it("paints the tag on a self-shell header, over the row's state background", () => {
+		const { theme: recTheme, bgs } = recordingTheme();
+		const wrapped = wrapToolRenderers("edit", { renderShell: "self", renderCall: () => fakeComponent(["edit line"]) } as never, {
+			kind: "builtin",
+			tag: "built-in",
+		});
+		const component = wrapped!.renderCall!({}, recTheme, makeContext({}, undefined)) as Component;
+		const lines = component.render(40);
+		expect(lines[0]).toBe(" ".repeat(40));
+		expect(lines[1]).toBe(` ── edit · built-in ${"─".repeat(20)}`);
+		expect(bgs).toEqual([
+			{ color: "toolSuccessBg", text: " ".repeat(40) },
+			{ color: "toolSuccessBg", text: lines[1] },
+		]);
 	});
 });

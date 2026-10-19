@@ -1,13 +1,18 @@
 /**
- * Tool row headers (issue #137, ADR 0038).
+ * Tool row headers (issue #137, ADR 0038; the Origin tag is issue #154,
+ * ADR 0045).
  *
  * Every Tool row sits in the same green block, and the block says nothing
  * about which tool it holds: a `bash` and a `powershell` row print only
  * `$ <command>`, a `codemode` row a JSON blob. This extension draws one line
- * above each row's call line - the tool name set in a rule - so the tool is
- * told at a glance. The `bash` and `bash_bg` rows, identical in shape, are
- * the rows that carry the value: the header is what finally tells one from
- * the other (ADR 0024 keeps the `bash_bg` call line marker-free).
+ * above each row's call line - the tool name and its Origin tag set in a
+ * rule - so the tool and the unit that supplied it are told at a glance.
+ * The tag is `built-in` for pi's own tool, `mcp` for an MCP server's tool,
+ * and the extension's own name for an extension's tool; a row whose origin
+ * pi does not report gets the name rule and no tag. The `bash` and `bash_bg`
+ * rows, identical in shape, are the rows that carry the value: the header is
+ * what finally tells one from the other (ADR 0024 keeps the `bash_bg` call
+ * line marker-free).
  *
  * The mechanism is a `pi.registerToolRenderer()` resolver that calls `next()`
  * first and wraps whatever pi or another extension would draw, prepending the
@@ -15,6 +20,12 @@
  * through one path, and it composes with pi's MCP resolver instead of
  * shadowing it. The resolver never calls `pi.registerTool`: it changes a
  * picture, not an execution.
+ *
+ * The Origin tag comes from the shared classifier (ADR 0045): the registry
+ * is read once, on the first rendered row, and memoized for the life of the
+ * extension instance, because `pi.getAllTools()` rebuilds its array and
+ * `renderCall` runs on every repaint of every row. A reload re-runs the
+ * factory and re-reads the registry.
  *
  * Always on, with no setting and no command. It is a rendering opinion in a
  * personal package; the way to opt out is to not load the file.
@@ -32,6 +43,7 @@
 import type { ExtensionAPI, ToolRenderers } from "@earendil-works/pi-coding-agent";
 import { Container, Text, type Component } from "@earendil-works/pi-tui";
 
+import { createToolOriginLookup, type ToolOrigin } from "../shared/tool-origin.ts";
 import {
 	formatFallbackCallLine,
 	mcpDisplayName,
@@ -39,17 +51,19 @@ import {
 	type ToolRowHeaderPainter,
 } from "./render.ts";
 
-/** The line(s) a row draws above its call line: the name in a rule; on
- * self-shell rows, one blank background line ahead of the rule. Rendered at
- * the box's content width, so the rule fills to the content edge. */
+/** The line(s) a row draws above its call line: the name and its Origin tag
+ * in a rule; on self-shell rows, one blank background line ahead of the
+ * rule. Rendered at the box's content width, so the rule fills to the
+ * content edge. */
 class HeaderLine implements Component {
 	constructor(
 		private readonly displayName: string,
+		private readonly tag: string | undefined,
 		private readonly paint: ToolRowHeaderPainter,
 		private readonly indent = 0,
 	) {}
 	render(width: number): string[] {
-		return paintToolRowHeader(this.displayName, width, this.paint, this.indent);
+		return paintToolRowHeader(this.displayName, width, this.paint, this.tag, this.indent);
 	}
 	invalidate(): void {}
 }
@@ -66,11 +80,12 @@ class HeaderedComponent extends Container {
 
 	constructor(
 		displayName: string,
+		tag: string | undefined,
 		paint: ToolRowHeaderPainter,
 		indent = 0,
 	) {
 		super();
-		this.header = new HeaderLine(displayName, paint, indent);
+		this.header = new HeaderLine(displayName, tag, paint, indent);
 		this.addChild(this.header);
 	}
 
@@ -109,6 +124,10 @@ function rowState(state: unknown): RowState {
  * self shell; `renderResult` is left untouched, so the row's result - and the
  * caches the result renderer owns - render exactly as pi would draw them.
  *
+ * The header carries the tool name and its Origin tag (ADR 0045); `origin`
+ * is the shared classifier's answer for this tool's name, and an `unknown`
+ * origin draws exactly the ADR 0038 name-only line.
+ *
  * A self-shell row is drawn by pi in a plain container that carries no
  * background and no padding, so the header paints both: the state colors,
  * and the blank padding line above the rule that pi's shell box paints for
@@ -119,9 +138,14 @@ function rowState(state: unknown): RowState {
  * falls back to the row's pending, success, and error colors. The header
  * starts one cell in, matching the shell-box rows' indent.
  */
-export function wrapToolRenderers(toolName: string, inner: ToolRenderers | undefined): ToolRenderers | undefined {
+export function wrapToolRenderers(
+	toolName: string,
+	inner: ToolRenderers | undefined,
+	origin: ToolOrigin = { kind: "unknown" },
+): ToolRenderers | undefined {
 	if (!inner) return undefined;
 	const displayName = mcpDisplayName(toolName);
+	const tag = origin.tag;
 	const wrapped: ToolRenderers = { ...inner };
 	const callRenderer = inner.renderCall;
 	const selfShell = inner.renderShell === "self";
@@ -151,7 +175,7 @@ export function wrapToolRenderers(toolName: string, inner: ToolRenderers | undef
 			innerComponent = text;
 		}
 		entry.inner = innerComponent;
-		if (!entry.wrapper) entry.wrapper = new HeaderedComponent(displayName, painter, selfShell ? 1 : 0);
+		if (!entry.wrapper) entry.wrapper = new HeaderedComponent(displayName, tag, painter, selfShell ? 1 : 0);
 		entry.wrapper.setInner(innerComponent);
 		return entry.wrapper;
 	};
@@ -180,7 +204,14 @@ function headerBgColor(entry: RowState): "toolPendingBg" | "toolSuccessBg" | "to
 }
 
 export function registerToolHeaders(pi: ExtensionAPI): void {
-	pi.registerToolRenderer((toolName, next) => wrapToolRenderers(toolName, next()));
+	// One registry read, memoized for the life of the extension instance:
+	// `pi.getAllTools()` rebuilds its array and `renderCall` runs on every
+	// repaint of every row, so the read happens once, on the first rendered
+	// row - by which time every extension has loaded, and a name the read did
+	// not report (an MCP tool before its server connected) gets the name rule
+	// and no tag (ADR 0045).
+	const lookup = createToolOriginLookup(() => pi.getAllTools());
+	pi.registerToolRenderer((toolName, next) => wrapToolRenderers(toolName, next(), lookup(toolName)));
 }
 
 export default function (pi: ExtensionAPI): void {
