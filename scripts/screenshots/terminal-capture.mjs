@@ -12,6 +12,13 @@
  * must stop changing for two consecutive polls. A content marker (a string
  * that must appear on the visible screen) gates the settle start, so a
  * capture never freezes on a transient frame.
+ *
+ * Environment: the captured process gets a pinned minimal base plus what
+ * the capture declares, never the rendering machine's environment. pi reads
+ * PI_* session variables and desktop stacks add XDG_* and display vars, and
+ * any of them can change what lands on the screen. The goldens are
+ * byte-compared against CI, whose environment is fixed, so every capture
+ * must run with the same environment on every machine.
  */
 import pty from "node-pty";
 import xtermHeadless from "@xterm/headless";
@@ -27,7 +34,7 @@ const { Terminal: HeadlessTerminal } = xtermHeadless;
  * @param {string} opts.file executable to spawn
  * @param {string[]} [opts.args]
  * @param {string} [opts.cwd] working directory
- * @param {NodeJS.ProcessEnv} [opts.env] extra environment (merged over process.env)
+ * @param {NodeJS.ProcessEnv} [opts.env] extra environment (merged over the pinned base environment)
  * @param {Array<{data: string, delayMs?: number}>} [opts.input] scripted key input, sent in order
  * @param {string} [opts.marker] content that must appear on the screen before settle starts
  * @param {number} [opts.cols] grid width (default LOOK.cols)
@@ -39,6 +46,23 @@ const { Terminal: HeadlessTerminal } = xtermHeadless;
  *   bytes: raw pty output; rows: visible screen text lines (top row first);
  *   cells: per-row arrays of {ch, fg, bg, bold} for the visible grid.
  */
+/**
+ * The pinned base environment every captured process starts from. Nothing
+ * else from the rendering machine crosses into the pty.
+ */
+function baseEnv() {
+	return {
+		PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+		HOME: process.env.HOME ?? "/tmp",
+		USER: process.env.USER ?? "capture",
+		LOGNAME: process.env.LOGNAME ?? process.env.USER ?? "capture",
+		// One locale on every machine: screen text derived from Intl (dates,
+		// numbers) must not follow the rendering machine's locale.
+		LANG: "C.UTF-8",
+		LC_ALL: "C.UTF-8",
+	};
+}
+
 export async function captureTerminal({
 	file,
 	args = [],
@@ -54,7 +78,7 @@ export async function captureTerminal({
 } = {}) {
 	const shell = pty.spawn(file, args, {
 		cwd,
-		env: { ...process.env, ...env, TERM: "xterm-256color", COLORTERM: "truecolor" },
+		env: { ...baseEnv(), ...env, TERM: "xterm-256color", COLORTERM: "truecolor" },
 		cols,
 		rows,
 	});
