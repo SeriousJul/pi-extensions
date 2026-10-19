@@ -874,6 +874,42 @@ start a memory stampede.
 _Avoid_: server limit (does not say concurrent or per-session), pool (a
 pool implies idle ones are reused)
 
+**Write operation**:
+An operation where the Language server decides what changes and the
+extension makes that change real: rename, Code action, and formatting.
+Every one is a call the agent named by name. No hook, no annotation, and
+no turn-end pass ever writes a file.
+_Avoid_: write tool (pi's built-in tool is a different thing), mutation,
+edit (pi's edit tool owns that word), edit operation
+
+**Code action**:
+What a Language server offers to change at a location: a title, a kind,
+and either the edit it would make or a command the client would run. This
+extension sees only the ones that carry an edit.
+_Avoid_: quick fix (one kind of Code action), refactoring (another kind),
+fix (generic), patch (a diff, not an offer)
+
+**Quick fix**:
+The Code action that answers one specific Diagnostic, offered at that
+Diagnostic's location. It is the action the Post-edit annotation points
+at.
+_Avoid_: autofix (a linter's word), hotfix, auto-fix (the extension never
+fixes on its own)
+
+**Command-only action**:
+A Code action that names a server command instead of carrying an edit, so
+what it would change is unknown until it has run. The extension never runs
+one, and says which command it refused.
+_Avoid_: server command (that is the half that is not refused),
+executeCommand (the protocol method, not the concept), unsafe action (the
+refusal is a rule, not a verdict)
+
+**Self-write**:
+A file change the extension caused itself through a Write operation, as
+opposed to one an agent, a script, or another process made. A Self-write
+is discovered and verified the same way as any other change.
+_Avoid_: own edit, echo (the server's copy is not an echo), internal edit
+
 ### TUI
 
 **Tool row**:
