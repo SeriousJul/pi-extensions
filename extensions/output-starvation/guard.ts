@@ -26,7 +26,7 @@
  * prompt size the provider itself counted for its last answer) and adds an
  * Inflation-corrected estimate of everything the provider has not counted
  * yet. It is the same correction Output limits and Safe branch summary
- * apply to pi's chars/4 estimate, applied to the request instead of to a
+ * apply to pi's chars/3.5 estimate, applied to the request instead of to a
  * tool result.
  *
  * Two rules hold that the trigger names do not carry. The Fit lowers the
@@ -69,10 +69,10 @@ import { PI_CHARS_PER_TOKEN, PI_IMAGE_CHARGE_BYTES, type TokenMath, tokensFromBy
  * pi's saturated output floor: the budget pi's clamp
  * (clampMaxTokensToContext) returns when the context is estimated
  * over-full. The clamp floors its result at pi-ai's private
- * MIN_MAX_TOKENS, which is 1 in pi 0.87.1. The clamp's own module is not
+ * MIN_MAX_TOKENS, which is 1 in pi 1.1.0. The clamp's own module is not
  * importable from an extension - pi's extension loader aliases only the
  * package entry points, and its alias for the pi-ai entry swallows every
- * pi-ai subpath - so the floor is pinned to the value pi 0.87.1 gives it,
+ * pi-ai subpath - so the floor is pinned to the value pi 1.1.0 gives it,
  * and the unit test pins this constant against pi's own clamp. If pi moves
  * the floor, that test is the tripwire.
  */
@@ -81,7 +81,7 @@ export const PI_OUTPUT_FLOOR = 1;
 /**
  * pi's own safety margin: the tokens pi's clamp always leaves for the
  * answer, `CONTEXT_SAFETY_TOKENS` in pi-ai's `api/simple-options` (pi
- * 0.87.1). The Fit spends the same margin pi spends, because a margin
+ * 1.1.0). The Fit spends the same margin pi spends, because a margin
  * invented here would silently disagree with pi whenever pi's arithmetic
  * moves; the unit test pins this constant against pi's own clamp the way
  * the floor is pinned.
@@ -90,7 +90,7 @@ export const PI_SAFETY_MARGIN = 4096;
 
 /**
  * pi's own minimum answer room: `MIN_ANSWER_TOKENS` in pi-ai's
- * `api/simple-options` (pi 0.87.1), the tokens pi always leaves for an
+ * `api/simple-options` (pi 1.1.0), the tokens pi always leaves for an
  * answer when a thinking budget shares the response ceiling. It is the
  * default for the guard's `minAnswerTokens` setting, and the unit test
  * pins it against pi's own constant.
@@ -137,7 +137,7 @@ export function budgetOf(payload: unknown): number | undefined {
 /**
  * pi's own rule for a thinking budget that shares a response ceiling:
  * `clampThinkingBudgetToAnswerRoom` in pi-ai's `api/simple-options` (pi
- * 0.87.1), `min(budget, max(0, ceiling - MIN_ANSWER_TOKENS))`. pi applies it
+ * 1.1.0), `min(budget, max(0, ceiling - MIN_ANSWER_TOKENS))`. pi applies it
  * when it builds the payload; the Fit applies the same rule after it lowers
  * the ceiling, so a fitted request never carries a reasoning budget above
  * its own ceiling - the pair pi's clamp exists to stop, which some servers
@@ -247,7 +247,7 @@ export function isStarved(payload: unknown): boolean {
  * function itself is not importable from an extension (the same loader
  * rule that pins PI_OUTPUT_FLOOR above), so this mirror stands in its
  * place. It must stay line-for-line with pi-ai's estimateContextTokens
- * and estimateMessageTokens (pi-ai 0.87.1, utils/estimate.ts); the unit
+ * and estimateMessageTokens (pi-ai 1.1.0, utils/estimate.ts); the unit
  * test that compares the mirror against the real function over fixture
  * sessions is the tripwire. The constants are pi-ai's, not this repo's.
  */

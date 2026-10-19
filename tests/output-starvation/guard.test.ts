@@ -38,11 +38,11 @@ import { PI_IMAGE_CHARGE_BYTES, type TokenMath, tokensFromBytes } from "../../ex
 // asks for.
 const model = (contextWindow: number, maxTokens: number) => ({ contextWindow, maxTokens }) as Model<Api>;
 
-// A context pi's estimator reads as `tokens` big: plain text at 4 chars per
-// token, the estimator's own rate. The package-boundary type bridge stands
-// in one place, here.
+// A context pi's estimator reads as `tokens` big: plain text at 3.5 chars
+// per token, the estimator's own rate since pi 1.1.0. The package-boundary
+// type bridge stands in one place, here.
 const overFullContext = (tokens: number) =>
-	({ messages: [{ role: "user", content: "x".repeat(tokens * 4), timestamp: 0 }] }) as unknown as TranscriptContext;
+	({ messages: [{ role: "user", content: "x".repeat(Math.ceil(tokens * 3.5)), timestamp: 0 }] }) as unknown as TranscriptContext;
 
 describe("PI_OUTPUT_FLOOR", () => {
 	it("is the value pi's own clamp floors at today", () => {
@@ -354,7 +354,7 @@ describe("payloadMessages", () => {
 });
 
 describe("tokensFromBytes", () => {
-	it("is pi's chars/4 estimate times the Inflation factor", () => {
+	it("is the char count over the rate, times the Inflation factor", () => {
 		expect(tokensFromBytes(4000, MATH)).toBe(2000);
 		expect(tokensFromBytes(4001, MATH)).toBe(2001);
 		expect(tokensFromBytes(4000, { bytesPerChar: 4, inflation: 1 })).toBe(1000);

@@ -43,7 +43,11 @@ export function compressionSystemPrompt(capTokens: number): string {
  */
 export const THINKING_RESERVE_TOKENS = 1024;
 
-/** The estimator scale used across pi: 4 characters per token. */
+/**
+ * The characters-per-token scale of pi's compaction estimator: 4. pi 1.1.0
+ * moved its output clamp to 3.5, but compaction and branch summary kept 4, and
+ * this trim budgets a summary, so it stays on that scale.
+ */
 const CHARS_PER_TOKEN = 4;
 
 export interface CompressionResult {

@@ -4,7 +4,7 @@ export interface TerminalCaptureOptions {
 	file: string;
 	args?: string[];
 	cwd?: string;
-	/** Extra environment, merged over process.env. */
+	/** Extra environment, merged over the pinned base environment. */
 	env?: Record<string, string>;
 	/** Scripted key input, sent in order after startup. */
 	input?: Array<{ data: string; delayMs?: number }>;

@@ -363,12 +363,12 @@ function wireChars(message) {
  * The Fit the guard owes one recorded request, computed independently of the
  * extension from what actually went over the wire: the Reported context the
  * session's last answer carries, plus the recorded payload's content after
- * the anchored answer at pi's chars/4 rate times the Inflation factor, and
+ * the anchored answer at pi's chars/3.5 rate times the Inflation factor, and
  * pi's own 4096 margin. `answersAfterAnchor` is how many answers the session
  * holds after the one the provider counted; the boundary sits at that
  * anchored answer, not at the payload's last one.
  */
-function expectedFit(body, anchor, window, { inflation = 2, bytesPerChar = 4, margin = 4096, answersAfterAnchor = 0 } = {}) {
+function expectedFit(body, anchor, window, { inflation = 2, bytesPerChar = 3.5, margin = 4096, answersAfterAnchor = 0 } = {}) {
 	const messages = body.messages ?? [];
 	let seen = 0;
 	let anchorIndex = -1;
@@ -408,7 +408,7 @@ function expectedFit(body, anchor, window, { inflation = 2, bytesPerChar = 4, ma
 	// 2. The starved turn: the context estimate (the healthy turn's usage
 	// plus this prompt's characters) leaves the clamp nothing, so the
 	// budget is pi's floor and the guard refuses before the wire.
-	const bigEstimate = 7 + Math.ceil(BIG_PROMPT.length / 4);
+	const bigEstimate = 7 + Math.ceil(BIG_PROMPT.length / 3.5);
 	await prompt(rpc, BIG_PROMPT);
 	if (mock.requests.length !== 1) fail(`the starved request reached the provider: budgets ${mockBudgets(mock)}`);
 	if (JSON.stringify(starvedNotifies(rpc)) !== JSON.stringify([starvedLine(bigEstimate, window, 1)])) {
@@ -420,7 +420,7 @@ function expectedFit(body, anchor, window, { inflation = 2, bytesPerChar = 4, ma
 
 	// 3. The next turn is starved again and gets its own single refusal:
 	// once per turn, never a storm, and the provider still never hears.
-	const againEstimate = bigEstimate + Math.ceil("again".length / 4);
+	const againEstimate = bigEstimate + Math.ceil("again".length / 3.5);
 	await prompt(rpc, "again");
 	if (mock.requests.length !== 1) fail(`the repeated starved request reached the provider: budgets ${mockBudgets(mock)}`);
 	if (JSON.stringify(starvedNotifies(rpc)) !== JSON.stringify([starvedLine(bigEstimate, window, 1), starvedLine(againEstimate, window, 1)])) {
@@ -502,8 +502,8 @@ function expectedFit(body, anchor, window, { inflation = 2, bytesPerChar = 4, ma
 // 6. Output overrun: the request is fitted, not rejected. The session's
 //    Reported context (150,020) plus one dense trailing tool result leaves
 //    the Corrected estimate 180,031 of the 200,000 window, while pi's own
-//    chars/4 estimate sees about 165,000 and leaves a budget of about
-//    30,900. The mock enforces the window at the incident's measured rate
+//    chars/3.5 estimate sees about 167,000 and leaves a budget of about
+//    28,700. The mock enforces the window at the incident's measured rate
 //    (2 characters per token), so that request is a real 400 from the
 //    provider; the guard lowers the budget to the room the Corrected
 //    estimate leaves, the request goes out, and the answer comes back. That
@@ -695,8 +695,8 @@ function expectedFit(body, anchor, window, { inflation = 2, bytesPerChar = 4, ma
 //     the guard's own Inflation-corrected guess over the payload puts the
 //     request over the window, but the guess is not pi's arithmetic and not
 //     the provider's, so the guard never refuses on it. The request goes out
-//     as pi built it, and the server, which reads this content at pi's own
-//     chars/4 rate, answers it. ADR 0028 refuses on pi's arithmetic; this is
+//     as pi built it, and the server, which reads this content at its own
+//     4-chars-per-token rate, answers it. ADR 0028 refuses on pi's arithmetic; this is
 //     the branch where the guard's arithmetic would have destroyed a turn
 //     that works.
 // ---------------------------------------------------------------------------
@@ -704,7 +704,7 @@ function expectedFit(body, anchor, window, { inflation = 2, bytesPerChar = 4, ma
 	const window = 200_000;
 	const { mock, rpc } = await startSession(window, { compactionEnabled: false, enforceWindow: { promptTokens: 0, charsPerToken: 4, requests: 1 } });
 
-	// 420,000 characters of prompt: the guard's guess reads it at 210,000
+	// 420,000 characters of prompt: the guard's guess reads it at 240,000
 	// tokens, over the window, while the server reads it at 105,000.
 	await prompt(rpc, "x".repeat(420_000));
 

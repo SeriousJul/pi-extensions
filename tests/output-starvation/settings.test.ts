@@ -65,12 +65,12 @@ describe("defaults", () => {
 		expect(DEFAULTS).toEqual({
 			enabled: true,
 			inflation: 2.0,
-			bytesPerChar: 4,
+			bytesPerChar: 3.5,
 			safetyMargin: PI_SAFETY_MARGIN,
 			minAnswerTokens: PI_MIN_ANSWER_TOKENS,
 		});
 		expect(DEFAULT_INFLATION).toBe(2.0);
-		expect(DEFAULT_BYTES_PER_CHAR).toBe(4);
+		expect(DEFAULT_BYTES_PER_CHAR).toBe(3.5);
 	});
 
 	it("carry pi's own figures for the margin and the answer room", () => {

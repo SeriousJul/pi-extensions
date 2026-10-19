@@ -236,7 +236,7 @@ describe.skipIf(!hasPtyScript)("onboarding proof: clean home to joined device (i
 			const code = await Promise.race([cli.waitExit(), new Promise<number>((r) => setTimeout(() => r(-9999), 15_000))]);
 			expect(code).toBe(0);
 			expect(cli.output()).toContain("pushed 2 file(s)");
-			expect(cli.output()).toContain("pi-sync init e2e-gist-1");
+			expect(cli.output()).toContain(`${CLI_PATH} init e2e-gist-1`);
 
 			// The clean home is now a joined device: managed token, manifest, base.
 			const tokenText = (await readFile(join(homeA, ".pi", "sync", "token"), "utf8")).trim();

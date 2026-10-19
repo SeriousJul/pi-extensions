@@ -221,7 +221,7 @@ describe("lineCeilingOf", () => {
 // ---------------------------------------------------------------------------
 
 describe("token math", () => {
-	it("is pi's chars/4 estimate times the Inflation factor", () => {
+	it("is the char count over the rate, times the Inflation factor", () => {
 		expect(tokensFromBytes(4, { bytesPerChar: 4, inflation: 1.0 })).toBe(1);
 		expect(tokensFromBytes(4, MATH)).toBe(2);
 		expect(tokensFromBytes(0, MATH)).toBe(0);

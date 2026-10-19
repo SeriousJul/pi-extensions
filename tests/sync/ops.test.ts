@@ -9,6 +9,7 @@ import { sha256Hex } from "../../extensions/sync/hash.ts";
 import { DEFAULT_MANIFEST, canonicalManifest, canonicalManifestText, parseManifest, serializeManifest } from "../../extensions/sync/manifest.ts";
 import { applyPlan, collectLocalFiles } from "../../extensions/sync/localfs.ts";
 import { probeStartup, runInit, runPull, runPush, runStatus, type SyncRuntime } from "../../extensions/sync/ops.ts";
+import { cliEntryPath } from "../../extensions/sync/paths.ts";
 import { MANIFEST_KEY, type Snapshot, type SyncFile } from "../../extensions/sync/types.ts";
 
 const dirs: string[] = [];
@@ -103,7 +104,7 @@ describe("init / push / pull / status (fake backend)", () => {
 		const outcome = await runPush(a.rt);
 		expect(outcome.ok).toBe(false);
 		if (outcome.ok) return;
-		expect(outcome.error).toContain("pi-sync init");
+		expect(outcome.error).toContain(`${cliEntryPath()} init`);
 	});
 
 	// Acceptance criteria, issue #39.
@@ -115,7 +116,7 @@ describe("init / push / pull / status (fake backend)", () => {
 		if (!outcome.ok) return;
 		const lines = outcome.report.lines.join("\n");
 		expect(lines).toContain("created secret gist gist-abc");
-		expect(lines).toContain("pi-sync init gist-abc");
+		expect(lines).toContain(`${cliEntryPath()} init gist-abc`);
 	});
 
 	it("init without an id uses the local manifest from the state dir when present", async () => {
@@ -434,7 +435,7 @@ describe("init / push / pull / status (fake backend)", () => {
 		const outcome = await runPull(a.rt);
 		expect(outcome.ok).toBe(false);
 		if (outcome.ok) return;
-		expect(outcome.error).toContain("pi sync init");
+		expect(outcome.error).toContain(`${cliEntryPath()} init`);
 	});
 
 	it("pull takes a remote-only change and a remote-only file", async () => {

@@ -7,8 +7,8 @@
  *   PAT mode (default): PI_SYNC_TOKEN holds a personal access token with
  *   gist scope. Non-interactive: init runs with --yes. Human actions: 0.
  *
- *   Device flow mode: PI_SYNC_OAUTH_CLIENT_ID (or the setup wizard's
- *   oauth-client.json in a throwaway home) plus a real terminal. The CLI
+ *   Device flow mode: PI_SYNC_OAUTH_CLIENT_ID (or the client id stored by
+ *   the Account setup script in a throwaway home) plus a real terminal. The CLI
  *   runs on a pty and the human enters the device code in the browser,
  *   then confirms the preview. Human actions: 2 per device.
  *
@@ -43,7 +43,7 @@ if (!token && !clientId) {
 	console.log("      The real-GitHub e2e is opt-in; see docs/extensions/sync/internals.md.");
 	process.exit(0);
 }
-if (deviceFlow && !clientId) fail("--device-flow needs PI_SYNC_OAUTH_CLIENT_ID (or scripts/setup-sync-wizard.sh)");
+if (deviceFlow && !clientId) fail(`--device-flow needs PI_SYNC_OAUTH_CLIENT_ID (or the Account setup script: bash ${repoRoot}/scripts/setup-sync-wizard.sh)`);
 if (deviceFlow && !process.stdout.isTTY) fail("device flow mode needs a real terminal (a pty)");
 
 const homes = [];

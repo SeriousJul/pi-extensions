@@ -13,6 +13,7 @@ import { createGistBackend, type GistTransport } from "../../extensions/sync/bac
 import { runDeviceFlow, type OAuthTransport } from "../../extensions/sync/deviceflow.ts";
 import { needsProactiveRefresh, refreshAccessToken } from "../../extensions/sync/refresh.ts";
 import { parseManagedToken, stateDirFor, tokenPathFor, writeManagedToken } from "../../extensions/sync/token.ts";
+import { accountSetupScriptPath } from "../../extensions/sync/paths.ts";
 
 const dirs: string[] = [];
 async function tempDir(prefix: string): Promise<string> {
@@ -365,7 +366,7 @@ describe("the auth session (issue #38)", () => {
 			deviceFlow: { run: async () => ({ ok: false, error: "should not run" }) },
 		});
 		expect(built.session).toBeUndefined();
-		expect(built.error).toContain("setup-sync-wizard.sh");
+		expect(built.error).toContain(accountSetupScriptPath());
 	});
 
 	it("starts the device flow on a fresh interactive device and stores the token", async () => {

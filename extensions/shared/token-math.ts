@@ -2,7 +2,7 @@
  * The shared token math.
  *
  * Three extensions in this repo convert a character count into a token
- * estimate, and they all mean the same figure: pi's own chars/4 estimate
+ * estimate, and they all mean the same figure: pi's own chars/3.5 estimate
  * times the Inflation factor. Output limits bounds a tool result with it,
  * Safe branch summary budgets a summary request with it, and the
  * output-starvation guard estimates the part of a request the provider has
@@ -13,16 +13,24 @@
  *
  * Nothing here imports pi. The figures are pi's, pinned here and pinned
  * again against pi's own code in the tests that read them.
+ *
+ * Since pi 1.1.0 the rate belongs to one estimator only: pi's output clamp
+ * moved to 3.5 characters per token, while pi's compaction and branch
+ * summary estimator kept 4. This constant follows the output clamp, the
+ * arithmetic that rejects the request every extension here keeps honest;
+ * the Safe branch summary budgets against pi's compaction arithmetic and
+ * keeps that 4 figure on its own side of the seam.
  */
 
 /**
- * pi's own characters-per-token rate: `CHARS_PER_TOKEN` in pi-ai's estimator
- * (pi 0.87.1), the rate pi's output clamp and compaction threshold both
- * estimate at. It is a character count, not a byte count, but the repo names
- * the setting `bytesPerChar` the way Output limits and Safe branch summary
- * already do, and for ASCII the two are the same figure.
+ * pi's own characters-per-token rate: `CHARS_PER_TOKEN` in pi-ai's
+ * estimator (pi-ai 1.1.0, utils/estimate.ts), the rate pi's output clamp
+ * estimates at. pi 1.1.0 moved it from 4 to 3.5 to reduce context-limit
+ * request failures. It is a character count, not a byte count, but the repo
+ * names the setting `bytesPerChar` the way Output limits and Safe branch
+ * summary already do, and for ASCII the two are the same figure.
  */
-export const PI_CHARS_PER_TOKEN = 4;
+export const PI_CHARS_PER_TOKEN = 3.5;
 
 /**
  * The charge for one image block. pi counts an image as 4800 characters in
@@ -36,12 +44,12 @@ export const PI_IMAGE_CHARGE_BYTES = 4800;
 export interface TokenMath {
 	/** The characters per token pi's own estimate assumes. */
 	bytesPerChar: number;
-	/** The Inflation factor on pi's chars/4 estimate. */
+	/** The Inflation factor on pi's chars/3.5 estimate. */
 	inflation: number;
 }
 
 /**
- * Characters to tokens: pi's chars/4 estimate times the Inflation factor.
+ * Characters to tokens: pi's chars/3.5 estimate times the Inflation factor.
  * The correction catches multi-byte text, where pi's estimate runs three to
  * four times low, and code by about 18 percent (ADR 0026).
  */

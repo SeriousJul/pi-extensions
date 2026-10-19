@@ -11,6 +11,7 @@
 import { applyPlan, collectLocalFiles, localManifestFile, readLocalBase, readLocalManifest, writeLocalBase, writeLocalManifest, type ApplyResult } from "./localfs.ts";
 import { merge, planMutatesLocal, type MergePlan, type SideMap } from "./merge.ts";
 import { DEFAULT_MANIFEST, canonicalManifest, canonicalManifestText, isPathIncluded, parseManifest } from "./manifest.ts";
+import { cliCommand } from "./paths.ts";
 import { scanReferences } from "./refs.ts";
 import { sha256Hex } from "./hash.ts";
 import { MANIFEST_KEY, type Backend, type BaseState, type Snapshot, type SyncFile, type SyncManifest } from "./types.ts";
@@ -325,7 +326,7 @@ export async function runInit(rt: SyncRuntime, gistId: string | undefined, opts:
 	if (!gistId) {
 		const localGistId = existing.manifest?.backendOptions.gistId;
 		if (existing.manifest && localGistId) {
-			return fail(`this device already joined gist ${localGistId}. Use pi-sync init <gist-id> to re-join, or pi-sync push to sync.`);
+			return fail(`this device already joined gist ${localGistId}. Use ${cliCommand("init [gist-id]")} to re-join, or ${cliCommand("push")} to sync.`);
 		}
 		// The local manifest wins when present (for example a hand-tuned
 		// include list), else the default (issue #39).
@@ -348,7 +349,7 @@ export async function runInit(rt: SyncRuntime, gistId: string | undefined, opts:
 			"pi sync init (new gist)",
 			`created secret gist ${created.value}`,
 			`pushed ${collected.files.length} file(s)`,
-			`on each other device, join with: pi-sync init ${created.value}`,
+			`on each other device, join with: ${cliCommand(`init ${created.value}`)},`
 		];
 		return { ok: true, report: reportFor("init", created.value, emptyPlan(), lines, [...collected.warnings, ...refWarningLines(collected.files)]), preview: consent.previewShown ? undefined : preview };
 	}
@@ -420,7 +421,7 @@ export async function runPull(rt: SyncRuntime): Promise<SyncOutcome> {
 	const local = await loadLocal(rt);
 	if ("error" in local) return fail(local.error);
 	if (!local.hasLocalManifest) {
-		return fail(`no local sync manifest in ${rt.stateDir}. This device has not joined yet: run pi sync init <gist-id>`);
+		return fail(`no local sync manifest in ${rt.stateDir}. This device has not joined yet: run ${cliCommand("init [gist-id]")}`);
 	}
 	const backend = rt.buildBackend(local.manifest);
 	const remote = await loadRemote(backend, local.manifest.backendOptions.gistId);
@@ -465,7 +466,7 @@ export async function runPush(rt: SyncRuntime): Promise<SyncOutcome> {
 		if (fetched.code === "not-found" && !local.hasLocalManifest) {
 			// A bare push never creates the gist (issue #39): the create path
 			// is init, which always walks the token and the preview steps.
-			return fail(`this device has not joined a gist yet. Create the shared gist with: pi-sync init`);
+			return fail(`this device has not joined a gist yet. Create the shared gist with: ${cliCommand("init")}`);
 		}
 		// A 404 stays a plain error: no re-authentication loop (issue #38).
 		const suffix = fetched.code === "not-found" ? ` The gist may have been deleted, or the id in the manifest is wrong. Check the id and the account.` : "";
@@ -644,7 +645,7 @@ export async function runStatus(rt: SyncRuntime): Promise<SyncOutcome> {
 	const local = await loadLocal(rt);
 	if ("error" in local) return fail(local.error);
 	if (!local.hasLocalManifest) {
-		return fail(`no local sync manifest in ${rt.stateDir}. This device has not joined yet: run pi sync init <gist-id>`);
+		return fail(`no local sync manifest in ${rt.stateDir}. This device has not joined yet: run ${cliCommand("init [gist-id]")}`);
 	}
 	const backend = rt.buildBackend(local.manifest);
 	const remote = await loadRemote(backend, local.manifest.backendOptions.gistId);

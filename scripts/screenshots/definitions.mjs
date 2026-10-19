@@ -14,7 +14,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 import { WORK_ROOT } from "./look.mjs";
 import * as views from "./views.mjs";
@@ -31,7 +31,7 @@ function piHome(root, settings) {
 }
 
 /**
- * The fixed bin dir with stub `fd` and `rg` binaries.
+ * The fixed bin dir with stub `fd` and `rg` binaries and a `node` shim.
  *
  * pi probes its PATH at startup with `<cmd> --version` and prints a
  * "not found. Offline mode enabled" warning when a binary is missing.
@@ -40,6 +40,12 @@ function piHome(root, settings) {
  * succeeds, the warning never appears, and the screen is identical
  * everywhere. The stubs only ever answer --version; no capture runs a
  * search tool.
+ *
+ * The `node` shim execs the node running the capture. Language-server
+ * probes resolve their binaries as `node`-shebang shims off the capture
+ * PATH, so the shim keeps those probes working while keeping the
+ * rendering machine's node directory (and whatever else lives next to
+ * its node, like a locally installed clangd) off the capture PATH.
  */
 function stubBinDir() {
 	const dir = join(WORK_ROOT, "bin");
@@ -51,6 +57,11 @@ function stubBinDir() {
 		if (!existsSync(file) || readFileSync(file, "utf8") !== source) {
 			writeFileSync(file, source, { mode: 0o755 });
 		}
+	}
+	const nodeShim = `#!/bin/sh\nexec "${process.execPath}" "$@"\n`;
+	const nodeFile = join(dir, "node");
+	if (!existsSync(nodeFile) || readFileSync(nodeFile, "utf8") !== nodeShim) {
+		writeFileSync(nodeFile, nodeShim, { mode: 0o755 });
 	}
 	return dir;
 }
@@ -360,11 +371,10 @@ export const CAPTURES = [
 			// The capture's PATH is pinned to the stub bin plus the repo's
 			// node_modules/.bin, so which languages are found is identical
 			// on every machine: only typescript (its native tsc) resolves.
-			// The node dir stays on PATH: the native tsc is a node-shebang
-			// shim on most platforms, and the registry's version probe execs
-			// it to tell TypeScript 7 from the 5.x/6.x compiler CLI.
+			// The stub bin carries a node shim, because the tsc binary is a
+			// node-shebang script and the registry's version probe execs it
+			// to tell TypeScript 7 from the 5.x/6.x compiler CLI.
 			const repoBin = join(ctx.repoRoot, "node_modules", ".bin");
-			const nodeDir = dirname(process.execPath);
 			return {
 				file: process.execPath,
 				args: [
@@ -379,7 +389,7 @@ export const CAPTURES = [
 					join(ctx.repoRoot, "extensions", "lsp", "index.ts"),
 				],
 				cwd: repo,
-				env: piEnv(root, { MOCK_MODEL_PORT: String(ctx.modelPort), PATH: `${stubBinDir()}:${repoBin}:${nodeDir}` }),
+				env: piEnv(root, { MOCK_MODEL_PORT: String(ctx.modelPort), PATH: `${stubBinDir()}:${repoBin}` }),
 				input: [{ data: "/lsp\r", delayMs: 400 }],
 				marker: "watcher: off",
 				startupMs: 8000,
