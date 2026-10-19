@@ -643,7 +643,7 @@ session's anchor), prompt tokens (a wire field of one response)
 **Corrected estimate**:
 The Reported context plus an Inflation-corrected estimate of everything the
 provider has not counted yet. The figure pi's arithmetic is missing.
-_Avoid_: pi's estimate (that is the chars/4 figure), true count (it is still
+_Avoid_: pi's estimate (that is the chars/3.5 figure), true count (it is still
 an estimate, anchored on one real count)
 
 **Fit**:

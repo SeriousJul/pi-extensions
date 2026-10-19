@@ -58,12 +58,12 @@ const TIMEOUT_MS = 90_000;
 
 // The window the scripted provider declares, and pi's reserve default. The
 // Headroom is `CONTEXT_WINDOW - RESERVE - usage`, so `TIGHT_INPUT` leaves
-// 16384 tokens: the allowance is 4096 tokens, and the Bound is 8192 bytes.
+// 16384 tokens: the allowance is 4096 tokens, and the Bound is 7168 bytes.
 const CONTEXT_WINDOW = 150_000;
 const RESERVE = 16_384;
 const TIGHT_INPUT = CONTEXT_WINDOW - RESERVE - 16_384;
 const OPEN_INPUT = 4_000;
-const BOUND_BYTES = 8_192;
+const BOUND_BYTES = 7_168;
 
 /** A line-emitting command whose output is well past the Bound. */
 const BIG_COMMAND = `seq 1 4000 | awk '{printf "row %s %s\\n", $1, "'\''xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'\''"}'`;
@@ -105,7 +105,7 @@ function sessionEntries(file) {
  * `details.truncation.maxBytes`, cross-checked against the notice line that
  * states it.
  *
- * The notice rounds both of its numbers for display ("8KB (4.1k tokens)"),
+ * The notice rounds both of its numbers for display ("7KB (4.1k tokens)"),
  * which is what the spec shows the model, so the two figures are compared with
  * a display-rounding tolerance rather than for equality. pi's reported usage
  * includes this turn's own output tokens, so every Bound here sits a little
@@ -299,7 +299,7 @@ const CASES = [
 			assertOneLivePath(entries[0], text, "bash");
 			const details = entries[0].message.details ?? {};
 			// The patched figure is the real Bound, a few bytes below the clean
-			// 8192 because pi's usage counts this turn's own output too, and it
+			// 7168 because pi's usage counts this turn's own output too, and it
 			// is not pi's default: that is what makes the TUI honest.
 			if (details.truncation.maxBytes === 50 * 1024) throw new Error("details.truncation.maxBytes was left at pi's default");
 			if (!details.fullOutputPath || !existsSync(details.fullOutputPath)) throw new Error(`fullOutputPath does not exist: ${details.fullOutputPath}`);
@@ -361,11 +361,14 @@ const CASES = [
 			// The promise the batch makes is about the batch. Each call's share
 			// is the allowance divided by the calls still to come, and the first
 			// call cannot fill its share exactly (complete lines and the notice
-			// reserve), so the second rolls forward what the first left. The
-			// total is what has to stay inside the message allowance: 4096
-			// tokens, which is 8192 bytes.
-			if (batchBytes > BOUND_BYTES) {
-				throw new Error(`the batch admitted ${batchBytes} bytes, above the ${BOUND_BYTES}-byte message allowance`);
+			// reserve), so the second rolls forward what the first left. At the
+			// default math the 2048-token share of this two-call message is 3584
+			// bytes, below the 4096-byte minOutputBytes floor, so the floor lifts
+			// every call: no call may pass the floor, and the batch therefore
+			// stays at or under twice it.
+			const FLOOR = 4_096; // the extension's minOutputBytes default
+			if (batchBytes > 2 * FLOOR) {
+				throw new Error(`the batch admitted ${batchBytes} bytes, above the ${2 * FLOOR}-byte ceiling of two lifted calls`);
 			}
 			if (batchBytes < BOUND_BYTES * 0.9) {
 				throw new Error(`the batch admitted only ${batchBytes} of the ${BOUND_BYTES}-byte allowance it was given`);
@@ -401,7 +404,7 @@ const CASES = [
 	{
 		name: "a real grep result is capped and spilled",
 		// pi's own match limit is 100, which keeps a grep result inside the
-		// 8KB Bound on its own. Asking for more is what makes the case cross it.
+		// 7KB Bound on its own. Asking for more is what makes the case cross it.
 		calls: [{ id: "e2-grep", name: "grep", arguments: { pattern: "export const row", path: ".", limit: 4000 } }],
 		inputTokens: TIGHT_INPUT,
 		assert: ({ file }) => {

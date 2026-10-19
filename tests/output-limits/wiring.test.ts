@@ -19,7 +19,7 @@ import { bytesFromTokens, tokensFromBytes, PI_MAX_OUTPUT_BYTES, PI_MAX_OUTPUT_LI
 
 const WINDOW = 150_000;
 const RESERVE = 16_384;
-const MATH = { bytesPerChar: 4, inflation: 2 };
+const MATH = { bytesPerChar: 3.5, inflation: 2 };
 // The model the fake context reports, in the shape pi's own reserve reader keys
 // `compaction.modelOverrides` by.
 const MODEL = { provider: "e2e", id: "m1" };
@@ -357,12 +357,12 @@ describe("pass-through", () => {
 		seed([{ id: "c1", name: "bash" }]);
 		const captured = loadExtension(cwd, sm);
 		// The same usage `ctxTight` reports. With the plain 16384 reserve that
-		// leaves 16.4k of Headroom and an 8KB Bound; for this model pi reserves
+		// leaves 16.4k of Headroom and a 7KB Bound; for this model pi reserves
 		// 66384, so the window is already spent and the floor is the only figure
 		// left: 4KB, and a Headroom that reads 0.
 		const ctx = withUsage(captured, sm, usedFor(TIGHT_HEADROOM));
 		const text = published(await captured.toolResult!(event({ toolName: "bash", toolCallId: "c1", content: [textBlock(bigOutput(900, 44))] }), ctx), "");
-		expect(text).toContain("capped to 4KB (2k tokens) of the 0 token headroom");
+		expect(text).toContain("capped to 4KB (2.3k tokens) of the 0 token headroom");
 	});
 
 	it("leaves a tool outside the five alone however tight the Headroom", async () => {
@@ -377,14 +377,14 @@ describe("pass-through", () => {
 // Bound, Spill, and the patched details
 // ---------------------------------------------------------------------------
 
-// Headroom 16384 -> allowance 4096 tokens -> Bound 8192 bytes. Every case
+// Headroom 16384 -> allowance 4096 tokens -> Bound 7168 bytes. Every case
 // below that asks for a cut uses these figures.
 const TIGHT_HEADROOM = 16_384;
 /** A context whose session has exactly `TIGHT_HEADROOM` tokens of Headroom. */
 function ctxTight(captured: Captured, target: SessionManager = sm): ExtensionContext {
 	return withUsage(captured, target, usedFor(TIGHT_HEADROOM));
 }
-const BOUND_BYTES = 8_192;
+const BOUND_BYTES = 7_168;
 const BOUND_TOKENS = tokensFromBytes(BOUND_BYTES, MATH);
 expect(BOUND_BYTES).toBe(bytesFromTokens(BOUND_TOKENS, MATH));
 
@@ -402,7 +402,7 @@ describe("bound and spill", () => {
 		// pi's own tail direction: the last line survives, the first does not.
 		expect(text).toContain("line 2000 ");
 		expect(text).not.toContain("line 1 ");
-		expect(text).toContain(`[output-limits: capped to 8KB (${BOUND_TOKENS / 1000 >= 1 ? "4.1k" : BOUND_TOKENS} tokens) of the 16.4k token headroom;`);
+		expect(text).toContain(`[output-limits: capped to 7KB (${BOUND_TOKENS / 1000 >= 1 ? "4.1k" : BOUND_TOKENS} tokens) of the 16.4k token headroom;`);
 		// The path is the real one, and it is inside the agent dir the session
 		// resolved: an abbreviation the model cannot open would be a lie.
 		expect(text).toContain(`full output: ${join(agentDir, "output-limits")}/`);
@@ -590,9 +590,9 @@ describe("bound and spill", () => {
 		builder.appendMessage(assistant([{ id: "r1", name: "read" }]));
 		sm = SessionManager.open(builder.getSessionFile()!, sessionDir, cwd);
 		const captured = loadExtension(cwd, sm);
-		// Headroom 2048, share 0.25 -> allowance 512 tokens -> 1024 bytes.
+		// Headroom 2048, share 0.25 -> allowance 512 tokens -> 896 bytes.
 		const ctx = withUsage(captured, sm, usedFor(2_048));
-		const body = "x".repeat(1_024);
+		const body = "x".repeat(896);
 		const source = `${body}\n\n[Showing lines 1-1 of 500. Use offset=2 to continue.]`;
 		const patch = await captured.toolResult!(event({ toolName: "read", toolCallId: "r1", content: [textBlock(source)], input: { path: "big.ts", offset: 1 } }), ctx);
 		// Nothing was published, so the session keeps pi's text and pi's pointer.
@@ -653,10 +653,10 @@ describe("ledger", () => {
 		]);
 		const captured = loadExtension(cwd, sm);
 		const ctx = ctxTight(captured);
-		// Allowance 4096 tokens over 4 calls is 1024 tokens, which is 2048
+		// Allowance 4096 tokens over 4 calls is 1024 tokens, which is 1792
 		// bytes and above the 128-token floor.
 		const text = published(await captured.toolResult!(event({ toolName: "bash", toolCallId: "a", content: [textBlock(bigOutput(2_000, 44))] }), ctx), "");
-		expect(text).toContain("capped to 2KB (1k tokens) of the 16.4k token headroom left for this message (4 calls)");
+		expect(text).toContain("capped to 1.8KB (1k tokens) of the 16.4k token headroom left for this message (4 calls)");
 	});
 
 	it("rolls forward what a sibling left unused", async () => {
@@ -672,7 +672,7 @@ describe("ledger", () => {
 		const text = published(await captured.toolResult!(event({ toolName: "bash", toolCallId: "b", content: [textBlock(bigOutput(2_000, 44))] }), ctx), "");
 		// Two calls would be 2048 tokens each; the first left its share intact,
 		// so the second reaches almost all 4096 of the allowance.
-		expect(text).toContain("capped to 8KB (4.1k tokens)");
+		expect(text).toContain("capped to 7KB (4.1k tokens)");
 	});
 
 	it("keeps the floor as the last word when the batch is already spent", async () => {
@@ -682,14 +682,14 @@ describe("ledger", () => {
 		]);
 		const captured = loadExtension(cwd, sm);
 		// Allowance is the floor itself here: 1024 tokens of Headroom is 256
-		// after the share, and minOutputBytes lifts it back to 2048 tokens.
+		// after the share, and minOutputBytes lifts it back to 2343 tokens.
 		const ctx = withUsage(captured, sm, usedFor(1_024));
 		const first = published(await captured.toolResult!(event({ toolName: "bash", toolCallId: "a", content: [textBlock(bigOutput(2_000, 44))] }), ctx), "");
-		expect(first).toContain("capped to 4KB (2k tokens)");
+		expect(first).toContain("capped to 4KB (2.3k tokens)");
 		// The batch is over, and the second call still gets the floor rather
 		// than an empty result.
 		const second = published(await captured.toolResult!(event({ toolName: "bash", toolCallId: "b", content: [textBlock(bigOutput(2_000, 44))] }), ctx), "");
-		expect(second).toContain("capped to 4KB (2k tokens)");
+		expect(second).toContain("capped to 4KB (2.3k tokens)");
 	});
 
 	it("still bounds cleanly when the assistant message cannot be read", async () => {
@@ -725,11 +725,11 @@ describe("ledger", () => {
 			texts.push(text);
 			total += Buffer.byteLength(text, "utf8");
 		}
-		// The allowance is 4096 tokens, which is the 8192-byte Bound. The first
-		// call spends it; the floor (256 bytes here) is what the rest may reach.
-		expect(texts[0]).toContain("capped to 8KB (4.1k tokens)");
-		expect(texts[1]).toContain("capped to 256B (128 tokens)");
-		expect(texts[2]).toContain("capped to 256B (128 tokens)");
+		// The allowance is 4096 tokens, which is the 7168-byte Bound. The first
+		// call spends it; the floor is what the rest may reach.
+		expect(texts[0]).toContain("capped to 7KB (4.1k tokens)");
+		expect(texts[1]).toContain("capped to 257B (147 tokens)");
+		expect(texts[2]).toContain("capped to 257B (147 tokens)");
 		expect(total).toBeLessThanOrEqual(BOUND_BYTES + 2 * 256 + 64);
 	});
 
@@ -748,9 +748,11 @@ describe("ledger", () => {
 		expect(await captured.toolResult!(event({ toolName: "bash", toolCallId: "a", content: [textBlock(source)] }), withUsage(captured, sm, undefined))).toBeUndefined();
 		const text = published(await captured.toolResult!(event({ toolName: "bash", toolCallId: "b", content: [textBlock(source)] }), ctxTight(captured)), "");
 		// The floor is the last word here. Left at the blind baseline, this call
-		// would have reached the outer max instead: 26112 tokens, 52224 bytes.
-		expect(text).toContain("capped to 4KB (2k tokens)");
-		expect(Buffer.byteLength(text, "utf8")).toBeLessThanOrEqual(bytesFromTokens(2_048, MATH));
+		// would have reached the outer max instead: 29843 tokens, 52225 bytes.
+		// The 2048-token share is 3584 bytes at the default math, below the
+		// 4096-byte minOutputBytes floor, so the floor is the ceiling here.
+		expect(text).toContain("capped to 4KB (2.3k tokens)");
+		expect(Buffer.byteLength(text, "utf8")).toBeLessThanOrEqual(Math.max(bytesFromTokens(2_048, MATH), 4_096));
 	});
 
 	it("re-baselines after a compaction, a model switch, or a tree navigation", async () => {
@@ -769,10 +771,10 @@ describe("ledger", () => {
 		}
 		// The batch state was dropped, so this call divides a fresh allowance
 		// over both calls again. Carried over, the sibling's 2048 admitted
-		// tokens would have left the whole remainder to this one: 4KB against
-		// 8KB is the difference between a new baseline and a stale one.
+		// tokens would have left the whole remainder to this one: 3.5KB
+		// against 7KB is the difference between a new baseline and a stale one.
 		const text = published(await captured.toolResult!(event({ toolName: "bash", toolCallId: "b", content: [textBlock(bigOutput(2_000, 44))] }), ctx), "");
-		expect(text).toContain("capped to 4KB (2k tokens)");
+		expect(text).toContain("capped to 3.5KB (2k tokens)");
 	});
 });
 
@@ -967,7 +969,7 @@ describe("/output-limits", () => {
 		const captured = loadExtension(cwd, sm);
 		const ctx = withUsage(captured, sm, usedFor(129_616));
 		const text = published(await captured.toolResult!(event({ toolName: "bash", toolCallId: "c1", content: [textBlock(bigOutput(900, 44))] }), ctx), "");
-		expect(text).toContain("capped to 8KB (4.1k tokens)");
+		expect(text).toContain("capped to 7KB (4.1k tokens)");
 		captured.notifications.length = 0;
 		await captured.command!("status", ctx);
 		const status = captured.notifications.map((n) => n.message).join("\n");

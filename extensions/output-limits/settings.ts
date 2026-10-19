@@ -54,7 +54,7 @@ export interface OutputLimitsSettings {
 	maxOutputTokens: number;
 	/** The per-call line max, or `null` for each tool's own figure from pi. */
 	maxLines: number | null;
-	/** The Inflation factor on pi's chars/4 estimate. */
+	/** The Inflation factor on pi's chars/3.5 estimate. */
 	inflation: number;
 	/** The characters per token pi's own estimate assumes. */
 	bytesPerChar: number;
@@ -85,7 +85,7 @@ export const DEFAULT_ENABLED = true;
  */
 export const DEFAULT_MAX_LINES: number | null = null;
 export const DEFAULT_INFLATION = 2.0;
-export const DEFAULT_BYTES_PER_CHAR = 4;
+export const DEFAULT_BYTES_PER_CHAR = 3.5;
 export const DEFAULT_SHARE_OF_HEADROOM = 0.25;
 export const DEFAULT_MIN_OUTPUT_BYTES = 4096;
 export const DEFAULT_TOOLS = ["bash", "read", "grep", "find", "ls"];

@@ -216,7 +216,7 @@ with the refusal line, the provider is never contacted, and the turn ends
 aborted. A tool-calling turn has both of its requests fitted, each on its own
 Corrected estimate, with one notice per turn. And a fresh session with no
 anchor, whose payload the guard's own guess puts over the window while the
-server (reading that content at pi's chars/4 rate) answers it, goes out
+server (reading that content at its own 4-chars-per-token rate) answers it, goes out
 untouched with no line from the guard. The mock router grew three things for
 this: a scripted answer reports the prompt size the provider counted, a
 scripted answer can ask for real tool calls, and the router enforces its
@@ -322,3 +322,8 @@ cuts a wall of text out of the context the guard is trying to protect. And the
 reserve disagreement notice means the settings fix is visible: the guard
 expects to be made unnecessary on a given machine, once, by an operator
 raising one number.
+
+Since that amendment, pi 1.1.0 moved the output clamp's estimator from 4 to
+3.5 characters per token. The guard's Corrected estimate follows the output
+clamp's rate, so it reads the payload at 3.5 since that release; the
+compaction and branch summary estimators kept 4.

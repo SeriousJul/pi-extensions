@@ -10,7 +10,7 @@
  *
  * Units, stated once. The Bound is named in tokens and enforced in bytes.
  * The conversion is the extension's own conservative estimate,
- * `ceil(bytes * inflation / bytesPerChar)`, which is pi's chars/4 estimate
+ * `ceil(bytes * inflation / bytesPerChar)`, which is pi's chars/3.5 estimate
  * times the Inflation factor: the correction that catches multi-byte text,
  * where pi's estimate runs three to four times low, and code by about 18
  * percent (ADR 0026). Because the Bound is named in one unit and enforced in
@@ -36,6 +36,7 @@
  * (`lineCeilingOf`).
  */
 import {
+	PI_CHARS_PER_TOKEN,
 	PI_IMAGE_CHARGE_BYTES,
 	type TokenMath,
 	bytesFromTokens,
@@ -132,7 +133,7 @@ export function noLineCeiling(maxLines: number): boolean {
 export const IMAGE_CHARGE_BYTES = PI_IMAGE_CHARGE_BYTES;
 
 /** The default outer max: pi's own per-call figure, plus pi's own notice. */
-export const DEFAULT_MAX_OUTPUT_TOKENS = tokensFromBytes(PI_MAX_OUTPUT_BYTES + PI_NOTICE_SLACK_BYTES, { bytesPerChar: 4, inflation: 2 });
+export const DEFAULT_MAX_OUTPUT_TOKENS = tokensFromBytes(PI_MAX_OUTPUT_BYTES + PI_NOTICE_SLACK_BYTES, { bytesPerChar: PI_CHARS_PER_TOKEN, inflation: 2 });
 
 /** A tool result content block, structurally pi's TextContent. */
 export interface TextBlock {

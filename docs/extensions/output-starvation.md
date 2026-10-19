@@ -96,7 +96,7 @@ Corrected estimate = Reported context + Inflation x (chars the provider has not 
   session entry pi stored for that answer, through pi's own anchor rule (the
   last assistant response whose usage still describes its prefix).
 - **Everything after it**: the payload's messages after the anchored answer,
-  at pi's chars/4 rate times the Inflation factor. That is where the character
+  at pi's chars/3.5 rate times the Inflation factor. That is where the character
   rate fails, and it is the part the provider has not counted. The boundary
   comes from the same anchor as the count: the session says how many answers it
   holds after the anchored one, and the guard finds that answer in the payload.
@@ -134,8 +134,8 @@ on reload.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `true` | Turn the guard on or off. |
-| `inflation` | `2.0` | The Inflation factor on pi's chars/4 estimate, the same default Output limits and Safe branch summary use. |
-| `bytesPerChar` | `4` | pi's own `CHARS_PER_TOKEN`. |
+| `inflation` | `2.0` | The Inflation factor on pi's chars/3.5 estimate, the same default Output limits and Safe branch summary use. |
+| `bytesPerChar` | `3.5` | pi's own `CHARS_PER_TOKEN`, the rate pi's output clamp estimates at since pi 1.1.0. |
 | `safetyMargin` | pi's own 4096 | The room the Fit leaves unbudgeted, the same margin pi's clamp leaves. |
 | `minAnswerTokens` | pi's own 1024 | The smallest answer budget the guard will send. Below it, the guard refuses instead of fitting. Raise it on a reasoning model to thinking plus a usable reply. |
 

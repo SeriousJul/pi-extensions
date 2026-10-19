@@ -132,3 +132,12 @@ those bytes are reserved out of the Bound before the cut runs rather than added
 after it: the Bound is what the model receives, notices included, and a budget
 that covered only the result text would over-admit by the size of its own
 announcement.
+
+## Amendment: pi 1.1.0 moves the output clamp's estimator to chars/3.5
+
+The two references above to pi's chars/4 estimate name the rate in force
+when this decision was made. pi 1.1.0 moved the output clamp's estimator from
+4 to 3.5 characters per token. Output limits follows the output clamp's rate,
+so its bytes-per-char figure is 3.5 since that release; pi's compaction and
+branch summary estimators kept 4. The Inflation factor corrects either rate,
+and the decision stands as written.
