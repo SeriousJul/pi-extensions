@@ -76,7 +76,7 @@
     "@colbymchenry/codegraph": "^1.6.2",
     "jiti": "^2.7.0",
     "vscode-jsonrpc": "^9.0.3",
-    "vscode-languageserver-protocol": "^3.18.4"
+    "vscode-languageserver-protocol": "^3.18.5"
   },
   "allowScripts": {
     "esbuild@0.28.2": true
