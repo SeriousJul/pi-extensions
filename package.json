@@ -38,7 +38,7 @@
     "@types/node": "^26.6.5",
     "@xterm/headless": "^6.0.0",
     "node-pty": "^1.1.0",
-    "pako": "^3.0.2",
+    "pako": "^3.0.3",
     "typebox": "^1.4.3",
     "typescript": "^7.0.2",
     "vitest": "^5.0.5"
