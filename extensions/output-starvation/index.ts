@@ -36,8 +36,8 @@
  * no per-turn network call; it reads the session projection only for the
  * requests the payload alone does not clear.
  *
- * The guard never takes over window ownership from Llama refresh: it reads
- * the Effective window for its lines and changes nothing about it. It
+ * The guard never takes over window ownership from Context window cap: it
+ * reads the Effective window for its lines and changes nothing about it. It
  * registers no compaction hook, so it cannot stand in the way of the
  * compaction a fitted request lets pi's own threshold reach.
  */

@@ -56,7 +56,6 @@
     "e2e:context-cap": "node tests/context-cap/e2e-rpc.mjs",
     "e2e:edit-assist": "node tests/edit-assist/e2e-rpc.mjs",
     "e2e:initial-context": "node tests/initial-context/e2e-rpc.mjs",
-    "e2e:llama-refresh": "node tests/llama-refresh/e2e-rpc.mjs",
     "e2e:lsp": "node tests/lsp/e2e-rpc.mjs",
     "e2e:output-limits": "node tests/output-limits/e2e-rpc.mjs",
     "e2e:output-starvation": "node tests/output-starvation/e2e-rpc.mjs",

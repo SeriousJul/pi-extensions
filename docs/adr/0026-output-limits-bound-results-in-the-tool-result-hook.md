@@ -27,8 +27,8 @@ emits the final tool result message. The Bound is
 `clamp(shareOfHeadroom * Headroom, minOutputBytes, maxOutputTokens)`, measured
 in tokens from UTF-8 bytes through pi's chars/4 estimate times the Inflation
 factor, the same correction the Safe branch summary applies to that estimate.
-Headroom reads the Effective window, so the llama refresh heal and the Context
-window cap clamp are already in it. One assistant message's calls share the
+Headroom reads the Effective window, so the Context window cap clamp is
+already in it. One assistant message's calls share the
 Bound: the extension counts the `toolCall` blocks of the current assistant
 message (pi guarantees `ctx.sessionManager` is synchronized through it) and
 tracks what it has admitted in the Ledger, because the usage pi reports cannot

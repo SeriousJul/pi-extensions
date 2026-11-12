@@ -28,9 +28,9 @@ produced. This extension does that, and only ever bounds downward.
   output pi had blessed on the byte axis; a line max of exactly pi's content
   figure did it on the line axis.
 - **Headroom.** The **Effective window** minus pi's `compaction.reserveTokens`
-  minus the usage pi reports. The Effective window already carries the llama
-  refresh heal and the Context window cap clamp, so all three extensions
-  compose for free. Headroom reads pi's values; it never sets them.
+  minus the usage pi reports. The Effective window already carries the
+  Context window cap clamp, so the two extensions compose for free.
+  Headroom reads pi's values; it never sets them.
 - **Token math.** The extension's own conservative conversion,
   `ceil(bytes x inflation / bytesPerChar)`. This is pi's chars/3.5 estimate
   times the Inflation factor, and it is the correction that catches CJK, where pi's

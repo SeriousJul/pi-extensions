@@ -8,7 +8,6 @@ VitePress from the [`docs/`](docs/) folder.
 - **tools** - the `/tools` command to enable and disable tools per session.
 - **context-cap** - `--context-window <tokens>` caps the session's context window so compaction fires early.
 - **model-router** - recovers a session from a provider usage-limit halt (switch to a fallback or wait for the reset, then resume).
-- **llama-refresh** - self-heals the context window of a session that resolved a local llama.cpp model while it was asleep.
 - **resource-toggle** - `/resources`, `/enable`, `/disable`, `/inherit`: enable and disable extensions, skills, prompt templates, and themes from inside a running session. A state command with no name opens the resource picker in TUI mode (a resource table in the headless modes), and every surface shows the one-line description derived from the resource's source file.
 - **usage** - token and cost reporting across all pi sessions: the `/usage` TUI view, the `usage_report` agent tool, and the `pi-usage` CLI.
 - **sync** - cross-device pi config sync: `/sync` plus the `pi-sync` CLI, three-way merge, v1 backend a secret GitHub Gist.
@@ -33,7 +32,6 @@ See the [pi packages docs](https://github.com/earendil-works/pi/blob/main/packag
 | context-cap | [docs](https://seriousjul.github.io/pi-extensions/extensions/context-cap.html) |
 | initial-context | [docs](https://seriousjul.github.io/pi-extensions/extensions/initial-context.html) |
 | model-router | [docs](https://seriousjul.github.io/pi-extensions/extensions/model-router.html) |
-| llama-refresh | [docs](https://seriousjul.github.io/pi-extensions/extensions/llama-refresh.html) |
 | resource-toggle | [docs](https://seriousjul.github.io/pi-extensions/extensions/resource-toggle.html) |
 | sync | [user page](https://seriousjul.github.io/pi-extensions/extensions/sync/) / [internals](https://seriousjul.github.io/pi-extensions/extensions/sync/internals.html) |
 | usage | [docs](https://seriousjul.github.io/pi-extensions/extensions/usage.html) |

@@ -21,17 +21,21 @@
  * The cap value comes from --context-window or PI_CONTEXT_WINDOW (flag wins).
  * It is read in session_start, not at load time: pi fills extension flag
  * values after extensions load, so a top-level read would only see defaults.
- * The resolved value is published to the shared record in
- * extensions/shared/context-window-cap.ts: the llama refresh compare clamps
- * both sides of its registry-to-registry compare to that value, so a cap
- * that hides a drift (the live window stays above the cap) moves nothing
- * and says nothing instead of re-applying a window the cap clamps back.
+ * The resolved value is kept in a process-global record (cap.ts): the
+ * boundary handlers below read it to know which cap applies. It sits under
+ * a Symbol.for global so a double-loaded copy of the extension sees the
+ * same value.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { cappedModelConfigs, clampModelWindow, parseCap } from "./cap";
+import {
+	cappedModelConfigs,
+	clampModelWindow,
+	getActiveWindowCap,
+	parseCap,
+	setActiveWindowCap,
+} from "./cap";
 import { readReserveTokens } from "./settings";
 import { modelKey as piModelKey } from "../shared/settings.ts";
-import { getActiveWindowCap, setActiveWindowCap } from "../shared/context-window-cap.ts";
 
 const FLAG_NAME = "context-window";
 const ENV_VAR = "PI_CONTEXT_WINDOW";
@@ -46,8 +50,8 @@ export default function (pi: ExtensionAPI): void {
 		// The clamp is in place, not a replacement, because pi resolves the
 		// session's model to the same object the registry returns (the model
 		// runtime hands out its provider list's own model objects to both):
-		// clamping ctx.model clamps the value every reader of the registry -
-		// including the llama refresh compare - sees.
+		// clamping ctx.model clamps the value every reader of the registry
+		// sees.
 		const cap = getActiveWindowCap();
 		if (cap !== undefined) clampModelWindow(ctx.model, cap);
 	};
@@ -76,9 +80,9 @@ export default function (pi: ExtensionAPI): void {
 			);
 			return;
 		}
-		// Publish the active cap: the llama refresh compare clamps both sides
-		// of its compare to it, so a cap that hides a drift moves nothing and
-		// says nothing. Cleared on every path where no cap applies, above.
+		// Record the active cap: the boundary clamps below read it to know
+		// which cap applies. Cleared on every path where no cap applies,
+		// above.
 		setActiveWindowCap(parsed.cap);
 		const allModels = ctx.modelRegistry.getAll();
 		for (const [provider, models] of cappedModelConfigs(allModels, parsed.cap)) {
@@ -107,12 +111,8 @@ export default function (pi: ExtensionAPI): void {
 
 	// The session's model is clamped at every boundary the window is
 	// consumed - before a run starts, before each request is built, at each
-	// turn end, and when the run settles - so an extension that re-applies a
-	// model mid-session (the llama refresh heal) cannot widen it past the
-	// cap. When llama refresh loads before this extension, the turn_start
-	// clamp lands after its pre-request re-apply, so the request is built
-	// capped; with the reverse order one request per heal may see the
-	// uncapped window before the next clamp.
+	// turn end, and when the run settles - so a model re-applied mid-session
+	// cannot widen it past the cap.
 	pi.on("before_agent_start", (_event, ctx) => clampActive(ctx));
 	pi.on("turn_start", (_event, ctx) => clampActive(ctx));
 	pi.on("turn_end", (_event, ctx) => clampActive(ctx));

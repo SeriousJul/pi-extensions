@@ -1,9 +1,9 @@
 # The fallback window self-heals via a one-shot re-resolution
 
 Superseded by [ADR 0027](/adr/0027-the-live-catalog-comparison-heals-the-window)
-on its trigger (the sentinel match) and its one-Attempt-per-selection budget; the
-rest stands, including the post-Wake timing, the one-shot bound, and the
-rejections of a static pin and a per-turn check.
+on its trigger (the sentinel match) and its one-Attempt-per-selection budget,
+and superseded in full by [ADR 0048](/adr/0048-drop-llama-refresh), which
+drops the llama-refresh extension this ADR designed.
 
 The llama.cpp provider derives a model's context window from the live server.
 A loaded model exposes its true `n_ctx`; an asleep model exposes nothing, and

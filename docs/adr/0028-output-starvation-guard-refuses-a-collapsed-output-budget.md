@@ -58,8 +58,7 @@ The budget of the guard itself: at most one refusal per turn. The flag resets
 on every `turn_start` and on `session_start`, so a refusal can never become a
 retry storm and nothing survives a model selection. The guard reads a payload
 that already exists, adds no per-turn network call, never raises a budget,
-and never touches the window, which stays Llama refresh's ownership. It is a
-separate module from llama-refresh.
+and never touches the window, which stays Context window cap's ownership.
 
 ## Amendment: the guard's second trigger, Output overrun (issue #122)
 

@@ -54,7 +54,7 @@ in its own way ([ADR 0028](/adr/0028-output-starvation-guard-refuses-a-collapsed
   nothing.
 - The guard registers no compaction hook, so it cannot stand in the way of the
   compaction a fitted request lets pi's own threshold reach. It never touches
-  the window, which stays Llama refresh's and Context window cap's ownership.
+  the window, which stays Context window cap's ownership.
 
 ## What you see
 
@@ -65,8 +65,8 @@ Two lines, one shape, in the glossary's vocabulary:
 
 The fit line is an `info` notice: the request went out and got answered, with
 a shorter answer. The refusal line is an `error` notice and the turn ends
-aborted. Both name the Effective window, so a Context window cap or a Llama
-refresh heal is already reflected in what is read.
+aborted. Both name the Effective window, so a Context window cap is already
+reflected in what is read.
 
 Once per session, when pi's compaction reserve sits below the model's output
 ceiling, the guard names the settings disagreement that makes an overrun

@@ -85,3 +85,43 @@ export function clampModelWindow(model: Model<Api> | undefined, cap: number): bo
 	model.contextWindow = cap;
 	return true;
 }
+
+/**
+ * The session's active Context window cap (ADR 0004, amended by ADR 0027).
+ * The record moved here from extensions/shared/context-window-cap.ts by
+ * ADR 0048, when the llama-refresh extension that read it was dropped and
+ * context-cap became its only owner.
+ *
+ * The state still sits under a Symbol.for global, the same pattern as the
+ * status line: pi's extension discovery can load a second copy of the
+ * extension, and the boundary handlers in index.ts must see the cap the
+ * session_start handler resolved. A session with no cap reads undefined, and
+ * no clamp applies.
+ */
+type CapState = {
+	/** The active cap in tokens, or undefined when no cap applies. */
+	cap: number | undefined;
+};
+
+const CAP_STATE_KEY = Symbol.for("pi-extensions/context-window-cap");
+
+function capState(): CapState {
+	const global = globalThis as Record<symbol, CapState | undefined>;
+	if (!global[CAP_STATE_KEY]) global[CAP_STATE_KEY] = { cap: undefined };
+	return global[CAP_STATE_KEY]!;
+}
+
+/** Publish the active cap, or clear it (undefined). */
+export function setActiveWindowCap(cap: number | undefined): void {
+	capState().cap = cap;
+}
+
+/** The active cap, or undefined when no cap applies. */
+export function getActiveWindowCap(): number | undefined {
+	return capState().cap;
+}
+
+/** Clear the published cap. For tests. */
+export function resetActiveWindowCap(): void {
+	capState().cap = undefined;
+}

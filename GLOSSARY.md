@@ -1,11 +1,10 @@
 # Pi Extensions
 
-Extensions for the pi coding agent. Eighteen today: Codegraph (semantic
+Extensions for the pi coding agent. Seventeen today: Codegraph (semantic
 search over the current project's symbols), Tools (enable and disable tools
 per session), Context cap (cap the context window so compaction fires
 early), Model router (automatic recovery from quota exhaustion, with the
-Quota source for the OpenAI ChatGPT plan), Llama refresh (self-heal of the
-context window for a lazily loaded local model), Resource toggle (enable and
+Quota source for the OpenAI ChatGPT plan), Resource toggle (enable and
 disable extensions, skills, prompts, and themes from inside a session), Usage
 (token and cost reporting across all sessions), Sync (device file sync),
 Output limits (bound tool
@@ -278,59 +277,6 @@ not say it is the maximum across windows)
 The one synthetic user message the router sends to resume the halted turn.
 _Avoid_: resume prompt, continuation (generic), retry message (a retry is a
 different concept)
-
-### Llama refresh
-
-**Live window**:
-The context window a server reports for a model right now. It belongs to that
-server launch, not to the model file, so relaunching a server with a different
-size changes it.
-_Avoid_: real window, true window (nothing contrasts it), current n_ctx
-
-**Cached window**:
-The context window pi holds in its model catalog from the last time it read a
-provider. A session starts from this value, and it can describe a server launch
-that no longer exists.
-_Avoid_: stale window (stale carries two other meanings here), stored window,
-declared window
-
-**Window drift**:
-A cached window that differs from the model's live window. Any drift is wrong
-at the moment of use, whatever produced it: an asleep model, a relaunched
-server, a catalog that never revalidated.
-_Avoid_: stale context window, desync, mismatch
-
-**Fallback window**:
-The fixed 128000 context window the llama.cpp provider deduces for a model
-whose `n_ctx` is not exposed because the model is asleep. The degenerate cached
-window: a llama.cpp model resolved at this value was deduced, not reported.
-_Avoid_: default window, estimated window, 128k
-
-**Wake**:
-The lazy load of an asleep model triggered by its first request. After a
-Wake the server exposes the model's true `n_ctx`, but only to the next
-catalog read.
-_Avoid_: load (too generic), spin-up, boot
-
-**Heal moment**:
-One of the two fixed points where a model selection's window may be repaired:
-before its first request, or after that request settles. The pre-request moment
-catches Window drift; the post-request moment catches a model that was asleep.
-_Avoid_: checkpoint, hook, phase
-
-**Attempt**:
-The one catalog read and window comparison a selection may spend at a Heal
-moment. A selection gets at most one Attempt per moment, two in total; a new
-selection or the llama window command re-arms one. A compare that cannot finish
-spends nothing.
-_Avoid_: retry (implies failure), probe, check
-
-**Re-resolution**:
-Reading the model back from the registry after a Wake and re-applying it so
-the running session's window changes. Happens only when the window actually
-changed, so it appends at most one model change entry per Attempt.
-_Avoid_: refresh (the refresh is the catalog read; the re-resolution is the
-read plus the re-apply), model update
 
 ### Resource toggle
 
@@ -708,8 +654,8 @@ The extension that writes the branch summary on `/tree` navigation in place of p
 _Avoid_: branch guard (the guard-only design that was rejected), summary hook, safe summary
 
 **Effective window**:
-The context window a session's model reports at the moment of use: the catalog value after the llama refresh heal and the context cap clamp. Branch summary budgeting reads only this, never a raw catalog value.
-_Avoid_: declared window, cached window (that is the pre-heal catalog value), theoretical window, model window, session context size (that is the current usage, a different quantity)
+The context window a session's model reports at the moment of use: the catalog value after the context cap clamp. Branch summary budgeting reads only this, never a raw catalog value.
+_Avoid_: declared window, cached window (the raw catalog value), theoretical window, model window, session context size (that is the current usage, a different quantity)
 
 **Inflation factor**:
 The multiplier the Safe branch summary applies to pi's chars/4 estimate when budgeting a branch summary request. It models the worst-case tokenization density of code-heavy content. The default is 2.0.

@@ -46,7 +46,8 @@
  *
  * The module owns the request and nothing else: it reads the payload pi has
  * already built, it never raises a budget, it never touches the window
- * (that is Llama refresh's ownership), and it adds no network call. It reads
+ * (that is Context window cap's ownership), and it adds no network call. It
+ * reads
  * the session only when the payload alone does not prove the request has
  * room: the session behind a request is handed to the decision as a thunk,
  * so a healthy request never rebuilds pi's session projection.
@@ -757,7 +758,7 @@ export interface ReserveFacts {
  * model's output ceiling, so pi's own threshold permits a prompt the
  * provider must reject. It names the setting to change and changes nothing
  * (user story 17): the reserve is pi's setting, and the Effective window
- * stays Llama refresh's and Context cap's ownership.
+ * stays Context cap's ownership.
  */
 export function reserveDisagreementLine(facts: ReserveFacts): string {
 	return `output starvation: reserve disagreement (${facts.provider}/${facts.modelId}): compaction reserve ${facts.reserve}, model output ceiling ${facts.ceiling}; set compaction.reserveTokens to ${facts.ceiling} or more`;
