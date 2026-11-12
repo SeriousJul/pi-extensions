@@ -25,9 +25,8 @@
  * pi's arithmetic is missing: it anchors at the Reported context (the
  * prompt size the provider itself counted for its last answer) and adds an
  * Inflation-corrected estimate of everything the provider has not counted
- * yet. It is the same correction Output limits and Safe branch summary
- * apply to pi's chars/3.5 estimate, applied to the request instead of to a
- * tool result.
+ * yet. It is the same correction Output limits applies to pi's chars/3.5
+ * estimate, applied to the request instead of to a tool result.
  *
  * Two rules hold that the trigger names do not carry. The Fit lowers the
  * thinking budget that shared the ceiling, by pi's own room rule, so a

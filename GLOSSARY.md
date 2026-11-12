@@ -1,6 +1,6 @@
 # Pi Extensions
 
-Extensions for the pi coding agent. Seventeen today: Codegraph (semantic
+Extensions for the pi coding agent. Sixteen today: Codegraph (semantic
 search over the current project's symbols), Tools (enable and disable tools
 per session), Context cap (cap the context window so compaction fires
 early), Model router (automatic recovery from quota exhaustion, with the
@@ -13,8 +13,7 @@ results against the session's headroom, losslessly), Output starvation
 failing edit calls around the built-in edit tool), Bash no-match (a
 no-match search as a normal result), Background jobs (run long commands in
 the background and wait on them), Initial context (the token breakdown of
-the agent's initial context), Safe branch summary (a branch summary that
-fits the window the server serves), Skill command (keep newline-separated
+the agent's initial context), Skill command (keep newline-separated
 /skill: commands expandable), Skill migrate (deterministic repo-structure
 migrations with a committed changelog), and Skill tool (load a skill
 another skill names, by name). The package also ships a Skill tree, kept in
@@ -529,6 +528,10 @@ a Bound is a share of.
 _Avoid_: free space, remaining context, slack (implies a reserve pi does not
 use this way)
 
+**Effective window**:
+The context window a session's model reports at the moment of use: the catalog value after the context cap clamp. Output limits and the output-starvation guard read only this, never a raw catalog value.
+_Avoid_: declared window, cached window (the raw catalog value), theoretical window, model window, session context size (that is the current usage, a different quantity)
+
 **Output starvation**:
 The state of a request whose context estimate leaves pi's output clamp
 nothing to give: the Effective window minus the estimate minus the clamp's
@@ -561,6 +564,10 @@ The Reported context plus an Inflation-corrected estimate of everything the
 provider has not counted yet. The figure pi's arithmetic is missing.
 _Avoid_: pi's estimate (that is the chars/3.5 figure), true count (it is still
 an estimate, anchored on one real count)
+
+**Inflation factor**:
+The multiplier applied to pi's chars/3.5 estimate of the tokens a tool result or a request costs. It models the worst-case tokenization density of code-heavy content. Output limits and the output-starvation guard each carry it as their `inflation` setting. The default is 2.0.
+_Avoid_: safety factor (too generic), padding, overhead, divisor
 
 **Fit**:
 A request's output budget lowered to the room the Corrected estimate leaves in
@@ -646,24 +653,6 @@ Failure class, for all time or a date window. The before/after instrument
 for Edit assist (ADR 0020).
 _Avoid_: usage report (the Usage extension measures tokens), edit stats
 (tool-generic)
-
-### Safe branch summary
-
-**Safe branch summary**:
-The extension that writes the branch summary on `/tree` navigation in place of pi's built-in summarizer. It budgets the summary request against the Effective window divided by the Inflation factor, and degrades to a Soft-skip when the summary cannot be written.
-_Avoid_: branch guard (the guard-only design that was rejected), summary hook, safe summary
-
-**Effective window**:
-The context window a session's model reports at the moment of use: the catalog value after the context cap clamp. Branch summary budgeting reads only this, never a raw catalog value.
-_Avoid_: declared window, cached window (the raw catalog value), theoretical window, model window, session context size (that is the current usage, a different quantity)
-
-**Inflation factor**:
-The multiplier the Safe branch summary applies to pi's chars/4 estimate when budgeting a branch summary request. It models the worst-case tokenization density of code-heavy content. The default is 2.0.
-_Avoid_: safety factor (too generic), padding, overhead, divisor
-
-**Soft-skip**:
-The Safe branch summary failure mode in which the navigation completes without a branch summary entry, with a notice. The abandoned branch stays reachable through `/tree`.
-_Avoid_: fallback (implies a summary was produced by another path), cancel (that is the abort outcome), skip (hides the navigation outcome)
 
 ### Skill command
 

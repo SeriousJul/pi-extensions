@@ -16,9 +16,9 @@
  * setting can undo is not one.
  *
  * `inflation` and `bytesPerChar` carry the same names, and the same
- * defaults, as the keys Output limits and Safe branch summary read, so one
- * mental model covers all three extensions: the guard's Corrected estimate
- * is pi's chars/3.5 figure times the Inflation factor.
+ * defaults, as the keys Output limits reads, so one mental model covers
+ * both extensions: the guard's Corrected estimate is pi's chars/3.5 figure
+ * times the Inflation factor.
  *
  * `safetyMargin` and `minAnswerTokens` default to pi's own figures - the
  * margin its output clamp always leaves and the answer room it always

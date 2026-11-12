@@ -88,8 +88,8 @@ guards at once: the compaction threshold stayed uncrossed, and the clamp saw
 33,722 tokens of room and left the budget at the model's full ceiling. The
 anchor is what makes the correction honest: the provider has already counted
 everything up to its answer exactly, and the character rate is what fails on
-the content after it. The same Inflation correction Output limits and Safe
-branch summary already apply to a tool result, applied to the request.
+the content after it. The same Inflation correction Output limits already
+applies to a tool result, applied to the request.
 
 The guard judges the payload, not the session projection. The payload is the
 exact thing going out: its messages, its system prompt, its tool declarations,
@@ -124,9 +124,9 @@ raised. The margin is pi's `CONTEXT_SAFETY_TOKENS` (4,096), pinned the way
 constant; the default minimum answer budget is pi's `MIN_ANSWER_TOKENS`
 (1,024), pinned the same way. A figure invented here would silently disagree
 with pi whenever pi's arithmetic moves. The Inflation factor (default 2.0, the
-default Output limits and Safe branch summary use) and the characters-per-token
-figure are settings with the same names those extensions use, in the guard's
-own `outputStarvation` section, with an environment escape hatch that turns
+default Output limits uses) and the characters-per-token figure are settings
+with the same names Output limits uses, in the guard's own `outputStarvation`
+section, with an environment escape hatch that turns
 the guard off so the operator can compare pi's raw behavior against ours.
 The fit is conservative by design: it is the largest budget the guard's
 estimate allows, not the largest the provider would have taken; on the
@@ -224,8 +224,7 @@ Two things this amendment does not do. pi's compaction summarization request
 does not pass through `before_provider_request` at all (pi hands the
 compaction module the agent's stream function with its own options), so the
 guard cannot Fit it directly; taking over compaction through
-`session_before_compact` the way Safe branch summary took over branch
-summaries (ADR 0025) stays out of scope, because the Fit makes it unnecessary
+`session_before_compact` stays out of scope, because the Fit makes it unnecessary
 in the common case - the fitted request lets pi's own threshold fire on the
 provider's real count while there is still room for the summary. And the
 proxy's own `fit_max_tokens` option is not the answer: it fixes the 400

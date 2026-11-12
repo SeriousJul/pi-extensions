@@ -41,7 +41,6 @@ See the [pi packages docs](https://github.com/earendil-works/pi/blob/main/packag
 | lsp | [docs](https://seriousjul.github.io/pi-extensions/extensions/lsp.html) |
 | bash-no-match | [docs](https://seriousjul.github.io/pi-extensions/extensions/bash-no-match.html) |
 | background-jobs | [docs](https://seriousjul.github.io/pi-extensions/extensions/background-jobs.html) |
-| safe-branch-summary | [docs](https://seriousjul.github.io/pi-extensions/extensions/safe-branch-summary.html) |
 | skill-command | [docs](https://seriousjul.github.io/pi-extensions/extensions/skill-command.html) |
 | skill-migrate | [README](extensions/skill-migrate/README.md) |
 | skill-tool | [docs](https://seriousjul.github.io/pi-extensions/extensions/skill-tool.html) |

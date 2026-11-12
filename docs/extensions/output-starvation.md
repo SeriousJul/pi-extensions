@@ -134,7 +134,7 @@ on reload.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `true` | Turn the guard on or off. |
-| `inflation` | `2.0` | The Inflation factor on pi's chars/3.5 estimate, the same default Output limits and Safe branch summary use. |
+| `inflation` | `2.0` | The Inflation factor on pi's chars/3.5 estimate, the same default Output limits uses. |
 | `bytesPerChar` | `3.5` | pi's own `CHARS_PER_TOKEN`, the rate pi's output clamp estimates at since pi 1.1.0. |
 | `safetyMargin` | pi's own 4096 | The room the Fit leaves unbudgeted, the same margin pi's clamp leaves. |
 | `minAnswerTokens` | pi's own 1024 | The smallest answer budget the guard will send. Below it, the guard refuses instead of fitting. Raise it on a reasoning model to thinking plus a usable reply. |

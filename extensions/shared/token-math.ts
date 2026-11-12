@@ -1,15 +1,15 @@
 /**
  * The shared token math.
  *
- * Three extensions in this repo convert a character count into a token
+ * The two extensions in this repo convert a character count into a token
  * estimate, and they all mean the same figure: pi's own chars/3.5 estimate
  * times the Inflation factor. Output limits bounds a tool result with it,
- * Safe branch summary budgets a summary request with it, and the
- * output-starvation guard estimates the part of a request the provider has
- * not counted with it. Each of them used to carry its own copy of the
- * formula and of the two figures inside it, which is how two extensions end
- * up disagreeing about one number. This module is the one owner, the way
- * `shared/settings.ts` is the one owner of the settings-file plumbing.
+ * and the output-starvation guard estimates the part of a request the
+ * provider has not counted with it. Each of them used to carry its own copy
+ * of the formula and of the two figures inside it, which is how two
+ * extensions end up disagreeing about one number. This module is the one
+ * owner, the way `shared/settings.ts` is the one owner of the
+ * settings-file plumbing.
  *
  * Nothing here imports pi. The figures are pi's, pinned here and pinned
  * again against pi's own code in the tests that read them.
@@ -17,9 +17,7 @@
  * Since pi 1.1.0 the rate belongs to one estimator only: pi's output clamp
  * moved to 3.5 characters per token, while pi's compaction and branch
  * summary estimator kept 4. This constant follows the output clamp, the
- * arithmetic that rejects the request every extension here keeps honest;
- * the Safe branch summary budgets against pi's compaction arithmetic and
- * keeps that 4 figure on its own side of the seam.
+ * arithmetic that rejects the request every extension here keeps honest.
  */
 
 /**
@@ -27,8 +25,8 @@
  * estimator (pi-ai 1.1.0, utils/estimate.ts), the rate pi's output clamp
  * estimates at. pi 1.1.0 moved it from 4 to 3.5 to reduce context-limit
  * request failures. It is a character count, not a byte count, but the repo
- * names the setting `bytesPerChar` the way Output limits and Safe branch
- * summary already do, and for ASCII the two are the same figure.
+ * names the setting `bytesPerChar` the way Output limits already does, and
+ * for ASCII the two are the same figure.
  */
 export const PI_CHARS_PER_TOKEN = 3.5;
 

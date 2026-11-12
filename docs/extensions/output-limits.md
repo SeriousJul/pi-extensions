@@ -140,7 +140,7 @@ on reload.
 | `enabled` | `true` | Turn the extension on or off. |
 | `maxOutputTokens` | pi's own 50KB content cut plus the slack its notice adds past it, in tokens | The outer max on the byte axis. Always on, and still invisible until Headroom gets tight. |
 | `maxLines` | unset, meaning each tool's own figure from pi: pi's 2000 content lines plus the two lines its notice costs, for bash and read, and no line ceiling for grep, find, and ls | The outer max on the line axis. pi does not cut every tool by line, and neither does this extension by default. |
-| `inflation` | `2.0` | The factor on pi's chars/3.5 estimate, matching the Safe branch summary. |
+| `inflation` | `2.0` | The Inflation factor on pi's chars/3.5 estimate. |
 | `bytesPerChar` | `3.5` | pi's own `CHARS_PER_TOKEN`, the rate pi's output clamp estimates at since pi 1.1.0. |
 | `shareOfHeadroom` | `0.25` | The share of the Headroom one assistant message may spend. |
 | `minOutputBytes` | `4096` | The per-call floor. A call is never cut below it. |
