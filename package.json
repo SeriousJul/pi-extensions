@@ -71,7 +71,7 @@
     "skills:add": "node scripts/skills/add.mjs"
   },
   "dependencies": {
-    "@colbymchenry/codegraph": "^1.6.2",
+    "@colbymchenry/codegraph": "^1.6.4",
     "jiti": "^2.7.0",
     "vscode-jsonrpc": "^9.0.3",
     "vscode-languageserver-protocol": "^3.18.6"
